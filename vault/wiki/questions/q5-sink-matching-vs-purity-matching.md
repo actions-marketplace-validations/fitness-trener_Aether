@@ -3,7 +3,7 @@ type: question_page
 question_id: q5
 status: answered
 confidence: high
-last_updated: 2026-09-01
+last_updated: 2026-09-03
 tags: [diagnostics, design-rationale, toolchain, effect-system]
 ---
 
@@ -177,7 +177,37 @@ helper (`stmt = self._base_query()`) crosses a function boundary and stays
 a computed query. `text(name)` resolves only when every binding of `name`
 is a literal; a parameter never is. `[source: README, section: Python, key: sqlBind]`
 
+**A position is a name too (2026-09-03, iter 48).** The rule this page
+states for names — never clear from one, freely suspect from one —
+turned out to have a third clause the frontend had been violating
+silently: *a call the translator never emits is neither cleared nor
+suspected.* Four statement kinds were translated; a sink behind
+`await`, in a `for` iterable, in a tuple-target assignment, inside
+`x or []`, or in a `def` under `try:` produced no node at all — 603
+await-wrapped sink calls on the framework corpus, plus 89 in other
+positions (BUGS.md BUG-012). The same walk-by-kind shape let `sql +=
+uid` leave `sql` "literal-only", because three resolvers saw a single
+binding form. The obligation that closes both is totality, recorded on
+its own page: [[q7-frontend-totality-over-syntax]]. Measured: 411 → 628
+findings on the same 4,946 files, 0 errors; ground truth 41 TP / 0 FN /
+0 FP; benign corpus unchanged. `[source: README, section: Python, key: check-py]`
+
+*Residuals after iter 48 (all over-flag direction):* the helper-assembled
+statement is now **34 of the pre-fix 381** (14 same-module, 20
+cross-module) by a source-level census, not the "~100" iteration 47
+estimated — the per-module summary stays parked at that price; `self.
+table.delete()` (an attribute receiver) is not accepted as the
+Table-method form, only a bare name is; a keyword-only sink argument
+takes the positional slot *in keyword order*, so a guard keyword written
+before the data keyword is what gets judged (refused, never cleared);
+`fetch` as a method name is deliberately NOT a SQL sink (too many
+non-SQL `fetch`es), so asyncpg's `conn.fetch(q)` is silent until a
+qualified row exists; the E0723 PEM pattern matches the header alone,
+which module-level strings now expose (two docstring/message hits on
+the corpus).
+
 ## Related
 - [[q1-taint-marker-soundness-boundary]] — the over-flag-never-miss contract every taint pass inherits
 - [[q3-what-makes-a-good-backlog-target]] — the selection heuristic this measurement discipline extends
 - [[../clusters/violation-taxonomy]] — the sink rows this reasoning licenses on Python
+- [[q7-frontend-totality-over-syntax]] — the third clause: a position the translator does not emit is neither cleared nor suspected

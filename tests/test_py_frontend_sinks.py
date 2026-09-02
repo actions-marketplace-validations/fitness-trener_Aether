@@ -815,6 +815,269 @@ def test_sql_builder_tables_are_auditable():
     print("sqla: builder tables exposed via mapping_table()")
 
 
+# --- BUG-012: the translator is total over positions and binding forms --
+
+_SQLI = 'cur.execute("SELECT * FROM u WHERE id = " + uid)'
+
+
+def test_await_wrapped_sink_is_seen():
+    src = ("import pickle\n"
+           "async def a(conn, uid):\n    await conn.execute('SELECT ' + uid)\n"
+           "async def b(conn, uid):\n    rows = await conn.execute('SELECT ' + uid)\n    return rows\n"
+           "async def c(raw):\n    return await pickle.loads(raw)\n")
+    sinks = [c for c in _codes(src) if c in SINK_CODES]
+    assert sinks == ["E0713", "E0713", "E0720"], _codes(src)
+    print("BUG-012: a sink behind `await` is the call")
+
+
+def test_sink_in_every_statement_position_is_seen():
+    shapes = {
+        "for": "def f(cur, uid):\n    for row in %s:\n        pass\n",
+        "if": "def f(cur, uid):\n    if %s:\n        return 1\n",
+        "while": "def f(cur, uid):\n    while %s:\n        break\n",
+        "yield": "def f(cur, uid):\n    yield %s\n",
+        "assert": "def f(cur, uid):\n    assert %s\n",
+        "raise": "def f(cur, uid):\n    raise ValueError(%s)\n",
+        "comprehension": "def f(cur, uid):\n    return [r for r in %s]\n",
+        "keyword": "def f(cur, uid, g):\n    return g(rows=%s)\n",
+        "boolop": "def f(cur, uid):\n    return %s or []\n",
+        "compare": "def f(cur, uid):\n    return %s == 0\n",
+        "subscript": "def f(cur, uid):\n    return %s[0]\n",
+        "ifexp": "def f(cur, uid, c):\n    return %s if c else None\n",
+        "lambda": "def f(cur, uid):\n    return lambda: %s\n",
+        "list": "def f(cur, uid):\n    return [%s]\n",
+        "dict": "def f(cur, uid):\n    return {'k': %s}\n",
+        "tuple-return": "def f(cur, uid):\n    return %s, 1\n",
+        "attr-target": "def f(self, cur, uid):\n    self.rows = %s\n",
+        "subscript-target": "def f(out, cur, uid):\n    out['k'] = %s\n",
+        "tuple-target": "def f(cur, uid):\n    a, b = %s, 1\n",
+        "chained-assign": "def f(cur, uid):\n    a = b = %s\n",
+        "augassign-value": "def f(cur, uid, n):\n    n += %s\n",
+        "expr-subscript": "def f(cur, uid):\n    %s[0]\n",
+        "default-arg": "def f(cur, uid, d=%s):\n    pass\n",
+        "decorator": "def f(cur, uid):\n    @deco(%s)\n    def g():\n        pass\n",
+        "match": "def f(cur, uid):\n    match %s:\n        case _:\n            pass\n",
+        "walrus": "def f(cur, uid):\n    if (r := %s):\n        return r\n",
+    }
+    silent = [k for k, s in shapes.items() if "E0713" not in _codes(s % _SQLI)]
+    assert not silent, f"sink still invisible in: {silent}"
+    doubled = [k for k, s in shapes.items() if _codes(s % _SQLI).count("E0713") != 1]
+    assert not doubled, f"sink reported more than once in: {doubled}"
+    print(f"BUG-012: sink seen exactly once in {len(shapes)} statement positions")
+
+
+def test_def_at_any_statement_depth_is_analysed():
+    src = ("import pickle\n"
+           "try:\n    def load(raw):\n        return pickle.loads(raw)\nexcept Exception:\n    pass\n"
+           "if True:\n    class K:\n        def m(self, raw):\n            return pickle.loads(raw)\n"
+           "class Outer:\n    class Inner:\n        def m(self, raw):\n            return pickle.loads(raw)\n"
+           "with ctx() as fh:\n    def w(raw):\n        return pickle.loads(raw)\n")
+    ast_dict, _u, meta = py_to_ir(src)
+    names = [d["name"] for d in ast_dict["decls"] if d["kind"] == "FunctionDecl"]
+    for want in ("load", "K.m", "Outer.Inner.m", "w"):
+        assert want in names, (want, names)
+    assert meta["n_functions"] == 4, meta
+    assert _codes(src).count("E0720") == 4, _codes(src)
+    print("BUG-012: defs under try/if/with and in nested classes are analysed")
+
+
+def test_module_and_class_body_code_is_analysed():
+    src = ("import os, sys, pickle\n"
+           "os.system(sys.argv[1])\n"
+           "if __name__ == '__main__':\n    os.system(sys.argv[2])\n"
+           "class K:\n    DEFAULT = pickle.loads(os.environ['BLOB'])\n"
+           "    def m(self):\n        return 1\n")
+    ast_dict, _u, meta = py_to_ir(src)
+    names = [d["name"] for d in ast_dict["decls"] if d["kind"] == "FunctionDecl"]
+    assert "<module>" in names and "K.<class>" in names, names
+    assert meta["n_functions"] == 1 and meta["n_scopes"] == 2, meta
+    codes = _codes(src)
+    assert codes.count("E0714") == 2 and codes.count("E0720") == 1, codes
+    _a, _u2, m2 = py_to_ir('"""doc"""\nX = 1\nY = 2\n')
+    assert m2["n_scopes"] == 0, m2
+    _a, _u3, m3 = py_to_ir("KEY = 'AKIAIOSFODNN7EXAMPLE'\n")
+    assert m3["n_scopes"] == 1, m3
+    print("BUG-012: module-level and class-body code is analysed as its own scope")
+
+
+def test_rebinding_forms_disqualify_a_literal_only_name():
+    forms = {
+        "augassign": "def f(cur, uid):\n    sql = 'SELECT '\n    sql += uid\n    cur.execute(sql)\n",
+        "for-target": "def f(cur, qs):\n    sql = 'SELECT 1'\n    for sql in qs:\n        pass\n    cur.execute(sql)\n",
+        "tuple-unpack": "def f(cur, pair):\n    sql = 'SELECT 1'\n    sql, other = pair\n    cur.execute(sql)\n",
+        "walrus": "def f(cur, g):\n    sql = 'SELECT 1'\n    if (sql := g()):\n        pass\n    cur.execute(sql)\n",
+        "except-as": "def f(cur):\n    sql = 'SELECT 1'\n    try:\n        pass\n    except Exception as sql:\n        pass\n    cur.execute(sql)\n",
+        "param": "def f(cur, sql):\n    if sql is None:\n        sql = 'SELECT 1'\n    cur.execute(sql)\n",
+        "nested-param": "def f(cur):\n    sql = 'SELECT 1'\n    def g(sql):\n        cur.execute(sql)\n    return g\n",
+        "global": "def f(cur):\n    global sql\n    sql = 'SELECT 1'\n    cur.execute(sql)\n",
+        "annassign-augassign": "def f(cur, uid):\n    sql: str = 'SELECT '\n    sql += uid\n    cur.execute(sql)\n",
+    }
+    silent = [k for k, s in forms.items() if "E0713" not in _codes(s)]
+    assert not silent, f"literal-only proof survived a rebinding in: {silent}"
+    assert "E0713" not in _codes("def f(cur):\n    sql = 'SELECT 1'\n    cur.execute(sql)\n")
+    print(f"BUG-012: {len(forms)} rebinding forms disqualify a literal-only name")
+
+
+def test_parameter_shadow_does_not_clear_a_guard():
+    src = ("import yaml\n"
+           "def load(raw, loader=None):\n    if loader is None:\n        loader = yaml.SafeLoader\n"
+           "    return yaml.load(raw, Loader=loader)\n")
+    assert "E0720" in _codes(src), _codes(src)
+    safe = ("import yaml\ndef load(raw):\n    loader = yaml.SafeLoader\n"
+            "    return yaml.load(raw, Loader=loader)\n")
+    assert "E0720" not in _codes(safe), _codes(safe)
+    print("BUG-012: a caller-supplied loader with a literal fallback stays a sink")
+
+
+def test_xml_parser_rebound_to_unknown_is_a_sink():
+    src = ("from lxml import etree\n"
+           "def parse(raw, make):\n    parser = etree.XMLParser(resolve_entities=False)\n"
+           "    parser = make()\n    return etree.fromstring(raw, parser)\n")
+    assert "E0727" in _codes(src), _codes(src)
+    print("BUG-012: a parser rebound to an unknown value no longer disarms XXE")
+
+
+def test_splat_and_positional_guard_arguments_are_sinks():
+    assert "E0714" in _codes("import subprocess\ndef f(cmd, **o):\n    subprocess.run(cmd, **o)\n")
+    assert "E0714" in _codes("import subprocess\ndef f(cmd, *a):\n    subprocess.run(cmd, *a)\n")
+    assert "E0714" in _codes("import subprocess\ndef f(cmd):\n"
+                             "    subprocess.Popen(cmd, 0, None, None, None, None, None, False, True)\n")
+    assert "E0714" not in _codes("import subprocess\ndef f(cmd):\n    subprocess.run(cmd, shell=False)\n")
+    assert "E0720" in _codes("import yaml\ndef f(raw):\n    yaml.load(raw, yaml.Loader)\n")
+    assert "E0720" not in _codes("import yaml\ndef f(raw):\n    yaml.load(raw, yaml.SafeLoader)\n")
+    print("BUG-012: a splat is unresolvable (sink); positional shell=/Loader are read")
+
+
+def test_getattr_and_bound_method_alias_reach_the_sink():
+    assert "E0713" in _codes("def f(cur, uid):\n    getattr(cur, 'execute')('SELECT ' + uid)\n")
+    assert "E0713" in _codes("def f(cur, uid):\n    ex = cur.execute\n    ex('SELECT ' + uid)\n")
+    assert "E0714" in _codes("import subprocess\ndef f(cmd):\n    run = subprocess.run\n    run(cmd, shell=True)\n")
+    assert "E0713" not in _codes("def f(cur, uid, m):\n    getattr(cur, m)('SELECT ' + uid)\n")
+    print("BUG-012: getattr with a literal attribute and a bound-method alias spell the sink")
+
+
+def test_exec_driver_sql_and_session_exec_are_sinks():
+    assert "E0713" in _codes("def f(conn, t):\n    conn.exec_driver_sql(f'ALTER TABLE {t} ADD x INT')\n")
+    assert "E0713" not in _codes("def f(conn):\n    conn.exec_driver_sql('SELECT 1')\n")
+    src = ("from sqlalchemy import text, select\n"
+           "def f(s, x, t):\n    s.exec(text('SELECT ' + x))\n    s.exec(select(t).where(t.c.id == x))\n")
+    assert _codes(src).count("E0713") == 1, _codes(src)
+    print("BUG-012: exec_driver_sql and Session.exec are query sinks")
+
+
+def test_raw_sql_methods_disqualify_the_expression():
+    hdr = "from sqlalchemy import select\n"
+    bad = {
+        "prefix_with": "def f(conn, t, h):\n    conn.execute(select(t).prefix_with('/*+ ' + h))\n",
+        "suffix_with": "def f(conn, t, h):\n    conn.execute(select(t).suffix_with('FOR UPDATE ' + h))\n",
+        "with_hint": "def f(conn, t, h):\n    conn.execute(select(t).with_hint(t, 'USE INDEX ' + h))\n",
+        "with_statement_hint": "def f(conn, t, h):\n    conn.execute(select(t).with_statement_hint('OPTION ' + h))\n",
+        "op": "def f(conn, t, o):\n    conn.execute(select(t).where(t.c.x.op(o)(1)))\n",
+        "incremental": "def f(conn, t, h):\n    stmt = select(t)\n    stmt = stmt.suffix_with(h)\n    conn.execute(stmt)\n",
+    }
+    silent = [k for k, s in bad.items() if "E0713" not in _codes(hdr + s)]
+    assert not silent, silent
+    assert "E0713" not in _codes(hdr + "def f(conn, t):\n    conn.execute("
+                                 "select(t).prefix_with('/*+ NO_INDEX */').with_hint(t, 'USE INDEX i'))\n")
+    from aether.py_frontend import mapping_table
+    assert "prefix_with" in mapping_table()["sql_expression_builders"]["raw_string_methods"]
+    print("BUG-012: verbatim-splice methods get text()'s literal discipline")
+
+
+def test_module_level_literal_constant_is_a_literal():
+    assert "E0713" not in _codes("_Q = 'SELECT 1'\ndef f(conn):\n    conn.execute(_Q)\n")
+    assert "E0713" not in _codes("from sqlalchemy import text\n_Q = 'SELECT 1'\n"
+                                 "def f(conn):\n    conn.execute(text(_Q))\n")
+    for name, src in {
+        "rebound-via-global": "_Q = 'SELECT 1'\ndef g(x):\n    global _Q\n    _Q = x\n"
+                              "def f(conn):\n    conn.execute(_Q)\n",
+        "shadowed-by-param": "_Q = 'SELECT 1'\ndef f(conn, _Q):\n    conn.execute(_Q)\n",
+        "bound-twice": "_Q = 'SELECT 1'\n_Q = 'SELECT 2'\ndef f(conn):\n    conn.execute(_Q)\n",
+        "not-a-literal": "_Q = build()\ndef f(conn):\n    conn.execute(_Q)\n",
+    }.items():
+        assert "E0713" in _codes(src), (name, _codes(src))
+    key = ("KEY = 'AKIAIOSFODNN7EXAMPLE'\ndef a():\n    return use(KEY)\n"
+           "def b():\n    return use(KEY)\n")
+    ast_dict, _u, _m = py_to_ir(key)
+    diags = [d for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES) if d.code == "E0723"]
+    assert len(diags) == 1 and diags[0].position.line == 1, \
+        [(d.code, d.position.line) for d in diags]
+    print("BUG-012: a module constant bound once is its literal; reported once")
+
+
+def test_none_sentinel_before_expression_is_clean():
+    src = ("from sqlalchemy import select\n"
+           "def f(conn, t, flag):\n    stmt = None\n    if flag:\n"
+           "        stmt = select(t).where(t.c.x == 1)\n    return conn.execute(stmt)\n")
+    assert "E0713" not in _codes(src), _codes(src)
+    still = ("def f(conn, x, flag):\n    stmt = None\n    if flag:\n"
+             "        stmt = 'SELECT ' + x\n    return conn.execute(stmt)\n")
+    assert "E0713" in _codes(still)
+    print("BUG-012: a None sentinel binds nothing")
+
+
+def test_safe_loader_from_import_is_positively_identified():
+    assert "E0720" not in _codes("import yaml\nfrom yaml import SafeLoader\n"
+                                 "def f(raw):\n    return yaml.load(raw, Loader=SafeLoader)\n")
+    amb = ("import yaml\ntry:\n    from yaml import CSafeLoader as SafeLoader\n"
+           "except ImportError:\n    from yaml import SafeLoader\n"
+           "def f(raw):\n    return yaml.load(raw, Loader=SafeLoader)\n")
+    assert "E0720" in _codes(amb), _codes(amb)
+    shadow = ("import yaml\nfrom yaml import SafeLoader\n"
+              "def f(raw, make):\n    SafeLoader = make()\n"
+              "    return yaml.load(raw, Loader=SafeLoader)\n")
+    assert "E0720" in _codes(shadow), _codes(shadow)
+    print("BUG-012: a from-imported SafeLoader resolves; ambiguous or rebound does not")
+
+
+def test_pep263_cookie_file_is_scanned():
+    import json as _json
+    import subprocess as sp
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "m.py")
+        with open(p, "wb") as f:
+            f.write(b"# -*- coding: latin-1 -*-\n# caf\xe9\n"
+                    b"def f(cur, uid):\n    cur.execute('SELECT ' + uid)\n")
+        r = sp.run([sys.executable, "-B", "-m", "transpiler.aether.cli",
+                    "--json", "check-py", p], cwd=ROOT, capture_output=True, text=True)
+    out = _json.loads(r.stdout)
+    assert r.returncode == 2 and not out["unreadable"], (r.returncode, out["unreadable"])
+    assert [x["code"] for f in out["files"] for x in f["diagnostics"]] == ["E0713"]
+    print("BUG-012: a PEP 263 coding cookie is honoured, not 'unreadable'")
+
+
+def test_deep_expression_loses_one_scope_not_the_file():
+    deep = ("def f(cur, uid):\n    cur.execute('SELECT ' + uid)\n"
+            "def g(a):\n    return " + "+".join(["a"] * 800) + "\n")
+    ast_dict, unp, _m = py_to_ir(deep)
+    assert "E0713" in [d.code for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES)]
+    assert any(u["reason"] == "too_deep" for u in unp.get("g", [])), list(unp)
+    print("BUG-012: a too-deep expression costs one scope, not the file")
+
+
+def test_keyword_only_sink_argument_is_judged():
+    assert "E0720" in _codes("import yaml\ndef f(raw):\n    return yaml.load(stream=raw)\n")
+    assert "E0720" not in _codes("import yaml\ndef f(raw):\n"
+                                 "    return yaml.load(stream=raw, Loader=yaml.SafeLoader)\n")
+    assert "E0713" in _codes("def f(cur, uid):\n    return cur.execute(query='SELECT ' + uid)\n")
+    assert "E0713" not in _codes("def f(cur):\n    return cur.execute(query='SELECT 1')\n")
+    assert "E0714" in _codes("import subprocess\ndef f(cmd):\n"
+                             "    return subprocess.run(args=cmd, shell=True)\n")
+    assert "E0714" not in _codes("import subprocess\ndef f(cmd):\n"
+                                 "    return subprocess.run(args=cmd, shell=False)\n")
+    assert "E0720" in _codes("import pickle\ndef f(blob):\n    return pickle.loads(data=blob)\n")
+    print("BUG-012: a keyword-only sink argument takes the judged slot")
+
+
+def test_let_count_is_unchanged_by_seeded_bindings():
+    d = _fn("def f(a):\n    x = 'lit'\n", "f")
+    assert len(list(walk(d["body"], "Let"))) == 1
+    seeds = [n for n in walk(d["body"], "Assign") if n.get("name") == "a"]
+    assert len(seeds) == 1 and seeds[0]["value"]["kind"] == "PyExpr", seeds
+    print("BUG-012: parameters seed an opaque Assign, not a Let")
+
+
 if __name__ == "__main__":
     test_body_is_no_longer_discarded()
     test_assign_becomes_let()
@@ -878,4 +1141,22 @@ if __name__ == "__main__":
     test_try_guarded_builder_import_clears_the_query()
     test_ambiguous_import_clears_nothing_and_sinks_nothing_new()
     test_sql_builder_tables_are_auditable()
+    test_await_wrapped_sink_is_seen()
+    test_sink_in_every_statement_position_is_seen()
+    test_def_at_any_statement_depth_is_analysed()
+    test_module_and_class_body_code_is_analysed()
+    test_rebinding_forms_disqualify_a_literal_only_name()
+    test_parameter_shadow_does_not_clear_a_guard()
+    test_xml_parser_rebound_to_unknown_is_a_sink()
+    test_splat_and_positional_guard_arguments_are_sinks()
+    test_getattr_and_bound_method_alias_reach_the_sink()
+    test_exec_driver_sql_and_session_exec_are_sinks()
+    test_raw_sql_methods_disqualify_the_expression()
+    test_module_level_literal_constant_is_a_literal()
+    test_none_sentinel_before_expression_is_clean()
+    test_safe_loader_from_import_is_positively_identified()
+    test_pep263_cookie_file_is_scanned()
+    test_deep_expression_loses_one_scope_not_the_file()
+    test_keyword_only_sink_argument_is_judged()
+    test_let_count_is_unchanged_by_seeded_bindings()
     print("PY FRONTEND: ALL TESTS PASS")

@@ -60,6 +60,19 @@ def _read(path: str) -> str:
         return f.read()
 
 
+def _read_py(path: str) -> str:
+    # Python source declares its own encoding (PEP 263): `tokenize.open`
+    # honours a `# -*- coding: latin-1 -*-` cookie exactly as CPython
+    # does, strips a BOM, and is byte-identical to utf-8-sig on a file
+    # that has neither. Read as utf-8 a cookie'd file was a
+    # UnicodeDecodeError, counted "unreadable" and skipped — valid
+    # Python, findings lost. Kept apart from `_read`: `.aeth` has no
+    # cookie grammar, and its behaviour must not move.
+    import tokenize
+    with tokenize.open(path) as f:
+        return f.read()
+
+
 def _has_imports(ast: Dict[str, Any]) -> bool:
     """True if the AST contains any top-level ImportDecl."""
     for d in ast.get("decls", []) or []:
@@ -329,17 +342,26 @@ def cmd_check_py(args) -> int:
     results, unreadable, crashed = [], [], []
     for p in paths:
         try:
-            src = _read(p)
-        except (OSError, UnicodeDecodeError) as e:
+            src = _read_py(p)
+        except (OSError, UnicodeDecodeError, SyntaxError) as e:
+            # `tokenize.open` raises SyntaxError for an unknown cookie.
             unreadable.append((p, type(e).__name__))
             continue
         try:
             ast, unprovable, meta = py_to_ir(src)
             diags = analyze_flat(ast, skip=skip)
-        except (SyntaxError, ValueError, RecursionError) as e:
+        except (SyntaxError, ValueError) as e:
             # py2 sources, templates and test fixtures are normal in a real
             # tree; they are counted, not fatal.
             unreadable.append((p, type(e).__name__))
+            continue
+        except RecursionError as e:
+            # The frontend catches this per scope and reports an
+            # `unprovable` region; one that still escapes is the
+            # analyzer's limit, not the input's — loud, like any crash,
+            # never a silently "unreadable" file with exit 0.
+            crashed.append((p, f"RecursionError: expression too deep for "
+                               f"the analyzer ({e})"))
             continue
         except Exception as e:
             # An analyzer crash is a BUG in Aether, not a property of the

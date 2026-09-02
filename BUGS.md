@@ -504,3 +504,106 @@ ambiguous-alias case, and `yaml.safe_load`, all labelled. Ground truth:
 Residual: `collect()` still discovers FUNCTIONS only as direct children of
 module and class bodies, so a `def` nested under `if TYPE_CHECKING:` or
 `try:` is not analysed at all. Different gap, same shape; not fixed here.
+
+### BUG-012  a sink in any statement position the translator did not model was SILENT, and a rebinding it did not model proved a name literal-only  [OPEN]
+test: tests/test_py_frontend_sinks.py
+
+
+Found 2026-09-02 by a five-lens survey of the Python frontend, and
+confirmed by execution before the fix. `py_to_ir` translated four
+statement kinds — `Assign` to a single name, `Expr` whose value is a
+call, `Return`, `With` — and one expression shape, and DROPPED every
+other node. Nothing was over-flagged; it was never seen:
+
+```python
+async def a(conn, uid):
+    await conn.execute("SELECT * FROM u WHERE id = " + uid)   # silent
+def b(cur, uid):
+    for row in cur.execute("SELECT * FROM u WHERE id = " + uid):   # silent
+        ...
+def c(blob):
+    obj, _ = pickle.loads(blob), None                           # silent
+def d(cur, uid):
+    return cur.execute("SELECT " + uid) or []                   # silent
+try:
+    def load(raw): return pickle.loads(raw)                     # never analysed
+except Exception: ...
+os.system(sys.argv[1])                                          # module level: n_functions 0, ok true
+```
+
+Census over bench/framework_scan (4,946 files): 603 sink calls sat
+behind an `await` and 89 in other unmodeled positions (BoolOp 50,
+Compare 20, tuple/attribute/subscript targets 11, dict/list displays 7,
+for-iterables 17, comprehensions 20); 26 of the 89 would fire under the
+existing rows. Same family as BUG-004 and BUG-011: the unknown case
+defaulted to "not a sink".
+
+**The second half is a false SAFE, not a missed position.** Three
+resolvers (`_local_constants`, `_safe_xml_parser_names`,
+`_sql_expression_names`) and the `Let` nodes the Aether safe-name pass
+reads all saw ONE binding form, a single-Name `Assign`. So:
+
+```python
+sql = "SELECT * FROM u WHERE id = "
+sql += uid                      # AugAssign: invisible
+cur.execute(sql)                # `sql` proved literal-only -> silent
+
+def load(raw, loader=None):
+    if loader is None:
+        loader = yaml.SafeLoader   # the only VISIBLE binding
+    return yaml.load(raw, Loader=loader)   # caller-supplied loader cleared the guard
+```
+
+Parameters, `+=`, for-targets, tuple unpacks, walrus, except-as,
+`global`, comprehension targets and match captures were all invisible
+bindings. `_safe_xml_parser_names` additionally skipped any binding
+that was not a parser constructor, so `parser = make()` after the
+hardened constructor still disarmed E0727. And `_guard_verdict` read a
+`**kwargs` splat as "shell= absent" and cleared `subprocess.run(cmd,
+**opts)`, against its own contract that unresolvable means SINK.
+
+Fix, in `transpiler/aether/py_frontend.py`:
+
+- `_bindings_of(node)` — ONE walk over every binding form, consumed by
+  all three resolvers and by `_FnVisitor.seed_bindings`, which emits an
+  opaque `Assign` for every name bound by a form whose value cannot be
+  seen. A name with such a binding can never prove literal-only.
+- `_FnVisitor.visit_stmt` is total over statement kinds: bindings
+  become `Let`s, and every other value expression a statement evaluates
+  (`for`'s iterable, `if`/`while` tests, `assert`, `raise`, `match`
+  subjects and guards, a nested `def`'s decorators and defaults, a
+  non-Name assignment target's value) is translated in place.
+  `_expr` carries the children of every unmodeled expression under
+  `parts`, so a call inside `x or []`, `a == b`, `f()[0]`, a display, a
+  lambda or a comprehension is found by `walk`; `await` and `yield`
+  are transparent; keyword-argument values ride under `kwargs`.
+- `collect()` finds a `def` at any statement depth outside a function
+  body (under `try:`/`if`/`with`/`for`, in a class nested in a class),
+  and each module and class body with a call becomes a synthetic
+  `<module>` / `Class.<class>` scope run through the same machinery.
+- `_guard_verdict`: a `**` or `*` splat that could carry the deciding
+  argument is SINK; `shell` is also read positionally (`arg_index=8`),
+  `Loader` at `arg_index=1`.
+- `_callee_spelling` / `_method_name`: `getattr(obj, "execute")(...)`
+  with a literal attribute, and a bare name bound once to a bound
+  method (`ex = cur.execute; ex(q)`), spell the method.
+- Two sink rows that were simply missing: `exec_driver_sql` (22 of 31
+  corpus sites non-literal, all silent) and sqlmodel's `Session.exec`.
+  And a hole INSIDE the iteration-47 sanctioned exit: `prefix_with`,
+  `suffix_with`, `with_hint`, `with_statement_hint`, `op` splice a
+  string verbatim into compiled SQL; they now get `text()`'s discipline.
+- A scope whose expression is deeper than the interpreter stack reports
+  an `unprovable` `too_deep` region instead of losing the WHOLE FILE as
+  "unreadable" with exit 0; `check-py` reads source with
+  `tokenize.open`, so a PEP 263 `coding:` cookie no longer makes a valid
+  file "unreadable".
+
+Precision fixes shipped alongside, each by positive identification only:
+`from yaml import SafeLoader` then `Loader=SafeLoader` resolves through
+the import table (ambiguous names still resolve to nothing); a
+module-level str constant bound exactly once in the whole module is
+inlined at its reads (`conn.execute(_CREATE_TABLE)`); a `stmt = None`
+sentinel before `stmt = select(...)` binds nothing.
+
+`bench/py_frontend/corpus/totality_repro.py` carries twelve silent
+shapes and seven documented fixes, all labelled.

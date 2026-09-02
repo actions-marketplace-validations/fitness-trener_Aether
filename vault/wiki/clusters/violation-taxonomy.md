@@ -95,6 +95,15 @@ Ranked roughly by prevalence × fit with Aether's static surface.
 - Every backlog row must be confirmed **empirically** before building:
   write the bad shape, verify current Aether accepts it, then eliminate
   the class and re-run the full gate suite to exit 0.
+- **On Python, the frontend is the one place the error direction
+  inverts** (iter 48, BUGS.md BUG-012). Every row above refuses an unknown
+  SHAPE, but the translator decides which shapes exist: a statement
+  position or binding form it does not model yields no node, and a node
+  that does not exist is never refused. The obligation is totality over
+  syntax — every value expression translated in place, every binding
+  form a binding, every opaque node carrying its children — recorded in
+  [[../questions/q7-frontend-totality-over-syntax|Q7]]. It is a
+  precondition for every Python row in this table, not a row of its own.
 
 ## Links
 - [[effect-system]] — E0801/E0710 live here

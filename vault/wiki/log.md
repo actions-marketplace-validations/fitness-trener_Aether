@@ -1,5 +1,27 @@
 # Operation Log (append-only — newest on top)
 
+## [2026-09-03] Q7 added, Q5 extended | the translator was not total (BUG-012)
+- **Iteration 48 shipped no detector; it closed a false-accept class in the
+  Python frontend.** A five-lens survey (65 probe-confirmed candidates)
+  ranked silent misses first: `py_to_ir` translated four statement kinds
+  and dropped the rest, so a sink behind `await` (603 on the framework
+  corpus), in a `for` iterable, in a tuple-target assignment or inside
+  `x or []` was never seen; and three resolvers saw one binding form, so
+  `sql += uid` left `sql` "literal-only". BUGS.md BUG-012.
+- **New page q7** — totality over syntax as the frontend's soundness
+  obligation: the detectors refuse unknown shapes, the frontend decides
+  which shapes exist, so a position it does not emit is neither cleared
+  nor suspected. Q5's name rule gains that third clause; taxonomy
+  Implications gains the precondition.
+- **Measured:** 411 → 628 on the same 4,946 files, 0 errors; ground truth
+  41 TP / 0 FN / 0 FP (was 29 / 57); benign corpus unchanged. Iteration
+  47's "~100 helper-assembled" estimate corrected to 34 by a source-level
+  census (`bench/framework_scan/e0713_census_2026-09-03.txt`).
+- **Residuals carried (q5):** attribute-receiver Table form, keyword-order
+  slot mapping, `fetch` not a sink by name, E0723 PEM header alone.
+  Surfaced for next iterations (LOOP_LOG 48): E0731 code injection;
+  Aether-side `var`/`Assign` invisibility; wrapper pinning argument.
+
 ## [2026-09-01] Q5 extended | the name rule's cost, measured on agent frameworks
 - **Iteration 47 shipped no detector; it repaired one.** `bench/framework_scan/`
   ran `check-py` over 15 AI-agent frameworks (4,946 files, 0 crashes) and

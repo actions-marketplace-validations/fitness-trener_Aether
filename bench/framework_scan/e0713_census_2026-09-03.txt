@@ -1,0 +1,381 @@
+agno/db/migrations/v1_to_v2.py:515  fn=get_table_content_in_batches  arg=call:text(name:sql_query)  L511 sql_query = fstr | L513 sql_query = fstr
+agno/db/migrations/versions/v2_3_0.py:185  fn=_migrate_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:194  fn=_migrate_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:204  fn=_migrate_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:213  fn=_migrate_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:225  fn=_migrate_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:296  fn=_convert_json_to_jsonb  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:524  fn=_migrate_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:534  fn=_migrate_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:544  fn=_migrate_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:556  fn=_migrate_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:593  fn=_migrate_sqlite  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:603  fn=_migrate_sqlite  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:607  fn=_migrate_sqlite  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:618  fn=_migrate_sqlite  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:625  fn=_migrate_sqlite  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:741  fn=_migrate_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:751  fn=_migrate_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:764  fn=_migrate_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:806  fn=_revert_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:807  fn=_revert_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:808  fn=_revert_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:893  fn=_revert_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:907  fn=_revert_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:912  fn=_revert_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:960  fn=_revert_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:961  fn=_revert_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_3_0.py:964  fn=_revert_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:191  fn=_validate_session_data  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:275  fn=_migrate_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:282  fn=_migrate_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:399  fn=_migrate_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:414  fn=_migrate_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:531  fn=_migrate_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:546  fn=_migrate_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:587  fn=_revert_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:607  fn=_revert_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:718  fn=_revert_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:737  fn=_revert_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:848  fn=_revert_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_0.py:867  fn=_revert_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:237  fn=_migrate_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:244  fn=_migrate_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:333  fn=_migrate_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:341  fn=_migrate_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:432  fn=_migrate_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:439  fn=_migrate_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:470  fn=_migrate_sqlite  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:475  fn=_migrate_sqlite  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:481  fn=_migrate_sqlite  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:486  fn=_migrate_sqlite  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:570  fn=_revert_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:577  fn=_revert_postgres  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:657  fn=_revert_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:664  fn=_revert_mysql  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:745  fn=_revert_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v2_5_6.py:752  fn=_revert_singlestore  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:623  fn=_index_exists  arg=call:_index_columns_query(name:db_type)  PARAM
+agno/db/migrations/versions/v3_0_0.py:682  fn=_metrics_legacy_unique_names  arg=call:_unique_indexes_query(name:db_type)  PARAM
+agno/db/migrations/versions/v3_0_0.py:714  fn=_sqlite_index_columns  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:784  fn=_migrate_postgres_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:890  fn=_migrate_sqlite_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:897  fn=_migrate_sqlite_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1004  fn=_revert_postgres_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1007  fn=_revert_postgres_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1014  fn=_revert_postgres_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1021  fn=_revert_postgres_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1094  fn=_revert_sqlite_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1098  fn=_revert_sqlite_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1101  fn=_revert_sqlite_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1103  fn=_revert_sqlite_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1111  fn=_revert_sqlite_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1118  fn=_revert_sqlite_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1226  fn=_migrate_mysql_like_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1358  fn=_revert_mysql_like_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1361  fn=_revert_mysql_like_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1365  fn=_revert_mysql_like_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1373  fn=_revert_mysql_like_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:1380  fn=_revert_mysql_like_sessions  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:2714  fn=_drop_incomplete_metrics_rows  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:2715  fn=_drop_incomplete_metrics_rows  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:2718  fn=_drop_incomplete_metrics_rows  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:2795  fn=_swap_postgres_metrics_unique  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:2810  fn=_swap_postgres_metrics_unique  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:2811  fn=_swap_postgres_metrics_unique  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:2872  fn=_swap_mysql_like_metrics_unique  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:2889  fn=_swap_mysql_like_metrics_unique  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3002  fn=_postgres_schedule_unique_backstop  arg=call:text(name:ddl)  UNBOUND(loop/with/global?)
+agno/db/migrations/versions/v3_0_0.py:3037  fn=_sqlite_schedule_unique_backstop  arg=call:text(name:ddl)  UNBOUND(loop/with/global?)
+agno/db/migrations/versions/v3_0_0.py:3093  fn=_migrate_postgres_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3112  fn=_migrate_postgres_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3117  fn=_migrate_postgres_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3128  fn=_migrate_postgres_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3140  fn=_migrate_postgres_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3143  fn=_migrate_postgres_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3364  fn=_migrate_mysql_like_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3375  fn=_migrate_mysql_like_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3397  fn=_migrate_mysql_like_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3524  fn=_migrate_sqlite_metrics_table  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3674  fn=_migrate_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3677  fn=_migrate_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3680  fn=_migrate_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3684  fn=_migrate_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3694  fn=_migrate_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3703  fn=_migrate_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3705  fn=_migrate_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3710  fn=_migrate_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3716  fn=_migrate_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3810  fn=_metrics_revert_is_blocked  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3850  fn=_drop_postgres_metrics_unique  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3851  fn=_drop_postgres_metrics_unique  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3888  fn=_restore_postgres_metrics_unique  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3927  fn=_drop_mysql_like_metrics_unique  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:3961  fn=_restore_mysql_like_metrics_unique  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4007  fn=_drop_postgres_schedule_provenance  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4013  fn=_drop_postgres_schedule_provenance  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4075  fn=_revert_postgres_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4080  fn=_revert_postgres_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4185  fn=_revert_mysql_like_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4192  fn=_revert_mysql_like_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4197  fn=_revert_mysql_like_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4312  fn=_revert_sqlite_metrics_table  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4414  fn=_drop_sqlite_schedule_provenance  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4420  fn=_drop_sqlite_schedule_provenance  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4423  fn=_drop_sqlite_schedule_provenance  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4428  fn=_drop_sqlite_schedule_provenance  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4483  fn=_revert_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4489  fn=_revert_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4496  fn=_revert_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4500  fn=_revert_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4504  fn=_revert_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4508  fn=_revert_sqlite_user_id  arg=call:text(fstr)  
+agno/db/migrations/versions/v3_0_0.py:4512  fn=_revert_sqlite_user_id  arg=call:text(fstr)  
+agno/db/mysql/mysql.py:529  fn=cleanup_legacy_runs_column  arg=call:text(fstr)  
+agno/db/mysql/mysql.py:774  fn=get_runs  arg=name:stmt  L746 stmt = call:select(name:table) | L748 stmt = call:stmt.where(Compare) | L750 stmt = call:stmt.where(Compare) | L752 stmt = call:stmt.where(Compare) | L754 stmt = call:stmt.where(Compare) | L756 stmt = call:stmt.where(Compare) | L759 stmt = call:stmt.where(Compare) | L765 stmt = call:apply_sorting(name:stmt) | L767 stmt = call:stmt.order_by(call:table.c.run_index.asc()) | L770 stmt = call:stmt.limit(name:limit) | L772 stmt = call:stmt.offset(binop)
+agno/db/mysql/mysql.py:1116  fn=get_sessions  arg=name:stmt  L1071 stmt = call:select(name:table) | L1108 stmt = call:apply_sorting(name:stmt) | L1075 stmt = call:stmt.where(Compare) | L1090 stmt = call:stmt.where(Compare) | L1092 stmt = call:stmt.where(Compare) | L1095 stmt = call:stmt.where(call:func.coalesce(call:func.json_unquote(call:func.json_extract(attr:table.c.session_data))).chain) | L1102 stmt = call:stmt.where(Compare) | L1112 stmt = call:stmt.limit(name:limit) | L1078 stmt = call:stmt.where(Compare) | L1114 stmt = call:stmt.offset(binop) | L1080 stmt = call:stmt.where(Compare) | L1082 stmt = call:stmt.where(Compare) | L1084 stmt = call:stmt.where(binop)
+agno/db/mysql/mysql.py:1743  fn=get_user_memories  arg=name:stmt  L1713 stmt = call:select(name:table) | L1735 stmt = call:apply_sorting(name:stmt) | L1716 stmt = call:stmt.where(Compare) | L1718 stmt = call:stmt.where(Compare) | L1720 stmt = call:stmt.where(Compare) | L1726 stmt = call:stmt.where(call:and_(starred(name:topic_conditions))) | L1728 stmt = call:stmt.where(call:cast(attr:table.c.memory).chain) | L1739 stmt = call:stmt.limit(name:limit) | L1741 stmt = call:stmt.offset(binop)
+agno/db/mysql/mysql.py:2660  fn=get_eval_runs  arg=name:stmt  L2621 stmt = call:select(name:table) | L2625 stmt = call:stmt.where(Compare) | L2627 stmt = call:stmt.where(Compare) | L2629 stmt = call:stmt.where(Compare) | L2631 stmt = call:stmt.where(Compare) | L2633 stmt = call:stmt.where(Compare) | L2635 stmt = call:stmt.where(call:table.c.eval_type.in_(name:eval_type)) | L2650 stmt = call:stmt.order_by(call:table.c.created_at.desc()) | L2652 stmt = call:apply_sorting(name:stmt) | L2656 stmt = call:stmt.limit(name:limit) | L2638 stmt = call:stmt.where(call:table.c.agent_id.is_not(const)) | L2658 stmt = call:stmt.offset(binop) | L2640 stmt = call:stmt.where(call:table.c.team_id.is_not(const)) | L2642 stmt = call:stmt.where(call:table.c.workflow_id.is_not(const))
+agno/db/mysql/mysql.py:2976  fn=get_trace  arg=name:stmt  L2964 stmt = call:self._get_traces_base_query(name:table) | L2975 stmt = call:stmt.order_by(call:table.c.start_time.desc()).chain | L2967 stmt = call:stmt.where(Compare) | L2969 stmt = call:stmt.where(Compare)
+agno/db/mysql/mysql.py:3067  fn=get_traces  arg=name:paginated_stmt  L3065 paginated_stmt = call:base_stmt.order_by(call:table.c.start_time.desc()).chain
+agno/db/mysql/utils.py:70  fn=create_schema  arg=call:text(fstr)  
+agno/db/postgres/postgres.py:883  fn=cleanup_legacy_runs_column  arg=call:text(fstr)  
+agno/db/postgres/postgres.py:1149  fn=get_runs  arg=name:stmt  L1121 stmt = call:select(name:table) | L1123 stmt = call:stmt.where(Compare) | L1125 stmt = call:stmt.where(Compare) | L1127 stmt = call:stmt.where(Compare) | L1129 stmt = call:stmt.where(Compare) | L1131 stmt = call:stmt.where(Compare) | L1134 stmt = call:stmt.where(Compare) | L1140 stmt = call:apply_sorting(name:stmt) | L1142 stmt = call:stmt.order_by(call:table.c.run_index.asc()) | L1145 stmt = call:stmt.limit(name:limit) | L1147 stmt = call:stmt.offset(binop)
+agno/db/postgres/postgres.py:1197  fn=_scrub_run_ids_from_legacy_blob  arg=name:stmt  L1179 stmt = call:text(fstr)
+agno/db/postgres/postgres.py:1394  fn=_cascade_tool_results  arg=call:text(fstr)  
+agno/db/postgres/postgres.py:1666  fn=get_sessions  arg=name:stmt  L1624 stmt = call:select(name:table) | L1658 stmt = call:apply_sorting(name:stmt) | L1628 stmt = call:stmt.where(Compare) | L1643 stmt = call:stmt.where(Compare) | L1645 stmt = call:stmt.where(Compare) | L1647 stmt = call:stmt.where(call:func.coalesce(attr:table.c.session_data['session_name'].ast).chain) | L1652 stmt = call:stmt.where(Compare) | L1662 stmt = call:stmt.limit(name:limit) | L1631 stmt = call:stmt.where(Compare) | L1664 stmt = call:stmt.offset(binop) | L1633 stmt = call:stmt.where(Compare) | L1635 stmt = call:stmt.where(Compare) | L1637 stmt = call:stmt.where(binop)
+agno/db/postgres/postgres.py:2344  fn=get_user_memories  arg=name:stmt  L2317 stmt = call:select(name:table) | L2336 stmt = call:apply_sorting(name:stmt) | L2320 stmt = call:stmt.where(Compare) | L2322 stmt = call:stmt.where(Compare) | L2324 stmt = call:stmt.where(Compare) | L2329 stmt = call:stmt.where(call:func.cast(attr:table.c.memory).chain) | L2340 stmt = call:stmt.limit(name:limit) | L2327 stmt = call:stmt.where(call:func.cast(attr:table.c.topics).chain) | L2342 stmt = call:stmt.offset(binop)
+agno/db/postgres/postgres.py:2969  fn=get_knowledge_contents  arg=name:stmt  L2946 stmt = call:select(name:table) | L2957 stmt = call:apply_sorting(name:stmt) | L2950 stmt = call:stmt.where(Compare) | L2954 stmt = call:stmt.where(call:or_(Compare)) | L2965 stmt = call:stmt.limit(name:limit) | L2967 stmt = call:stmt.offset(binop)
+agno/db/postgres/postgres.py:3295  fn=get_eval_runs  arg=name:stmt  L3256 stmt = call:select(name:table) | L3260 stmt = call:stmt.where(Compare) | L3262 stmt = call:stmt.where(Compare) | L3264 stmt = call:stmt.where(Compare) | L3266 stmt = call:stmt.where(Compare) | L3268 stmt = call:stmt.where(Compare) | L3270 stmt = call:stmt.where(call:table.c.eval_type.in_(name:eval_type)) | L3285 stmt = call:stmt.order_by(call:table.c.created_at.desc()) | L3287 stmt = call:apply_sorting(name:stmt) | L3291 stmt = call:stmt.limit(name:limit) | L3273 stmt = call:stmt.where(call:table.c.agent_id.is_not(const)) | L3293 stmt = call:stmt.offset(binop) | L3275 stmt = call:stmt.where(call:table.c.team_id.is_not(const)) | L3277 stmt = call:stmt.where(call:table.c.workflow_id.is_not(const))
+agno/db/postgres/postgres.py:3624  fn=get_trace  arg=name:stmt  L3612 stmt = call:self._get_traces_base_query(name:table) | L3623 stmt = call:stmt.order_by(call:table.c.start_time.desc()).chain | L3615 stmt = call:stmt.where(Compare) | L3617 stmt = call:stmt.where(Compare)
+agno/db/postgres/postgres.py:3727  fn=get_traces  arg=name:paginated_stmt  L3725 paginated_stmt = call:base_stmt.order_by(call:table.c.start_time.desc()).chain
+agno/db/postgres/postgres.py:5703  fn=delete_config  arg=name:pinned_stmt  L5676 pinned_stmt = const | L5697 pinned_stmt = call:select(attr:links_table.c.parent_component_id).chain
+agno/db/postgres/postgres.py:5759  fn=delete_config  arg=name:pinned_stmt  L5676 pinned_stmt = const | L5697 pinned_stmt = call:select(attr:links_table.c.parent_component_id).chain
+agno/db/postgres/postgres.py:6775  fn=list_learnings  arg=name:stmt  L6749 stmt = call:select(name:table) | L6773 stmt = call:apply_sorting(name:stmt) | L6774 stmt = call:stmt.limit(name:limit).chain | L6751 stmt = call:stmt.where(Compare) | L6758 stmt = call:stmt.where(Compare) | L6760 stmt = call:stmt.where(Compare) | L6762 stmt = call:stmt.where(Compare) | L6764 stmt = call:stmt.where(Compare) | L6766 stmt = call:stmt.where(Compare) | L6768 stmt = call:stmt.where(Compare) | L6754 stmt = call:stmt.where(binop) | L6756 stmt = call:stmt.where(Compare)
+agno/db/postgres/postgres.py:7812  fn=list_jobs  arg=name:stmt  L7800 stmt = call:select(name:table) | L7805 stmt = call:apply_sorting(name:stmt) | L7808 stmt = call:stmt.order_by(attr:table.c.id) | L7809 stmt = call:stmt.limit(name:limit).chain | L7803 stmt = call:stmt.where(call:table.c.status.in_(name:statuses))
+agno/db/postgres/utils.py:72  fn=create_schema  arg=call:text(fstr)  
+agno/db/singlestore/singlestore.py:362  fn=_create_table  arg=call:text(name:table_sql)  L356 table_sql = fstr
+agno/db/singlestore/singlestore.py:608  fn=cleanup_legacy_runs_column  arg=call:text(fstr)  
+agno/db/singlestore/singlestore.py:831  fn=get_runs  arg=name:stmt  L803 stmt = call:select(name:table) | L805 stmt = call:stmt.where(Compare) | L807 stmt = call:stmt.where(Compare) | L809 stmt = call:stmt.where(Compare) | L811 stmt = call:stmt.where(Compare) | L813 stmt = call:stmt.where(Compare) | L816 stmt = call:stmt.where(Compare) | L822 stmt = call:apply_sorting(name:stmt) | L824 stmt = call:stmt.order_by(call:table.c.run_index.asc()) | L827 stmt = call:stmt.limit(name:limit) | L829 stmt = call:stmt.offset(binop)
+agno/db/singlestore/singlestore.py:1172  fn=get_sessions  arg=name:stmt  L1127 stmt = call:select(name:table) | L1164 stmt = call:apply_sorting(name:stmt) | L1131 stmt = call:stmt.where(Compare) | L1146 stmt = call:stmt.where(Compare) | L1148 stmt = call:stmt.where(Compare) | L1151 stmt = call:stmt.where(call:func.coalesce(call:func.JSON_EXTRACT_STRING(attr:table.c.session_data)).chain) | L1158 stmt = call:stmt.where(Compare) | L1168 stmt = call:stmt.limit(name:limit) | L1134 stmt = call:stmt.where(Compare) | L1170 stmt = call:stmt.offset(binop) | L1136 stmt = call:stmt.where(Compare) | L1138 stmt = call:stmt.where(Compare) | L1140 stmt = call:stmt.where(binop)
+agno/db/singlestore/singlestore.py:1780  fn=get_user_memories  arg=name:stmt  L1752 stmt = call:select(name:table) | L1772 stmt = call:apply_sorting(name:stmt) | L1755 stmt = call:stmt.where(Compare) | L1757 stmt = call:stmt.where(Compare) | L1759 stmt = call:stmt.where(Compare) | L1765 stmt = call:stmt.where(call:table.c.memory.like(fstr)) | L1776 stmt = call:stmt.limit(name:limit) | L1763 stmt = call:stmt.where(call:and_(starred(name:topic_conditions))) | L1778 stmt = call:stmt.offset(binop)
+agno/db/singlestore/singlestore.py:2656  fn=get_eval_runs  arg=name:stmt  L2617 stmt = call:select(name:table) | L2621 stmt = call:stmt.where(Compare) | L2623 stmt = call:stmt.where(Compare) | L2625 stmt = call:stmt.where(Compare) | L2627 stmt = call:stmt.where(Compare) | L2629 stmt = call:stmt.where(Compare) | L2631 stmt = call:stmt.where(call:table.c.eval_type.in_(name:eval_type)) | L2646 stmt = call:stmt.order_by(call:table.c.created_at.desc()) | L2648 stmt = call:apply_sorting(name:stmt) | L2652 stmt = call:stmt.limit(name:limit) | L2634 stmt = call:stmt.where(call:table.c.agent_id.is_not(const)) | L2654 stmt = call:stmt.offset(binop) | L2636 stmt = call:stmt.where(call:table.c.team_id.is_not(const)) | L2638 stmt = call:stmt.where(call:table.c.workflow_id.is_not(const))
+agno/db/singlestore/singlestore.py:2916  fn=get_trace  arg=name:stmt  L2904 stmt = call:self._get_traces_base_query(name:table) | L2915 stmt = call:stmt.order_by(call:table.c.start_time.desc()).chain | L2907 stmt = call:stmt.where(Compare) | L2909 stmt = call:stmt.where(Compare)
+agno/db/singlestore/singlestore.py:3007  fn=get_traces  arg=name:paginated_stmt  L3005 paginated_stmt = call:base_stmt.order_by(call:table.c.start_time.desc()).chain
+agno/db/singlestore/utils.py:73  fn=create_schema  arg=call:text(fstr)  
+agno/db/singlestore/utils.py:235  fn=bulk_upsert_metrics  arg=call:_rewritten_metrics_delete(name:table)  PARAM
+agno/db/sqlite/sqlite.py:868  fn=cleanup_legacy_runs_column  arg=call:text(fstr)  
+agno/db/sqlite/sqlite.py:888  fn=cleanup_legacy_runs_column  arg=call:text(fstr)  
+agno/db/sqlite/sqlite.py:892  fn=cleanup_legacy_runs_column  arg=call:text(fstr)  
+agno/db/sqlite/sqlite.py:1163  fn=get_runs  arg=name:stmt  L1135 stmt = call:select(name:table) | L1137 stmt = call:stmt.where(Compare) | L1139 stmt = call:stmt.where(Compare) | L1141 stmt = call:stmt.where(Compare) | L1143 stmt = call:stmt.where(Compare) | L1145 stmt = call:stmt.where(Compare) | L1148 stmt = call:stmt.where(Compare) | L1154 stmt = call:apply_sorting(name:stmt) | L1156 stmt = call:stmt.order_by(call:table.c.run_index.asc()) | L1159 stmt = call:stmt.limit(name:limit) | L1161 stmt = call:stmt.offset(binop)
+agno/db/sqlite/sqlite.py:1412  fn=_cascade_tool_results  arg=call:text(fstr)  
+agno/db/sqlite/sqlite.py:1687  fn=get_sessions  arg=name:stmt  L1647 stmt = call:select(name:table) | L1679 stmt = call:apply_sorting(name:stmt) | L1651 stmt = call:stmt.where(Compare) | L1666 stmt = call:stmt.where(Compare) | L1668 stmt = call:stmt.where(Compare) | L1670 stmt = call:stmt.where(call:table.c.session_data.like(fstr)) | L1672 stmt = call:stmt.where(Compare) | L1683 stmt = call:stmt.limit(name:limit) | L1654 stmt = call:stmt.where(Compare) | L1685 stmt = call:stmt.offset(binop) | L1656 stmt = call:stmt.where(Compare) | L1658 stmt = call:stmt.where(Compare) | L1660 stmt = call:stmt.where(binop)
+agno/db/sqlite/sqlite.py:2306  fn=get_user_memories  arg=name:stmt  L2279 stmt = call:select(name:table) | L2299 stmt = call:apply_sorting(name:stmt) | L2283 stmt = call:stmt.where(Compare) | L2285 stmt = call:stmt.where(Compare) | L2287 stmt = call:stmt.where(Compare) | L2292 stmt = call:stmt.where(call:table.c.memory.ilike(fstr)) | L2302 stmt = call:stmt.limit(name:limit) | L2290 stmt = call:stmt.where(call:func.cast(attr:table.c.topics).chain) | L2304 stmt = call:stmt.offset(binop)
+agno/db/sqlite/sqlite.py:3236  fn=get_eval_runs  arg=name:stmt  L3198 stmt = call:select(name:table) | L3202 stmt = call:stmt.where(Compare) | L3204 stmt = call:stmt.where(Compare) | L3206 stmt = call:stmt.where(Compare) | L3208 stmt = call:stmt.where(Compare) | L3210 stmt = call:stmt.where(Compare) | L3212 stmt = call:stmt.where(call:table.c.eval_type.in_(name:eval_type)) | L3227 stmt = call:stmt.order_by(call:table.c.created_at.desc()) | L3229 stmt = call:apply_sorting(name:stmt) | L3232 stmt = call:stmt.limit(name:limit) | L3215 stmt = call:stmt.where(call:table.c.agent_id.is_not(const)) | L3234 stmt = call:stmt.offset(binop) | L3217 stmt = call:stmt.where(call:table.c.team_id.is_not(const)) | L3219 stmt = call:stmt.where(call:table.c.workflow_id.is_not(const))
+agno/db/sqlite/sqlite.py:3503  fn=get_trace  arg=name:stmt  L3491 stmt = call:self._get_traces_base_query(name:table) | L3502 stmt = call:stmt.order_by(call:table.c.start_time.desc()).chain | L3494 stmt = call:stmt.where(Compare) | L3496 stmt = call:stmt.where(Compare)
+agno/db/sqlite/sqlite.py:3612  fn=get_traces  arg=name:paginated_stmt  L3610 paginated_stmt = call:base_stmt.order_by(call:table.c.start_time.desc()).chain
+agno/db/sqlite/sqlite.py:5575  fn=delete_config  arg=name:pinned_stmt  L5548 pinned_stmt = const | L5569 pinned_stmt = call:select(attr:links_table.c.parent_component_id).chain
+agno/db/sqlite/sqlite.py:5631  fn=delete_config  arg=name:pinned_stmt  L5548 pinned_stmt = const | L5569 pinned_stmt = call:select(attr:links_table.c.parent_component_id).chain
+agno/db/sqlite/sqlite.py:6625  fn=list_learnings  arg=name:stmt  L6599 stmt = call:select(name:table) | L6623 stmt = call:apply_sorting(name:stmt) | L6624 stmt = call:stmt.limit(name:limit).chain | L6601 stmt = call:stmt.where(Compare) | L6608 stmt = call:stmt.where(Compare) | L6610 stmt = call:stmt.where(Compare) | L6612 stmt = call:stmt.where(Compare) | L6614 stmt = call:stmt.where(Compare) | L6616 stmt = call:stmt.where(Compare) | L6618 stmt = call:stmt.where(Compare) | L6604 stmt = call:stmt.where(binop) | L6606 stmt = call:stmt.where(Compare)
+agno/fs/db.py:170  fn=_ensure_table  arg=call:sql_text(fstr)  
+agno/fs/db.py:231  fn=write  arg=name:stmt  L243 stmt = call:insert(name:t).chain | L252 stmt = call:stmt.on_conflict_do_update().chain | L224 stmt = call:update(name:t).chain
+agno/fs/db.py:262  fn=write  arg=name:stmt  L243 stmt = call:insert(name:t).chain | L252 stmt = call:stmt.on_conflict_do_update().chain | L224 stmt = call:update(name:t).chain
+agno/fs/db.py:365  fn=append  arg=name:stmt  L340 stmt = call:insert(name:t).chain | L362 stmt = call:stmt.returning(attr:t.c.version) | L357 stmt = call:stmt.on_conflict_do_update() | L361 stmt = call:stmt.on_conflict_do_update()
+agno/scheduler/poller.py:147  fn=trigger  arg=name:sched  L140 sched = ifexp
+agno/tools/code/kernel.py:614  fn=_execute_locked  arg=name:code  PARAM
+agno/tools/code/kernel.py:837  fn=_run_silent  arg=name:code  PARAM
+agno/tools/csv_toolkit.py:156  fn=query_csv_file  arg=fstr  
+agno/tools/postgres.py:127  fn=_execute_query  arg=name:query  PARAM
+agno/tools/postgres.py:230  fn=summarize_table  arg=name:query  L205 query = const | L209 query = call:sql.SQL(lit).chain | L220 query = call:sql.SQL(lit).chain
+agno/tools/postgres.py:272  fn=export_table_to_path  arg=name:stmt  L267 stmt = call:sql.SQL(lit).chain
+agno/tools/redshift.py:207  fn=_execute_query  arg=name:query  PARAM
+agno/tools/redshift.py:326  fn=summarize_table  arg=name:query  L290 query = const | L305 query = fstr | L316 query = fstr
+agno/tools/redshift.py:375  fn=export_table_to_path  arg=name:stmt  L370 stmt = fstr
+agno/tools/sql.py:148  fn=run_sql  arg=call:text(name:sql)  PARAM
+agno/vectordb/cassandra/cassandra.py:91  fn=name_exists  arg=name:query  L90 query = fstr
+agno/vectordb/cassandra/cassandra.py:101  fn=id_exists  arg=name:query  L100 query = fstr
+agno/vectordb/cassandra/cassandra.py:127  fn=_table_has_user_id_field  arg=name:any_row_query  L126 any_row_query = fstr
+agno/vectordb/cassandra/cassandra.py:137  fn=_table_has_user_id_field  arg=name:query  L133 query = fstr
+agno/vectordb/cassandra/cassandra.py:196  fn=content_hash_exists  arg=name:query  L192 query = fstr
+agno/vectordb/cassandra/cassandra.py:409  fn=drop  arg=name:drop_table_query  L408 drop_table_query = fstr
+agno/vectordb/cassandra/cassandra.py:451  fn=delete_by_id  arg=name:query  L450 query = fstr
+agno/vectordb/cassandra/cassandra.py:475  fn=delete_by_name  arg=name:query  L474 query = fstr
+agno/vectordb/cassandra/cassandra.py:485  fn=delete_by_name  arg=name:delete_query  L484 delete_query = fstr
+agno/vectordb/cassandra/cassandra.py:508  fn=delete_by_metadata  arg=name:query  L507 query = fstr
+agno/vectordb/cassandra/cassandra.py:518  fn=delete_by_metadata  arg=name:delete_query  L517 delete_query = fstr
+agno/vectordb/cassandra/cassandra.py:543  fn=delete_by_content_id  arg=name:query  L542 query = fstr
+agno/vectordb/cassandra/cassandra.py:555  fn=delete_by_content_id  arg=name:delete_query  L554 delete_query = fstr
+agno/vectordb/cassandra/cassandra.py:581  fn=delete_by_content_hash  arg=name:query  L580 query = fstr
+agno/vectordb/cassandra/cassandra.py:592  fn=delete_by_content_hash  arg=name:delete_query  L591 delete_query = fstr
+agno/vectordb/cassandra/cassandra.py:641  fn=update_metadata  arg=name:query  L640 query = fstr
+agno/vectordb/cassandra/cassandra.py:664  fn=update_metadata  arg=name:update_query  L659 update_query = fstr
+agno/vectordb/pgvector/pgvector.py:240  fn=create  arg=call:text(fstr)  
+agno/vectordb/pgvector/pgvector.py:1022  fn=vector_search  arg=call:text(fstr)  
+agno/vectordb/pgvector/pgvector.py:1024  fn=vector_search  arg=call:text(fstr)  
+agno/vectordb/pgvector/pgvector.py:1025  fn=vector_search  arg=name:stmt  L980 stmt = call:select(starred(name:columns)) | L983 stmt = call:self._apply_user_scope(name:stmt) | L1009 stmt = call:stmt.order_by(name:distance_expr) | L1012 stmt = call:stmt.limit(name:limit) | L989 stmt = call:stmt.where(call:self.table.c.meta_data.contains(name:filters)) | L997 stmt = call:stmt.where(call:and_(starred(name:sqlalchemy_conditions))) | L1004 stmt = call:stmt.where(Compare) | L1007 stmt = call:stmt.where(Compare)
+agno/vectordb/pgvector/pgvector.py:1165  fn=keyword_search  arg=name:stmt  L1123 stmt = call:select(starred(name:columns)) | L1126 stmt = call:self._apply_user_scope(name:stmt) | L1154 stmt = call:stmt.order_by(call:text_rank.desc()) | L1157 stmt = call:stmt.limit(name:limit) | L1143 stmt = call:stmt.where(call:self.table.c.meta_data.contains(name:filters)) | L1151 stmt = call:stmt.where(call:and_(starred(name:sqlalchemy_conditions)))
+agno/vectordb/pgvector/pgvector.py:1321  fn=hybrid_search  arg=call:text(fstr)  
+agno/vectordb/pgvector/pgvector.py:1323  fn=hybrid_search  arg=call:text(fstr)  
+agno/vectordb/pgvector/pgvector.py:1324  fn=hybrid_search  arg=name:stmt  L1282 stmt = call:select(starred(name:columns)) | L1285 stmt = call:self._apply_user_scope(name:stmt) | L1308 stmt = call:stmt.order_by(call:desc(lit)) | L1311 stmt = call:stmt.limit(name:limit) | L1305 stmt = call:stmt.where(Compare) | L1294 stmt = call:stmt.where(call:self.table.c.meta_data.contains(name:filters)) | L1302 stmt = call:stmt.where(call:and_(starred(name:sqlalchemy_conditions)))
+agno/vectordb/pgvector/pgvector.py:1446  fn=_drop_index  arg=call:text(name:drop_index_sql)  L1445 drop_index_sql = fstr
+agno/vectordb/pgvector/pgvector.py:1496  fn=_create_vector_index  arg=call:text(fstr)  
+agno/vectordb/pgvector/pgvector.py:1546  fn=_create_ivfflat_index  arg=name:create_index_sql  L1541 create_index_sql = call:text(fstr)
+agno/vectordb/pgvector/pgvector.py:1572  fn=_create_hnsw_index  arg=name:create_index_sql  L1567 create_index_sql = call:text(fstr)
+agno/vectordb/pgvector/pgvector.py:1603  fn=_create_gin_index  arg=name:create_gin_index_sql  L1599 create_gin_index_sql = call:text(fstr)
+agno/vectordb/pgvector/pgvector.py:1635  fn=delete_by_id  arg=name:stmt  L1634 stmt = call:self.table.delete().chain
+agno/vectordb/pgvector/pgvector.py:1651  fn=delete_by_name  arg=name:stmt  L1650 stmt = call:self.table.delete().chain
+agno/vectordb/pgvector/pgvector.py:1667  fn=delete_by_metadata  arg=name:stmt  L1666 stmt = call:self.table.delete().chain
+agno/vectordb/pgvector/pgvector.py:1689  fn=delete_by_content_id  arg=name:stmt  L1686 stmt = call:self.table.delete().chain | L1688 stmt = call:stmt.where(Compare)
+agno/vectordb/pgvector/pgvector.py:1718  fn=_delete_by_content_hash  arg=name:stmt  L1712 stmt = call:self.table.delete().chain | L1715 stmt = call:stmt.where(Compare) | L1717 stmt = call:stmt.where(call:self.table.c.user_id.is_(const))
+agno/vectordb/singlestore/singlestore.py:104  fn=create  arg=call:text(fstr)  
+agno/vectordb/singlestore/singlestore.py:561  fn=optimize  arg=call:text(fstr)  
+agno/workflow/condition.py:561  fn=execute  arg=name:current_step_input  L556 current_step_input = name:step_input | L614 current_step_input = call:self._update_step_input_from_outputs(name:current_step_input)
+agno/workflow/loop.py:466  fn=execute  arg=name:current_step_input  L462 current_step_input = name:step_input | L523 current_step_input = call:self._update_step_input_from_outputs(name:current_step_input)
+agno/workflow/parallel.py:350  fn=execute_step_with_index  arg=name:step_input  UNBOUND(loop/with/global?)
+agno/workflow/router.py:665  fn=execute  arg=name:current_step_input  L660 current_step_input = name:step_input | L724 current_step_input = call:self._update_step_input_from_outputs(name:current_step_input)
+agno/workflow/steps.py:280  fn=execute  arg=name:current_step_input  L269 current_step_input = name:step_input | L340 current_step_input = call:self._update_step_input_from_outputs(name:current_step_input)
+agno/workflow/workflow.py:2927  fn=_execute  arg=name:step_input  L2901 step_input = call:self._create_step_input()
+agno/workflow/workflow.py:7095  fn=_continue_execute  arg=name:step_input  L6972 step_input = call:self._create_step_input()
+agno/workflow/workflow.py:7170  fn=_continue_execute  arg=name:step_input  L6972 step_input = call:self._create_step_input()
+agno/workflow/workflow.py:7284  fn=_continue_execute  arg=name:step_input  L6972 step_input = call:self._create_step_input()
+crewai/experimental/agent_executor.py:1170  fn=execute_todo_sequential  arg=name:current  L1153 current = attr:self.state.todos.current_todo
+crewai/memory/storage/kickoff_task_outputs_storage.py:150  fn=update  arg=name:query  L147 query = fstr
+crewai/state/provider/sqlite_provider.py:81  fn=checkpoint  arg=name:_CREATE_TABLE  MOD L16 = lit
+crewai/state/provider/sqlite_provider.py:82  fn=checkpoint  arg=name:_INSERT  MOD L26 = lit
+crewai/state/provider/sqlite_provider.py:117  fn=prune  arg=name:_PRUNE  MOD L31 = lit
+crewai/state/provider/sqlite_provider.py:140  fn=from_checkpoint  arg=name:_SELECT  MOD L30 = lit
+langchain/agents/middleware/shell_tool.py:758  fn=_run_startup_commands  arg=name:command  UNBOUND(loop/with/global?)
+langchain/agents/middleware/shell_tool.py:768  fn=_run_shutdown_commands  arg=name:command  UNBOUND(loop/with/global?)
+langchain/agents/middleware/shell_tool.py:835  fn=_run_shell_tool  arg=name:command  L829 command = call:payload.get(lit)
+langchain_community/cache.py:1600  fn=clear  arg=call:self.cache_schema.delete()  
+langchain_community/chat_loaders/imessage.py:149  fn=_load_single_chat_session  arg=name:query  L148 query = call:self._get_session_query(name:use_chat_handle_table)
+langchain_community/chat_message_histories/postgres.py:64  fn=_create_table_if_not_exists  arg=name:create_table_query  L59 create_table_query = fstr
+langchain_community/chat_message_histories/postgres.py:73  fn=messages  arg=name:query  L70 query = fstr
+langchain_community/chat_message_histories/postgres.py:85  fn=add_message  arg=name:query  L82 query = call:sql.SQL(lit).chain
+langchain_community/chat_message_histories/postgres.py:93  fn=clear  arg=name:query  L92 query = fstr
+langchain_community/chat_message_histories/singlestoredb.py:210  fn=_create_table_if_not_exists  arg=call:'CREATE TABLE IF NOT EXISTS {}\n        (attr:self.table_name)  
+langchain_community/chat_message_histories/singlestoredb.py:236  fn=messages  arg=call:'SELECT {} FROM {} WHERE {} = %s'.format(attr:self.message_field)  
+langchain_community/chat_message_histories/singlestoredb.py:260  fn=add_message  arg=call:'INSERT INTO {} ({}, {}) VALUES (%s, %s)(attr:self.table_name)  
+langchain_community/chat_message_histories/singlestoredb.py:280  fn=clear  arg=call:'DELETE FROM {} WHERE {} = %s'.format(attr:self.table_name)  
+langchain_community/chat_message_histories/tidb.py:69  fn=_create_table_if_not_exists  arg=name:create_table_query  L58 create_table_query = call:text(fstr)
+langchain_community/chat_message_histories/tidb.py:97  fn=_load_messages_to_cache  arg=name:query  L89 query = call:text(fstr)
+langchain_community/chat_message_histories/tidb.py:117  fn=add_message  arg=name:query  L113 query = call:text(fstr)
+langchain_community/chat_message_histories/tidb.py:134  fn=clear  arg=name:query  L132 query = call:text(fstr)
+langchain_community/document_loaders/duckdb_loader.py:60  fn=load  arg=attr:self.query  
+langchain_community/document_loaders/oracleadb_loader.py:116  fn=_run_query  arg=fstr  
+langchain_community/document_loaders/oracleadb_loader.py:118  fn=_run_query  arg=attr:self.query  
+langchain_community/document_loaders/oracleadb_loader.py:120  fn=_run_query  arg=attr:self.query  
+langchain_community/document_loaders/oracleai.py:277  fn=load  arg=name:sql  L307 sql = binop | L272 sql = binop
+langchain_community/document_loaders/oracleai.py:323  fn=load  arg=name:sql  L307 sql = binop | L272 sql = binop
+langchain_community/document_loaders/oracleai.py:453  fn=split_text  arg=binop  
+langchain_community/document_loaders/snowflake_loader.py:84  fn=_execute_query  arg=binop  
+langchain_community/document_loaders/snowflake_loader.py:85  fn=_execute_query  arg=binop  
+langchain_community/document_loaders/snowflake_loader.py:86  fn=_execute_query  arg=attr:self.query  
+langchain_community/document_loaders/tidb.py:51  fn=lazy_load  arg=call:text(attr:self.query)  
+langchain_community/embeddings/oracleai.py:140  fn=embed_documents  arg=binop  
+langchain_community/graphs/age_graph.py:94  fn=__init__  arg=name:graph_id_query  L88 graph_id_query = call:"SELECT graphid FROM ag_catalog.ag_graph(name:graph_name)
+langchain_community/graphs/age_graph.py:105  fn=__init__  arg=name:create_statement  L100 create_statement = call:"\n                        SELECT ag_cat(name:graph_name)
+langchain_community/graphs/age_graph.py:123  fn=__init__  arg=name:graph_id_query  L88 graph_id_query = call:"SELECT graphid FROM ag_catalog.ag_graph(name:graph_name)
+langchain_community/graphs/age_graph.py:206  fn=_get_triples  arg=name:q  L204 q = call:triple_query.format()
+langchain_community/graphs/age_graph.py:310  fn=_get_node_properties  arg=name:q  L305 q = call:node_properties_query.format()
+langchain_community/graphs/age_graph.py:381  fn=_get_edge_properties  arg=name:q  L376 q = call:edge_properties_query.format()
+langchain_community/graphs/age_graph.py:631  fn=query  arg=name:wrapped_query  L626 wrapped_query = call:self._wrap_query(name:query)
+langchain_community/graphs/arangodb_graph.py:117  fn=query  arg=name:query  PARAM
+langchain_community/graphs/kuzu_graph.py:54  fn=query  arg=name:query  PARAM
+langchain_community/graphs/kuzu_graph.py:99  fn=refresh_schema  arg=fstr  
+langchain_community/graphs/kuzu_graph.py:128  fn=_create_entity_node_table  arg=fstr  
+langchain_community/graphs/kuzu_graph.py:139  fn=_create_entity_relationship_table  arg=fstr  
+langchain_community/graphs/kuzu_graph.py:209  fn=add_graph_documents  arg=fstr  
+langchain_community/graphs/kuzu_graph.py:233  fn=add_graph_documents  arg=fstr  
+langchain_community/graphs/kuzu_graph.py:254  fn=add_graph_documents  arg=fstr  
+langchain_community/graphs/nebula_graph.py:164  fn=execute  arg=name:query  PARAM
+langchain_community/graphs/nebula_graph.py:177  fn=execute  arg=name:query  PARAM
+langchain_community/graphs/nebula_graph.py:187  fn=refresh_schema  arg=fstr  
+langchain_community/graphs/nebula_graph.py:195  fn=refresh_schema  arg=fstr  
+langchain_community/graphs/nebula_graph.py:202  fn=refresh_schema  arg=call:rel_query.substitute()  
+langchain_community/graphs/nebula_graph.py:215  fn=query  arg=name:query  PARAM
+langchain_community/storage/cassandra.py:86  fn=__init__  arg=name:create_cql  L76 create_cql = call:CREATE_TABLE_CQL_TEMPLATE.format()
+langchain_community/storage/cassandra.py:177  fn=mset  arg=name:insert_statement  L175 insert_statement = call:self.get_insert_statement()
+langchain_community/storage/cassandra.py:189  fn=mdelete  arg=call:self.get_delete_statement()  
+langchain_community/utilities/cassandra_database.py:63  fn=_fetch  arg=name:clean_query  L62 clean_query = call:self._validate_cql(name:query)
+langchain_community/utilities/graphql.py:61  fn=_execute_query  arg=name:document_node  L60 document_node = call:self.gql_function(name:query)
+langchain_community/utilities/sql_database.py:547  fn=_execute  arg=name:command  L542 command = call:text(name:command) | PARAM
+langchain_community/vectorstores/analyticdb.py:113  fn=create_table_if_not_exists  arg=name:index_query  L106 index_query = call:text(fstr)
+langchain_community/vectorstores/analyticdb.py:127  fn=create_table_if_not_exists  arg=name:index_statement  L117 index_statement = call:text(fstr)
+langchain_community/vectorstores/analyticdb.py:139  fn=delete_collection  arg=name:drop_statement  L136 drop_statement = call:text(fstr)
+langchain_community/vectorstores/analyticdb.py:287  fn=similarity_search_with_score_by_vector  arg=call:text(name:sql_query)  L274 sql_query = fstr
+langchain_community/vectorstores/apache_doris.py:546  fn=_get_named_result  arg=name:query  PARAM
+langchain_community/vectorstores/duckdb.py:190  fn=add_texts  arg=fstr  
+langchain_community/vectorstores/duckdb.py:199  fn=add_texts  arg=fstr  
+langchain_community/vectorstores/duckdb.py:360  fn=_ensure_table  arg=name:create_table_sql  L352 create_table_sql = fstr
+langchain_community/vectorstores/lantern.py:333  fn=create_hnsw_index  arg=name:create_index_query  L316 create_index_query = call:sqlalchemy.text(call:'CREATE INDEX IF NOT EXISTS {} ON {} USI(call:quoted_name(attr:self._index_name)))
+langchain_community/vectorstores/lantern.py:348  fn=drop_index  arg=call:sqlalchemy.text(call:'DROP INDEX IF EXISTS {}'.format(call:quoted_name(attr:self._index_name)))  
+langchain_community/vectorstores/pgembedding.py:208  fn=create_hnsw_index  arg=name:create_index_query  L192 create_index_query = call:sqlalchemy.text(call:'CREATE INDEX IF NOT EXISTS langchain_pg(name:max_elements))
+langchain_community/vectorstores/relyt.py:143  fn=create_table_if_not_exists  arg=name:table_query  L136 table_query = call:text(fstr)
+langchain_community/vectorstores/relyt.py:155  fn=create_table_if_not_exists  arg=name:table_statement  L145 table_statement = call:text(fstr)
+langchain_community/vectorstores/relyt.py:166  fn=create_table_if_not_exists  arg=name:index_query  L159 index_query = call:text(fstr)
+langchain_community/vectorstores/relyt.py:185  fn=create_table_if_not_exists  arg=name:index_statement  L170 index_statement = call:text(fstr)
+langchain_community/vectorstores/relyt.py:197  fn=delete_collection  arg=name:drop_statement  L194 drop_statement = call:text(fstr)
+langchain_community/vectorstores/relyt.py:351  fn=similarity_search_with_score_by_vector  arg=call:text(name:sql_query)  L334 sql_query = fstr
+langchain_community/vectorstores/singlestoredb.py:329  fn=_create_table  arg=call:'CREATE TABLE IF NOT EXISTS {}\n        (attr:self.table_name)  
+langchain_community/vectorstores/singlestoredb.py:347  fn=_create_table  arg=call:'CREATE TABLE IF NOT EXISTS {}\n        (attr:self.table_name)  
+langchain_community/vectorstores/singlestoredb.py:433  fn=add_texts  arg=call:'INSERT INTO {}({}, {}, {})\n           (attr:self.table_name)  
+langchain_community/vectorstores/singlestoredb.py:453  fn=add_texts  arg=call:'OPTIMIZE TABLE {} FLUSH;'.format(attr:self.table_name)  
+langchain_community/vectorstores/singlestoredb.py:477  fn=delete  arg=call:'DELETE FROM {} WHERE {} IN ({})'.format(attr:self.table_name)  
+langchain_community/vectorstores/singlestoredb.py:483  fn=delete  arg=call:'OPTIMIZE TABLE {} FLUSH;'.format(attr:self.table_name)  
+langchain_community/vectorstores/singlestoredb.py:822  fn=similarity_search_with_score  arg=call:'SELECT {}, {}, {}({}, JSON_ARRAY_PACK(%(attr:self.content_field)  
+langchain_community/vectorstores/singlestoredb.py:844  fn=similarity_search_with_score  arg=call:'SELECT {}, {}, MATCH ({}) AGAINST (%s) (attr:self.content_field)  
+langchain_community/vectorstores/singlestoredb.py:856  fn=similarity_search_with_score  arg=call:'SELECT {}, {}, __score1 * %s + __score2(attr:self.content_field)  
+langchain_community/vectorstores/singlestoredb.py:1061  fn=drop  arg=call:'DROP TABLE IF EXISTS {}'.format(attr:self.table_name)  
+langchain_community/vectorstores/sqlitevec.py:75  fn=create_table_if_not_exists  arg=fstr  
+langchain_community/vectorstores/sqlitevec.py:87  fn=create_table_if_not_exists  arg=fstr  
+langchain_community/vectorstores/sqlitevec.py:96  fn=create_table_if_not_exists  arg=fstr  
+langchain_community/vectorstores/sqlitevec.py:134  fn=add_texts  arg=fstr  
+langchain_community/vectorstores/sqlitevec.py:140  fn=add_texts  arg=fstr  
+langchain_community/vectorstores/sqlitevec.py:161  fn=similarity_search_with_score_by_vector  arg=name:sql_query  L148 sql_query = fstr
+langchain_community/vectorstores/sqlitevss.py:66  fn=create_table_if_not_exists  arg=fstr  
+langchain_community/vectorstores/sqlitevss.py:78  fn=create_table_if_not_exists  arg=fstr  
+langchain_community/vectorstores/sqlitevss.py:85  fn=create_table_if_not_exists  arg=fstr  
+langchain_community/vectorstores/sqlitevss.py:123  fn=add_texts  arg=fstr  
+langchain_community/vectorstores/sqlitevss.py:129  fn=add_texts  arg=fstr  
+langchain_community/vectorstores/sqlitevss.py:150  fn=similarity_search_with_score_by_vector  arg=name:sql_query  L137 sql_query = fstr
+langchain_community/vectorstores/starrocks.py:59  fn=get_named_result  arg=name:query  PARAM
+langchain_community/vectorstores/yellowbrick.py:187  fn=_create_schema  arg=call:sql.SQL(lit).chain  
+langchain_community/vectorstores/yellowbrick.py:206  fn=_create_table  arg=call:sql.SQL(lit).chain  
+langchain_community/vectorstores/yellowbrick.py:229  fn=_create_table  arg=call:sql.SQL(lit).chain  
+langchain_community/vectorstores/yellowbrick.py:285  fn=_drop_table  arg=name:drop_table_query  L280 drop_table_query = call:sql.SQL(lit).chain
+langchain_community/vectorstores/yellowbrick.py:461  fn=delete  arg=name:query  L458 query = call:sql.SQL(lit).chain | L464 query = call:sql.SQL(lit).chain | L475 query = call:sql.SQL(lit).chain
+langchain_community/vectorstores/yellowbrick.py:467  fn=delete  arg=name:query  L458 query = call:sql.SQL(lit).chain | L464 query = call:sql.SQL(lit).chain | L475 query = call:sql.SQL(lit).chain
+langchain_community/vectorstores/yellowbrick.py:478  fn=delete  arg=name:query  L458 query = call:sql.SQL(lit).chain | L464 query = call:sql.SQL(lit).chain | L475 query = call:sql.SQL(lit).chain
+langchain_community/vectorstores/yellowbrick.py:492  fn=_table_exists  arg=call:sql.SQL(lit).chain  
+langchain_community/vectorstores/yellowbrick.py:548  fn=similarity_search_with_score_by_vector  arg=name:create_table_query  L538 create_table_query = call:sql.SQL(lit).chain
+langchain_community/vectorstores/yellowbrick.py:620  fn=similarity_search_with_score_by_vector  arg=name:sql_query  L575 sql_query = call:sql.SQL(lit).chain | L626 sql_query = call:sql.SQL(lit).chain
+langchain_community/vectorstores/yellowbrick.py:656  fn=similarity_search_with_score_by_vector  arg=name:sql_query  L575 sql_query = call:sql.SQL(lit).chain | L626 sql_query = call:sql.SQL(lit).chain
+langchain_community/vectorstores/yellowbrick.py:772  fn=_update_lsh_hashes  arg=name:input_query  L753 input_query = call:sql.SQL(lit).chain
+langchain_community/vectorstores/yellowbrick.py:808  fn=_generate_tmp_lsh_hashes  arg=name:input_query  L791 input_query = call:sql.SQL(lit).chain
+langchain_community/vectorstores/yellowbrick.py:818  fn=_populate_hyperplanes  arg=call:sql.SQL(lit).chain  
+langchain_community/vectorstores/yellowbrick.py:823  fn=_populate_hyperplanes  arg=call:sql.SQL(lit).chain  
+langchain_community/vectorstores/yellowbrick.py:850  fn=_populate_hyperplanes  arg=name:insert_query  L827 insert_query = call:sql.SQL(lit).chain
+langchain_community/vectorstores/yellowbrick.py:861  fn=_create_lsh_index_tables  arg=call:sql.SQL(lit).chain  
+langchain_community/vectorstores/yellowbrick.py:883  fn=_create_lsh_index_tables  arg=call:sql.SQL(lit).chain  
+langchain_community/vectorstores/yellowbrick.py:950  fn=migrate_schema_v1_to_v2  arg=name:alter_table_query  L946 alter_table_query = call:sql.SQL(lit).chain
+langchain_community/vectorstores/yellowbrick.py:963  fn=migrate_schema_v1_to_v2  arg=name:insert_query  L954 insert_query = call:sql.SQL(lit).chain
+langchain_community/vectorstores/yellowbrick.py:971  fn=migrate_schema_v1_to_v2  arg=name:insert_content_query  L965 insert_content_query = call:sql.SQL(lit).chain
+llama_index/core/utilities/sql_wrapper.py:260  fn=run_sql  arg=call:text(name:command)  L259 command = call:self._add_schema_prefix(name:command) | PARAM
+semantic_kernel/connectors/memory_stores/postgres/postgres_memory_store.py:106  fn=create_collection  arg=call:SQL(lit).chain  
+semantic_kernel/connectors/memory_stores/postgres/postgres_memory_store.py:142  fn=delete_collection  arg=call:SQL(lit).chain  
+semantic_kernel/connectors/memory_stores/postgres/postgres_memory_store.py:173  fn=upsert  arg=call:SQL(lit).chain  
+semantic_kernel/connectors/memory_stores/postgres/postgres_memory_store.py:214  fn=upsert_batch  arg=call:SQL(lit).chain  
+semantic_kernel/connectors/memory_stores/postgres/postgres_memory_store.py:263  fn=get  arg=call:SQL(lit).chain  
+semantic_kernel/connectors/memory_stores/postgres/postgres_memory_store.py:306  fn=get_batch  arg=call:SQL(lit).chain  
+semantic_kernel/connectors/memory_stores/postgres/postgres_memory_store.py:347  fn=remove  arg=call:SQL(lit).chain  
+semantic_kernel/connectors/memory_stores/postgres/postgres_memory_store.py:370  fn=remove_batch  arg=call:SQL(lit).chain  
+semantic_kernel/connectors/memory_stores/postgres/postgres_memory_store.py:403  fn=get_nearest_matches  arg=call:SQL(lit).chain  
+semantic_kernel/connectors/sql_server.py:406  fn=_inner_upsert  arg=starred(call:command.to_execute())  
+semantic_kernel/connectors/sql_server.py:453  fn=_inner_delete  arg=starred(call:query.to_execute())  
+semantic_kernel/connectors/sql_server.py:494  fn=ensure_collection_exists  arg=name:query  UNBOUND(loop/with/global?)
+semantic_kernel/connectors/sql_server.py:505  fn=ensure_collection_exists  arg=starred(call:create_table_query.to_execute())  
+semantic_kernel/connectors/sql_server.py:524  fn=collection_exists  arg=starred(call:_build_select_table_name_query(starred(call:self._get_schema_and_table())).chain)  
+semantic_kernel/connectors/sql_server.py:535  fn=ensure_collection_deleted  arg=starred(call:_build_delete_table_query(starred(call:self._get_schema_and_table())).chain)  
+semantic_kernel/connectors/sql_server.py:570  fn=_fetch_records  arg=starred(call:query.to_execute())  
+semantic_kernel/connectors/sql_server.py:775  fn=list_collection_names  arg=starred(call:_build_select_table_names_query().chain)  

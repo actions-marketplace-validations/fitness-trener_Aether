@@ -1604,6 +1604,11 @@ def check_hardcoded_secret(ast: Dict[str, Any]) -> List[Diagnostic]:
         val = lit.get("value")
         if not isinstance(val, str):
             continue
+        if lit.get("synthetic"):
+            # The Python frontend inlines a module-level constant at each
+            # read site; the literal is written once, at its definition,
+            # and that is where it is reported.
+            continue
         for pat, label in _CREDENTIAL_PATTERNS:
             if pat.search(val):
                 pos = lit.get("pos") or {"line": 0, "column": 0}

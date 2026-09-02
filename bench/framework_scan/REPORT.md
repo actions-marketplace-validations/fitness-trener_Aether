@@ -1,6 +1,8 @@
 # `aether check-py` on 15 AI-agent frameworks
 
-**Date:** 2026-09-01, re-measured 2026-09-02 after BUG-010 and BUG-011.
+**Date:** 2026-09-01, re-measured 2026-09-02 after BUG-010 and BUG-011,
+and again 2026-09-03 after BUG-012 (§7 — the tables in §1–§5 are the
+2026-09-02 numbers; §7 supersedes the totals).
 **Question:** `bench/pypi_scan/` scanned whatever happened to be in
 site-packages. What does the tool do on the population it actually claims
 to be for — the frameworks that generate and execute AI-written Python?
@@ -203,3 +205,73 @@ The honest one-line summary: **on the corpus Aether is aimed at, its
 best-covered detector produced 97% noise, fixing the noise exposed a
 class of silence, and the tool is now both quieter and less blind than
 it was two days ago — measured, on the same 4,946 files.**
+
+## 7. Re-measured 2026-09-03, after BUG-012: 411 → 628, and why more is better here
+
+The frontend translated four statement kinds and dropped the rest, so a
+sink behind an `await`, in a `for` iterable, in a tuple-target
+assignment or inside `x or []` was never seen — not over-flagged,
+silent (BUGS.md BUG-012). A census over these 4,946 files found **603
+sink calls behind `await`** and 89 in other unmodeled positions. The
+same fix made every binding form visible to the safe-name resolvers,
+so `sql += uid` no longer leaves `sql` "literal-only".
+
+Same files, same interpreter, `git archive` of the before-commit:
+
+| distribution | 2026-09-02 | **2026-09-03** | what moved |
+|---|---:|---:|---|
+| agno | 245 | **424** | await-wrapped `text(f"…{table}…")` and `exec_driver_sql(f"…")` in migrations; 4 `stmt = None` sentinels cleared |
+| langchain-community | 118 | **139** | 5 tuple-target `pickle.load` (`allow_dangerous_deserialization` sites) now visible; await-wrapped SQL; 2 keyword-only `client.command.exec(code=…)` (riza) — the by-name rule reaching a call that had no positional slot, over-flag by class (it is a remote code-execution call, not SQL) |
+| semantic-kernel | 17 | **31** | `await cur.execute(sql.SQL(...).format(...))` — psycopg composition, the §4 residual, now visible |
+| openhands-ai | 8 | **12** | `self.gateway_process = subprocess.Popen(...)` (attribute target) + await-wrapped |
+| crewai | 7 | **5** | 4 module-level literal constants (`_CREATE_TABLE`, `_INSERT`, …) now resolve; 1 PEM-header docstring; 1 keyword-only `await handler.execute(client=…)` (a2a) — by-name over-flag, not SQL |
+| llama-index-core | 1 | **2** | |
+| others | 15 | 15 | unchanged |
+| **total** | **411** | **628** | 0 analyzer errors, 0 unparseable |
+
+By code: E0713 381 → 590 · E0720 9 → 14 · E0714 13 → 14 · E0723 0 → 2 ·
+E0727 6 · E0719 2. 225 findings appeared, 8 disappeared.
+
+**Read at source, the new ones are true by the existing rules.** A
+sample of twelve of the +217 E0713: `conn.exec_driver_sql(f"DROP INDEX
+IF EXISTS {quote_db_identifier(...)}")`, `await sess.execute(text(f"DROP
+INDEX {…} ON {full_table}"))`, `sess.execute(text(f"SELECT COUNT(*)
+FROM {self.session_table_name} …"))` — identifier interpolation into
+DDL, the shape §4 already classed as "true by shape", now counted where
+it was hidden. The five E0720 are `pickle.load` behind a tuple target in
+langchain-community's TF-IDF, Annoy, FAISS and ScaNN loaders — real by
+shape, behind the maintainers' explicit `allow_dangerous_deserialization`
+opt-in, so a note rather than a report.
+
+**The two E0723 are not credentials.** `agno/knowledge/remote_content/
+github.py:53` spells `-----BEGIN RSA PRIVATE KEY-----` inside an error
+message; `crewai/a2a/utils/agent_card_signing.py:85` inside a docstring.
+The literal scan's PEM pattern matches the header alone; before this
+change module- and class-level strings were never scanned, so the cost
+was invisible. Precision item for the E0723 pass — require a key body
+after the header — recorded for the next iteration, not fixed here.
+
+**The eight that disappeared** are precision, each by positive
+identification: crewai's module-level `_CREATE_TABLE` / `_INSERT` /
+`_PRUNE` / `_SELECT` are str literals bound exactly once in the whole
+module, so `conn.execute(_CREATE_TABLE)` is a literal query; agno's
+`pinned_stmt = None` before `pinned_stmt = select(...)` no longer
+disqualifies the name (executing `None` is a `TypeError`, not a query).
+
+**§4, corrected.** The "~100 cross-function or parameter cases" line was
+an estimate. All 381 pre-fix survivors were classified at source
+(`e0713_census_2026-09-03.txt` in this directory): 166
+`text(f"…{identifier}…")` DDL (true positives under the raw-entry
+rule), 37 DB-API f-string/format/concat, 21 Cassandra CQL, 21 graph
+query languages, 20 agent SQL toolkits running caller SQL by design, 17
+non-SQL `execute` methods, and **34 helper-assembled statements** (14
+same-module, 20 cross-module) — the only bucket a per-module helper
+summary would touch. That is why the summary stays parked, and why the
+identifier-interpolation majority is the natural target for a
+per-finding confidence axis (iteration 46's residual) rather than for a
+relaxation.
+
+**Reading the direction correctly.** 411 → 628 on unchanged files is
+the tool seeing more of the same code, not the code getting worse; the
+ground-truth bench moved 29 → 41 true positives at 0 false negatives and
+0 false positives, and the 76-module benign corpus did not move.

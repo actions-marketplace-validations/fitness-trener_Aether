@@ -1659,6 +1659,106 @@ State carried forward: the full gate suite must stay green
 
 ---
 
+## Iteration 48 — the translator was not total: 603 sinks behind `await`, and a literal-only proof that survived `+=` (no new detector)
+
+- **Target:** not a violation class. A five-lens survey of the whole
+  repo (65 probe-confirmed candidates; ranked by the contract, a false
+  accept outranks every precision item) put the Python frontend's
+  SILENT MISSES first. The ranked list is the input to the next
+  iterations, not just this one.
+- **Gap confirmed empirically first:** `await conn.execute("…" + uid)`,
+  `for row in cur.execute("…" + uid):`, `obj, _ = pickle.loads(b), None`,
+  `return cur.execute(q) or []`, `g(rows=cur.execute(q))`, a `def` under
+  `try:`, a class nested in a class, `os.system(sys.argv[1])` at module
+  level — every one exit 0, no finding (BUGS.md BUG-012). And the other
+  direction: `sql = "SELECT "; sql += uid; cur.execute(sql)` and
+  `if loader is None: loader = yaml.SafeLoader` before
+  `yaml.load(raw, Loader=loader)` both exit 0 — the name proved
+  literal-only from the ONE binding form the resolvers could see. Same
+  family as BUG-004 and BUG-011: the unknown case defaulted to "not a
+  sink", and the translator, not any rule, was where "unknown" lived.
+- **Census (bench/framework_scan, 4,946 files):** 603 sink calls behind
+  `await`, 89 in other unmodeled positions (BoolOp 50, Compare 20,
+  for-iterables 17, comprehensions 20, non-Name targets 11, displays 7);
+  26 of the 89 fire under the existing rows once visible.
+- **Improvement (frontend only — no Aether rule changed):**
+  `transpiler/aether/py_frontend.py` is now TOTAL over statement kinds
+  and binding forms. One walk, `_bindings_of`, feeds every resolver and
+  seeds an opaque binding for every name bound by a form whose value
+  cannot be seen (a parameter, `+=`, a for-target, a tuple unpack, a
+  walrus, an except-as, a `global`); `visit_stmt` translates every value
+  expression a statement evaluates, in place; `_expr` keeps an unmodeled
+  node opaque but carries its children; `await`/`yield` are transparent;
+  keyword values ride under `kwargs`, and take the positional slots when
+  there are none. `collect()` finds a `def` at any statement depth; a
+  module or class body with a call or a non-docstring literal becomes a
+  `<module>` / `Class.<class>` scope (which is also the first time a
+  module-level `KEY = "AKIA…"` reached E0723 at all). `_guard_verdict`
+  reads a `**`/`*` splat as unresolvable (SINK) and `shell=`/`Loader=`
+  positionally. `getattr(obj, "execute")(…)` and a bound-method alias
+  spell the method. Two missing rows (`exec_driver_sql`, sqlmodel
+  `Session.exec`) and a hole inside iteration 47's own sanctioned exit
+  (`prefix_with`/`suffix_with`/`with_hint`/`with_statement_hint`/`op`
+  splice a string verbatim and now get `text()`'s discipline). A scope
+  deeper than `_MAX_EXPR_DEPTH` (200) reports an `unprovable` `too_deep`
+  region instead of losing the whole file as "unreadable" with exit 0;
+  `check-py` reads source with `tokenize.open` (PEP 263 cookies).
+  Precision, by positive identification only: a `from yaml import
+  SafeLoader` name resolves through the import table; a module-level
+  str constant bound exactly once in the whole module is inlined at its
+  reads; a `stmt = None` sentinel binds nothing.
+- **Measured, same 4,946 files, same day:** frameworks **411 → 628**
+  (E0713 381 → 590, E0720 9 → 14, E0714 13 → 14, E0723 0 → 2), 0
+  analyzer errors, 0 unreadable. The +217 E0713 are await-wrapped
+  `text(f"…{table}…")` DDL and `exec_driver_sql(f"…")` in agno's
+  migrations, semantic-kernel's psycopg composition, and helper-built
+  statements that were behind `await` — every sampled one true by the
+  existing rule — plus 3 by-name over-flags the keyword-only mapping
+  newly reaches (`await handler.execute(client=…)` in crewai's a2a,
+  `client.command.exec(code=…)` in langchain-community's riza tool:
+  `execute`/`exec` by name, q5's accepted cost). The +5 E0720 are the tuple-target `pickle.load` sites
+  in langchain-community's vector stores (`allow_dangerous_deserialization`
+  — real by shape, opted-in by the maintainers). The +2 E0723 are the
+  PEM header spelled inside an error message and a docstring: the
+  literal scan's known cost, now reaching module-level strings — a
+  precision item for the E0723 pass (require a key body after the
+  header), not a frontend one. 8 over-flags gone (4 crewai module
+  constants, 4 agno `None` sentinels). Ground truth **41 TP / 0 FN / 0
+  FP** over 77 labelled functions (was 29 / 57); benign corpus unchanged
+  (E0711 11 · E0713 1 · E0720 1). `bench/framework_scan/REPORT.md` §7.
+- **Ratchet:** unchanged (54 codes / 30 detectors) — no detector shipped.
+- **Design point recorded:** why totality over syntax is a soundness
+  obligation and not a precision knob —
+  `vault/wiki/questions/q7-frontend-totality-over-syntax.md`.
+- **Correction to the record (iteration 47's "~100 helper-assembled"
+  estimate):** read at source, all 381 survivors classified
+  (`bench/framework_scan/e0713_census_2026-09-03.txt`): 34 are
+  helper-shaped (14 same-module, 20 cross-module); 166 are
+  `text(f"…{identifier}…")` DDL, true positives under the raw-entry
+  rule; 37 DB-API f-string/format/concat; 21 Cassandra CQL; 21 graph
+  query languages; 20 agent SQL toolkits running caller SQL by design;
+  17 non-SQL `execute`. That reprices the per-module helper summary
+  (~180 loc for 14 sites) below the misses it had been ranked above; it
+  stays parked, and the identifier-interpolation TPs are the natural
+  target for the per-finding `confidence` axis from iteration 46 (q6),
+  not for a relaxation.
+- **TYPE gaps surfaced for next iter (all probe-confirmed by the
+  survey):** (a) `exec(model_output)` / `eval` / `compile` on a
+  non-literal is a capability NOTE, never a finding — THE agent-framework
+  hazard (smolagents, langchain's PythonREPL, openhands run model output
+  through `exec`) has no detector; next free code E0731, literal-only
+  like E0719 with `trusted(...)` as the exit. (b) On the Aether side,
+  `var` bindings and `x = …` re-assignment are invisible to the marker
+  fixpoint, the literal-or-wrapper safe-name pass and E0717's
+  stable-name proof — the language-side instance of this iteration's
+  bug. (c) The sanctioned wrappers' PINNING argument
+  (`sqlBind(userTemplate, v)`, `safeJoin(userBase, p)`) is never
+  checked. (d) `for x in markedList` and match-EXPRESSION arm bindings
+  do not taint; aliasing a stdlib sink (`let run = sqlQuery`) hides it.
+- **Suite:** exit 0.
+
+---
+
 ## Next-iteration checklist (for the loop)
 
 1. Read the previous report's "TYPE gap for next iter".

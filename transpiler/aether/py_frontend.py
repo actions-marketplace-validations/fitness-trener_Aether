@@ -34,9 +34,9 @@ Output of `py_to_ir(source)`:
 """
 from __future__ import annotations
 import ast as _pyast
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
-PYMAP_VERSION = "py-cap-map/0.1"
+PYMAP_VERSION = "py-cap-map/0.2"
 
 # ----------------------------------------------------------------------
 # THE AUDITABLE CAPABILITY MAPPING TABLE
@@ -208,21 +208,28 @@ SINK_GUARDS: Dict[str, "Guard"] = {}
 for _fn in ("yaml.load", "yaml.full_load", "yaml.unsafe_load"):
     # Absent Loader= is a sink (that is the classic yaml.load(x) RCE);
     # a SANCTIONED loader clears it; anything else does not.
-    SINK_GUARDS[_fn] = Guard("deserialize", keyword="Loader",
+    # `yaml.load(stream, Loader)`: the loader is also the second positional.
+    SINK_GUARDS[_fn] = Guard("deserialize", keyword="Loader", arg_index=1,
                              safe_values=_YAML_SAFE_LOADERS,
                              absent_is_sink=True)
 for _fn in ("subprocess.run", "subprocess.call", "subprocess.check_call",
             "subprocess.check_output", "subprocess.Popen"):
     # No shell= means no shell — the argv form, which IS the documented
     # fix — so absence is SAFE here. But a shell= we cannot resolve to a
-    # literal False is treated as a shell.
-    SINK_GUARDS[_fn] = Guard("shellExec", keyword="shell",
+    # literal False is treated as a shell. `shell` is the ninth
+    # positional of every one of these (they share Popen's signature).
+    SINK_GUARDS[_fn] = Guard("shellExec", keyword="shell", arg_index=8,
                              safe_values=("False",), absent_is_sink=False)
 
 # Method name on a receiver of unresolved type -> sink (over-flag direction).
 SINK_BY_METHOD: Dict[str, str] = {
     "execute": "sqlQuery", "executemany": "sqlQuery",
     "executescript": "sqlExec", "raw": "sqlQuery",
+    # SQLAlchemy's raw DB-API pass-through, and sqlmodel's `Session.exec`
+    # (which takes a SQL expression, so a real one clears as `sqlBind`).
+    # 22 of 31 `exec_driver_sql` sites in bench/framework_scan were
+    # f-strings and every one was silent (BUG-012 survey).
+    "exec_driver_sql": "sqlQuery", "exec": "sqlQuery",
 }
 
 # Builtins that are sinks.
@@ -276,6 +283,14 @@ _SQL_RAW_ENTRY = frozenset({"text", "literal_column", "column", "table"})
 # parameters. A receiver whose STATE is a raw string is outside any
 # argument-shape rule, and is the recorded residual (q5).
 _SQL_TABLE_METHODS = frozenset({"select", "insert", "update", "delete"})
+# Methods that splice a raw string VERBATIM into the compiled SQL of an
+# otherwise-parameterized expression: `select(t).prefix_with("/*+ " + h)`
+# emits the string as written. They are `text()`'s siblings and get its
+# discipline — every str argument must be a literal (or a literal-bound
+# name), or the expression sanctions nothing. `with_hint(selectable,
+# text)` carries its string in the SECOND positional slot.
+_SQL_RAW_METHODS = frozenset({"prefix_with", "suffix_with", "with_hint",
+                              "with_statement_hint", "op"})
 
 
 class _FnScope:
@@ -285,14 +300,195 @@ class _FnScope:
     `_dotted_of` asks only for a name's single dotted binding. The two
     sets are what BUG-010's second measurement needed — names that hold a
     SQL expression (`stmt = select(t); stmt = stmt.where(...)`) and names
-    bound only to a string literal (`text(sql_query)`)."""
-    def __init__(self, consts: Dict[str, str], sql_names=(), lit_names=()):
+    bound only to a string literal (`text(sql_query)`).
+
+    `local_names` is every name the function binds by ANY form
+    (`_bindings_of`); a bare name not in it may be resolved through the
+    module's imports, one in it may not — a local rebinding wins over
+    an import, and an unresolvable local rebinding wins over both.
+    `module_lits` maps a module-level name bound exactly once, to a str
+    literal, nowhere else in the module, to that literal."""
+    def __init__(self, consts: Dict[str, str], sql_names=(), lit_names=(),
+                 local_names=(), module_lits: Optional[Dict[str, Tuple[str, int]]] = None):
         self.consts = consts
         self.sql_names = frozenset(sql_names)
         self.lit_names = frozenset(lit_names)
+        self.local_names = frozenset(local_names)
+        self.module_lits: Dict[str, Tuple[str, int]] = module_lits or {}
+        self.depth = 0            # current `_expr` nesting (see _MAX_EXPR_DEPTH)
+        self.too_deep = False     # set when the cap was hit in this scope
 
     def __call__(self, name: str) -> Optional[str]:
         return self.consts.get(name)
+
+
+# ----------------------------------------------------------------------
+# BINDING FORMS — every way a Python name acquires a value
+# ----------------------------------------------------------------------
+# The three per-function resolvers (`_local_constants`,
+# `_safe_xml_parser_names`, `_sql_expression_names`) and the `Let` nodes
+# the Aether safe-name pass reads all used to see ONE binding form: a
+# single-Name `Assign`. Every other form — a parameter, `sql += uid`, a
+# for-target, a tuple unpack, a walrus, an except-as, a `global` — was
+# invisible, so a name whose only VISIBLE binding was a literal proved
+# "literal-only" after it had been rebound to attacker input, and
+# `if q is None: q = "SELECT 1"` made a caller-supplied query a constant
+# (BUGS.md BUG-012). One walk, consumed by every resolver, so the
+# discipline cannot drift again. A form whose value the translator can
+# see yields it; every other form yields None, which every consumer
+# reads as UNRESOLVED — the disqualifying case.
+
+_PARAM_FIELDS = ("posonlyargs", "args", "kwonlyargs")
+# Statement/expression fields that are binding SITES, not values.
+_TARGET_FIELDS = frozenset({"target", "targets", "optional_vars"})
+_PATTERN_BASE = getattr(_pyast, "pattern", ())
+
+
+def _target_names(t: Any) -> List[str]:
+    """Names bound by an assignment / for / with / comprehension target."""
+    if isinstance(t, _pyast.Name):
+        return [t.id]
+    if isinstance(t, (_pyast.Tuple, _pyast.List)):
+        return [n for e in t.elts for n in _target_names(e)]
+    if isinstance(t, _pyast.Starred):
+        return _target_names(t.value)
+    return []      # Attribute / Subscript targets bind no local name
+
+
+def _param_names(a: Any) -> List[str]:
+    out = [x.arg for f in _PARAM_FIELDS for x in getattr(a, f, None) or []]
+    for x in (a.vararg, a.kwarg):
+        if x is not None:
+            out.append(x.arg)
+    return out
+
+
+def _bindings_of(node: Any) -> List[Tuple[str, Any, int]]:
+    """Every (name, value-or-None, line) binding inside `node`: its own
+    parameters when it is a function, then every binding form in its
+    body — nested functions and lambdas included, because their bodies
+    are translated into the enclosing function and their names are its
+    names. Over a Module it is every binding in the file, at any depth."""
+    out: List[Tuple[str, Any, int]] = []
+    if isinstance(node, (_pyast.FunctionDef, _pyast.AsyncFunctionDef, _pyast.Lambda)):
+        out += [(n, None, getattr(node, "lineno", 0)) for n in _param_names(node.args)]
+    for s in _pyast.walk(node):
+        if s is node:
+            continue
+        ln = getattr(s, "lineno", 0)
+        if isinstance(s, _pyast.Assign):
+            for t in s.targets:
+                if isinstance(t, _pyast.Name):
+                    out.append((t.id, s.value, ln))
+                else:
+                    out += [(n, None, ln) for n in _target_names(t)]
+        elif isinstance(s, _pyast.AnnAssign):
+            if s.value is not None and isinstance(s.target, _pyast.Name):
+                out.append((s.target.id, s.value, ln))
+        elif isinstance(s, _pyast.AugAssign):
+            out += [(n, None, ln) for n in _target_names(s.target)]
+        elif isinstance(s, _pyast.NamedExpr):
+            out.append((s.target.id, s.value, ln))
+        elif isinstance(s, (_pyast.For, _pyast.AsyncFor, _pyast.comprehension)):
+            out += [(n, None, ln) for n in _target_names(s.target)]
+        elif isinstance(s, _pyast.withitem):
+            if isinstance(s.optional_vars, _pyast.Name):
+                out.append((s.optional_vars.id, s.context_expr, ln))
+            else:
+                out += [(n, None, ln) for n in _target_names(s.optional_vars)]
+        elif isinstance(s, _pyast.ExceptHandler) and s.name:
+            out.append((s.name, None, ln))
+        elif isinstance(s, (_pyast.Global, _pyast.Nonlocal)):
+            out += [(n, None, ln) for n in s.names]
+        elif isinstance(s, (_pyast.FunctionDef, _pyast.AsyncFunctionDef)):
+            out.append((s.name, None, ln))
+            out += [(n, None, ln) for n in _param_names(s.args)]
+        elif isinstance(s, _pyast.Lambda):
+            out += [(n, None, ln) for n in _param_names(s.args)]
+        elif isinstance(s, _pyast.ClassDef):
+            out.append((s.name, None, ln))
+        elif _PATTERN_BASE and isinstance(s, _PATTERN_BASE):
+            for attr in ("name", "rest"):
+                if getattr(s, attr, None):
+                    out.append((getattr(s, attr), None, ln))
+    return out
+
+
+def _exprs_in(x: Any) -> Iterator[Any]:
+    """Expression nodes directly held by `x` — descending through the
+    helper nodes that are neither statements nor expressions
+    (`arguments`, `keyword`, `withitem`, `match_case`, `comprehension`),
+    never into a statement or a pattern, and never into a binding
+    target field (those are names, not values)."""
+    if isinstance(x, _pyast.expr):
+        yield x
+    elif isinstance(x, list):
+        for e in x:
+            yield from _exprs_in(e)
+    elif isinstance(x, _pyast.AST) and not isinstance(x, _pyast.stmt) \
+            and not (_PATTERN_BASE and isinstance(x, _PATTERN_BASE)):
+        for field, child in _pyast.iter_fields(x):
+            if field in _TARGET_FIELDS:
+                continue
+            yield from _exprs_in(child)
+
+
+def _stmt_expr_children(stmt: Any) -> Iterator[Any]:
+    """The value expressions a statement evaluates: `for`'s iterable,
+    `if`/`while`'s test, `assert`'s operands, `raise`'s exception,
+    `match`'s subject and guards, a nested `def`'s decorators and
+    defaults, `del`'s operands. Bodies are statements and are visited on
+    their own; targets are binding sites."""
+    for field, child in _pyast.iter_fields(stmt):
+        if field in _TARGET_FIELDS:
+            continue
+        yield from _exprs_in(child)
+
+
+def _expr_children(node: Any) -> Iterator[Any]:
+    """Expression children of an expression, through helper nodes."""
+    for child in _pyast.iter_child_nodes(node):
+        if isinstance(child, _pyast.expr):
+            yield child
+        elif not isinstance(child, _pyast.stmt):
+            yield from _expr_children(child)
+
+
+class _NameScope:
+    """The resolver `_local_constants` uses while computing itself: it
+    knows which names the function binds (so a Name bound locally is
+    never resolved through an import) and resolves nothing else."""
+    def __init__(self, local_names):
+        self.local_names = frozenset(local_names)
+
+    def __call__(self, name: str) -> Optional[str]:
+        return None
+
+
+def _scope_has_content(stripped: Any) -> bool:
+    """A module or class body worth a scope of its own: it makes a call,
+    or it binds a string literal that is not a docstring. The second
+    half is E0723's: `API_KEY = "AKIA..."` at module level is THE
+    hardcoded-credential shape, and before scopes existed it was never
+    scanned at all. A docstring alone adds nothing."""
+    for s in _pyast.walk(stripped):
+        if isinstance(s, _pyast.Call):
+            return True
+        if isinstance(s, _pyast.Expr) and _const_str(s.value) is not None:
+            continue                      # a docstring / bare string statement
+        if isinstance(s, (_pyast.Assign, _pyast.AnnAssign)) \
+                and any(_const_str(c) is not None for c in _pyast.walk(s.value or s)):
+            return True
+    return False
+
+
+class _ScopeStripper(_pyast.NodeTransformer):
+    """Remove every `def` / `class` from a (copied) tree, leaving the
+    statements that run when the enclosing scope itself executes."""
+    def visit_FunctionDef(self, node):
+        return None
+    visit_AsyncFunctionDef = visit_FunctionDef
+    visit_ClassDef = visit_FunctionDef
 
 
 def _sql_builder_of(func: Any, imp: "_Imports") -> Optional[str]:
@@ -336,29 +532,43 @@ def _is_sql_expression(node: _pyast.Call, imp: "_Imports",
             ok = True
     if not ok:
         return False
+
+    def _raw_ok(a: Any) -> bool:
+        return _const_str(a) is not None \
+            or (isinstance(a, _pyast.Name) and a.id in lit_names)
+
     for sub in _pyast.walk(node):
-        if isinstance(sub, _pyast.Call) \
-                and _sql_builder_of(sub.func, imp) in _SQL_RAW_ENTRY:
-            a0 = sub.args[0] if sub.args else None
-            if _const_str(a0) is not None:
-                continue
-            if isinstance(a0, _pyast.Name) and a0.id in lit_names:
-                continue
-            return False
+        if not isinstance(sub, _pyast.Call):
+            continue
+        if _sql_builder_of(sub.func, imp) in _SQL_RAW_ENTRY:
+            if not _raw_ok(sub.args[0] if sub.args else None):
+                return False
+        elif isinstance(sub.func, _pyast.Attribute) \
+                and sub.func.attr in _SQL_RAW_METHODS:
+            strs = sub.args[1:] if sub.func.attr == "with_hint" else sub.args
+            if not all(_raw_ok(a) for a in strs):
+                return False
     return True
 
 
 def _assign_bindings(fn_node: Any) -> Dict[str, List[Any]]:
-    """name -> every value bound to it by a single-target assignment."""
+    """name -> every value bound to it, by ANY binding form; None stands
+    for a form whose value the translator cannot see (a parameter, an
+    augmented assignment, a for-target ...) and disqualifies the name in
+    every consumer."""
     out: Dict[str, List[Any]] = {}
-    for stmt in _pyast.walk(fn_node):
-        if isinstance(stmt, _pyast.Assign) and len(stmt.targets) == 1 \
-                and isinstance(stmt.targets[0], _pyast.Name):
-            out.setdefault(stmt.targets[0].id, []).append(stmt.value)
+    for name, value, _ln in _bindings_of(fn_node):
+        out.setdefault(name, []).append(value)
     return out
 
 
-def _sql_expression_names(fn_node: Any, imp: "_Imports") -> Tuple[Set[str], Set[str]]:
+def _is_none_const(v: Any) -> bool:
+    return isinstance(v, _pyast.Constant) and v.value is None
+
+
+def _sql_expression_names(fn_node: Any, imp: "_Imports",
+                          module_lits: Optional[Dict[str, Tuple[str, int]]] = None
+                          ) -> Tuple[Set[str], Set[str]]:
     """(names holding a SQL expression, names bound only to a str literal).
 
     The first is a least fixpoint that ALLOWS self-reference but REQUIRES
@@ -368,10 +578,19 @@ def _sql_expression_names(fn_node: Any, imp: "_Imports") -> Tuple[Set[str], Set[
     `stmt = stmt.where(x)` qualifies, and a parameter-only chain
     (`a = b.where(); b = a.where()`) never does — there is no anchor, and
     a name still clears nothing. A binding that fails the raw-string check
-    disqualifies the name outright, in every later round."""
+    disqualifies the name outright, in every later round.
+
+    A `stmt = None` sentinel before the real binding is ignored: executing
+    None is a TypeError, not a query. Every other non-call binding —
+    including the unresolved forms `_bindings_of` reports as None —
+    still disqualifies. A module-level literal constant the function
+    never rebinds counts as a literal-bound name."""
     binds = _assign_bindings(fn_node)
     lit = {n for n, vs in binds.items()
            if vs and all(_const_str(v) is not None for v in vs)}
+    lit |= {n for n in (module_lits or {}) if n not in binds}
+    binds = {n: [v for v in vs if not _is_none_const(v)]
+             for n, vs in binds.items()}
     sql: Set[str] = set()
     changed = True
     while changed:
@@ -558,11 +777,35 @@ def _concat(parts: List[Dict[str, Any]]) -> Dict[str, Any]:
     return out
 
 
+# Deepest expression the translator will nest. The detectors walk the IR
+# recursively (two frames per level), so an expression the frontend CAN
+# translate can still overflow a detector; capping here makes the limit
+# the frontend's, deterministic, and reported — a scope that hits it gets
+# an `unprovable` `too_deep` region and keeps every other finding.
+_MAX_EXPR_DEPTH = 200
+
+
 def _expr(node: Any, imp: "_Imports",
           safe_xml: Optional[Set[str]] = None,
           resolver: Optional[Any] = None) -> Dict[str, Any]:
     """One Python expression -> one Aether expression node. Total: always
-    returns a dict, never None."""
+    returns a dict, never None. Depth-capped through the scope's counter
+    (see `_MAX_EXPR_DEPTH`); without a scope there is nothing to count."""
+    if resolver is None or not hasattr(resolver, "depth"):
+        return _expr_inner(node, imp, safe_xml, resolver)
+    resolver.depth += 1
+    try:
+        if resolver.depth > _MAX_EXPR_DEPTH:
+            resolver.too_deep = True
+            return {"kind": "PyExpr", "py": "TooDeep"}
+        return _expr_inner(node, imp, safe_xml, resolver)
+    finally:
+        resolver.depth -= 1
+
+
+def _expr_inner(node: Any, imp: "_Imports",
+                safe_xml: Optional[Set[str]] = None,
+                resolver: Optional[Any] = None) -> Dict[str, Any]:
     if isinstance(node, _pyast.Constant):
         if isinstance(node.value, str):
             # `pos` is load-bearing: E0723 anchors on the literal itself,
@@ -570,7 +813,31 @@ def _expr(node: Any, imp: "_Imports",
             return {"kind": "StringLit", "value": node.value, "pos": _pos(node)}
         return {"kind": "PyExpr", "py": "Constant"}
     if isinstance(node, _pyast.Name):
+        # A module-level constant bound exactly once, to a str literal,
+        # and never rebound anywhere in the module IS that literal at
+        # every read site (`conn.execute(_CREATE_TABLE)`). Inlined rather
+        # than re-bound per function so the safe-name pass needs no
+        # extra rule; `synthetic` tells E0723 the literal is not written
+        # at this position (it is reported once, at its definition).
+        lits = getattr(resolver, "module_lits", None)
+        if lits and node.id in lits \
+                and node.id not in getattr(resolver, "local_names", ()):
+            return {"kind": "StringLit", "value": lits[node.id][0],
+                    "pos": _pos(node), "synthetic": True}
         return {"kind": "Ident", "name": node.id}
+    if isinstance(node, _pyast.Await):
+        # `await conn.execute(q)` IS the call — 603 sink calls in
+        # bench/framework_scan sat behind an await and were invisible
+        # because Await translated to an opaque leaf (BUG-012).
+        return _expr(node.value, imp, safe_xml, resolver)
+    if isinstance(node, (_pyast.Yield, _pyast.YieldFrom)):
+        if node.value is None:
+            return {"kind": "PyExpr", "py": "Yield"}
+        return _expr(node.value, imp, safe_xml, resolver)
+    if isinstance(node, _pyast.NamedExpr):
+        # The binding is emitted as a `Let` by the statement walk
+        # (`_FnVisitor._walrus_lets`), which carries the value once.
+        return {"kind": "PyExpr", "py": "NamedExpr"}
     if isinstance(node, _pyast.BinOp):
         # `a + b` is concatenation; `"fmt" % x` builds a dynamic string and
         # is the same hazard, so it gets the same shape.
@@ -612,7 +879,18 @@ def _expr(node: Any, imp: "_Imports",
         # dict values, so carrying the base is enough to find it again.
         return {"kind": "PyExpr", "py": "Attribute",
                 "base": _expr(node.value, imp, safe_xml, resolver)}
-    return {"kind": "PyExpr", "py": type(node).__name__}
+    # Every other expression is opaque to the rules (`PyExpr` matches no
+    # row, so an argument of this shape is REFUSED) — but its CHILDREN are
+    # translated and carried, so a sink call inside `x or []`, `a == b`,
+    # `not f()`, `c if t else e`, `f()[0]`, a list/dict/tuple display, a
+    # lambda body or a comprehension is still found by `walk`. Parking
+    # them under `parts` is enough: `_arg_reason` reads only `args[i]`,
+    # so a carried call can never be mistaken for a wrapper argument.
+    out: Dict[str, Any] = {"kind": "PyExpr", "py": type(node).__name__}
+    parts = [_expr(c, imp, safe_xml, resolver) for c in _expr_children(node)]
+    if parts:
+        out["parts"] = parts
+    return out
 
 
 def _dotted_of(node: Any, imp: "_Imports",
@@ -628,8 +906,15 @@ def _dotted_of(node: Any, imp: "_Imports",
             (node.value.id + "." + node.attr)
     if isinstance(node, _pyast.Name):
         if resolver is not None:
-            return resolver(node.id)
-        return None
+            d = resolver(node.id)
+            if d is not None:
+                return d
+            if node.id in getattr(resolver, "local_names", ()):
+                return None          # bound locally, not to one known value
+        # `from yaml import SafeLoader` then `Loader=SafeLoader`: the same
+        # import table the sink resolver trusts; a name two imports bind
+        # differently is ambiguous there and resolves to nothing.
+        return imp.resolve_name(node.id)
     return None
 
 
@@ -645,17 +930,17 @@ def _local_constants(fn_node: Any, imp: "_Imports") -> Dict[str, str]:
     Straight-line: no control flow is modeled, so a name assigned in one
     branch and read in another counts as one binding. That direction is
     safe here precisely because disagreement, not agreement, is what
-    disqualifies a name."""
+    disqualifies a name. Every binding form counts (`_bindings_of`): a
+    parameter, a for-target or a `+=` is a binding to an unknown value,
+    so `if loader is None: loader = yaml.SafeLoader` no longer proves a
+    caller-supplied loader safe (BUG-012)."""
+    binds = _bindings_of(fn_node)
+    names = _NameScope(n for n, _v, _l in binds)
     seen: Dict[str, Set[str]] = {}
-    for stmt in _pyast.walk(fn_node):
-        if not isinstance(stmt, _pyast.Assign) or len(stmt.targets) != 1:
-            continue
-        tgt = stmt.targets[0]
-        if not isinstance(tgt, _pyast.Name):
-            continue
-        val = _dotted_of(stmt.value, imp, None)
-        seen.setdefault(tgt.id, set()).add(val if val is not None
-                                           else "<unresolved>")
+    for name, value, _ln in binds:
+        val = _dotted_of(value, imp, names) if value is not None else None
+        seen.setdefault(name, set()).add(val if val is not None
+                                         else "<unresolved>")
     return {n: next(iter(vs)) for n, vs in seen.items()
             if len(vs) == 1 and "<unresolved>" not in vs}
 
@@ -664,6 +949,13 @@ def _guard_verdict(call: _pyast.Call, guard: "Guard", imp: "_Imports",
                    resolver: Optional[Any] = None) -> bool:
     """True if this call IS a sink under `guard`."""
     node = None
+    # A `**kwargs` splat (or a `*args` splat that could reach the
+    # positional slot) may carry the deciding keyword and cannot be
+    # resolved; the guard contract says unresolvable means SINK, so
+    # `subprocess.run(cmd, **opts)` is no longer read as "shell absent".
+    splat = any(kw.arg is None for kw in call.keywords or []) or (
+        guard.arg_index is not None
+        and any(isinstance(a, _pyast.Starred) for a in call.args))
     for kw in call.keywords or []:
         if kw.arg == guard.keyword:
             node = kw.value
@@ -672,7 +964,7 @@ def _guard_verdict(call: _pyast.Call, guard: "Guard", imp: "_Imports",
             and len(call.args) > guard.arg_index:
         node = call.args[guard.arg_index]
     if node is None:
-        return guard.absent_is_sink
+        return True if splat else guard.absent_is_sink
     dotted = _dotted_of(node, imp, resolver)
     if dotted is None:
         return True                      # unresolved -> sink, never safe
@@ -710,20 +1002,19 @@ def _safe_xml_parser_names(fn_node: Any, imp: "_Imports") -> Set[str]:
     value itself; merging them would change what each one accepts, and a
     tidier guard that accepts more is a worse guard."""
     bound: Dict[str, List[bool]] = {}
-    for stmt in _pyast.walk(fn_node):
-        if not isinstance(stmt, _pyast.Assign) or len(stmt.targets) != 1:
-            continue
-        tgt = stmt.targets[0]
-        if not isinstance(tgt, _pyast.Name) or not isinstance(stmt.value, _pyast.Call):
-            continue
-        dotted = _callee_spelling(stmt.value.func, imp)
-        if dotted not in _XML_PARSER_CTORS:
-            continue
-        off = any(kw.arg == "resolve_entities"
-                  and isinstance(kw.value, _pyast.Constant)
-                  and kw.value.value is False
-                  for kw in stmt.value.keywords or [])
-        bound.setdefault(tgt.id, []).append(off)
+    for name, value, _ln in _bindings_of(fn_node):
+        # EVERY binding of the name is recorded — a rebinding to anything
+        # but a hardened constructor is False and disqualifies it. The
+        # old loop skipped non-constructor bindings, so `parser = make()`
+        # after the safe constructor still disarmed the sink (BUG-012).
+        off = False
+        if isinstance(value, _pyast.Call) \
+                and _callee_spelling(value.func, imp) in _XML_PARSER_CTORS:
+            off = any(kw.arg == "resolve_entities"
+                      and isinstance(kw.value, _pyast.Constant)
+                      and kw.value.value is False
+                      for kw in value.keywords or [])
+        bound.setdefault(name, []).append(off)
     return {n for n, flags in bound.items() if flags and all(flags)}
 
 
@@ -731,7 +1022,7 @@ def _sink_name(call: _pyast.Call, imp: "_Imports",
                safe_xml: Optional[Set[str]] = None,
                resolver: Optional[Any] = None) -> Optional[str]:
     """The Aether sink name for this Python call, or None."""
-    dotted = _callee_spelling(call.func, imp)
+    dotted = _callee_spelling(call.func, imp, resolver)
     if dotted is None:
         return None
     guard = SINK_GUARDS.get(dotted)
@@ -756,8 +1047,27 @@ def _sink_name(call: _pyast.Call, imp: "_Imports",
     # used to live here cleared ANY two-argument execute, so
     # `cur.execute("SELECT ... " + name, extra)` went silent: params do not
     # launder a concatenated query. BUGS.md BUG-004.
-    if isinstance(call.func, _pyast.Attribute):
-        return SINK_BY_METHOD.get(call.func.attr)
+    attr = _method_name(call.func, resolver)
+    if attr is not None:
+        return SINK_BY_METHOD.get(attr)
+    return None
+
+
+def _method_name(func: Any, resolver: Optional[Any] = None) -> Optional[str]:
+    """The method a call spells, for the by-name sink rule: `x.execute`,
+    `getattr(x, "execute")` with a literal attribute, or a bare name the
+    function bound once to a bound method (`ex = cur.execute; ex(q)`).
+    Lookups can only ADD a finding, so a wrong resolution over-flags."""
+    if isinstance(func, _pyast.Attribute):
+        return func.attr
+    if isinstance(func, _pyast.Call) and isinstance(func.func, _pyast.Name) \
+            and func.func.id == "getattr" and len(func.args) >= 2 \
+            and _const_str(func.args[1]) is not None:
+        return _const_str(func.args[1])
+    if isinstance(func, _pyast.Name) and resolver is not None:
+        d = resolver(func.id)
+        if d and "." in d:
+            return d.rpartition(".")[2]
     return None
 
 
@@ -780,7 +1090,7 @@ def _call_expr(node: _pyast.Call, imp: "_Imports",
     misses, so it is not a soundness bug — but an unmapped, unaudited
     sink is invisible to `mapping_table()`, which is exactly what the
     auditable-surface design exists to prevent."""
-    dotted = _callee_spelling(node.func, imp)
+    dotted = _callee_spelling(node.func, imp, resolver)
     name = (_sink_name(node, imp, safe_xml, resolver)
             or SANITIZER_BY_QUALIFIED.get(dotted or "")
             # A SQLAlchemy expression is a parameterized query by
@@ -788,10 +1098,27 @@ def _call_expr(node: _pyast.Call, imp: "_Imports",
             # SANITIZER_BY_QUALIFIED makes for `shlex.quote` (BUG-010).
             or ("sqlBind" if _is_sql_expression(node, imp, resolver) else None)
             or ("py:" + dotted if dotted else "<expr>"))
+    args = list(node.args)
+    kws = list(node.keywords or [])
+    if not args and kws:
+        # A sink fed keyword-only — `yaml.load(stream=raw)`,
+        # `cur.execute(query=q)`, `subprocess.run(args=cmd, shell=True)` —
+        # has nothing in the positional slot the rules judge, so it was
+        # silent. The keyword values take the positional slots, in
+        # order. Flag-more: whatever lands in `args[0]` is refused unless
+        # it is a literal or a sanctioned wrapper (BUG-012).
+        args = [kw.value for kw in kws]
+        kws = []
     out: Dict[str, Any] = {"kind": "Call",
                            "func": {"kind": "Ident", "name": name},
-                           "args": [_expr(a, imp, safe_xml, resolver) for a in node.args],
+                           "args": [_expr(a, imp, safe_xml, resolver) for a in args],
                            "pos": _pos(node)}
+    # Keyword values are carried too, so `f(k=cur.execute(q))` is found by
+    # `walk`; `_arg_reason` reads only `args[i]`, so nothing here is ever
+    # judged as the sink's own argument (BUG-012).
+    kw_vals = [_expr(kw.value, imp, safe_xml, resolver) for kw in kws]
+    if kw_vals:
+        out["kwargs"] = kw_vals
     # A call used as a RECEIVER is still a call: `open(p).read()`,
     # `conn.cursor().execute(sql)`, `requests.get(u).json()`. Chaining is
     # idiomatic Python, and dropping the receiver loses the sink entirely
@@ -805,11 +1132,24 @@ def _call_expr(node: _pyast.Call, imp: "_Imports",
     return out
 
 
-def _callee_spelling(func: Any, imp: "_Imports") -> Optional[str]:
+def _callee_spelling(func: Any, imp: "_Imports",
+                     resolver: Optional[Any] = None) -> Optional[str]:
     """Dotted path for a call target, using the file's imports; falls back
-    to the bare attribute/name as written."""
+    to the bare attribute/name as written. With a `resolver`, a bare name
+    the function bound once to a dotted value (`run = subprocess.run`)
+    spells that value; `getattr(obj, "m")(...)` with a literal attribute
+    spells `obj.m`."""
     if isinstance(func, _pyast.Name):
-        return imp.resolve_name(func.id) or func.id
+        d = imp.resolve_name(func.id)
+        if d is None and resolver is not None:
+            d = resolver(func.id)
+        return d or func.id
+    if isinstance(func, _pyast.Call) and isinstance(func.func, _pyast.Name) \
+            and func.func.id == "getattr" and len(func.args) >= 2 \
+            and _const_str(func.args[1]) is not None:
+        return _callee_spelling(
+            _pyast.Attribute(value=func.args[0], attr=_const_str(func.args[1]),
+                             ctx=_pyast.Load()), imp, resolver)
     if isinstance(func, _pyast.Attribute):
         if isinstance(func.value, _pyast.Name):
             return imp.resolve_attr(func.value.id, func.attr) or func.attr
@@ -860,7 +1200,9 @@ class _FnVisitor:
                  fn_line: int, safe_xml: Optional[Set[str]] = None,
                  consts: Optional[Dict[str, str]] = None,
                  sql_names: Optional[Set[str]] = None,
-                 lit_names: Optional[Set[str]] = None):
+                 lit_names: Optional[Set[str]] = None,
+                 local_names: Optional[Set[str]] = None,
+                 module_lits: Optional[Dict[str, Tuple[str, int]]] = None):
         self.imp = imports
         # Names bound to an XML parser with entity resolution disabled —
         # the guard lives in a different statement than the parse call.
@@ -871,7 +1213,8 @@ class _FnVisitor:
         self.consts: Dict[str, str] = consts or {}
         # What the expression translator resolves against. Empty sets mean
         # no name holds a SQL expression or a literal — the sound default.
-        self.scope = _FnScope(self.consts, sql_names or (), lit_names or ())
+        self.scope = _FnScope(self.consts, sql_names or (), lit_names or (),
+                              local_names or (), module_lits)
         self.local_fns = local_fns
         self.fn_name = fn_name
         self.fn_line = fn_line
@@ -904,25 +1247,86 @@ class _FnVisitor:
             "construct_line": line, "needs": "human review or a runtime check",
         })
 
+    def _e(self, node: Any) -> Dict[str, Any]:
+        return _expr(node, self.imp, self.safe_xml, self.scope)
+
+    def seed_bindings(self, fn_node: Any):
+        """One unresolved binding per name bound by a form whose value the
+        translator cannot see — a parameter, `x += ...`, a for-target, a
+        tuple unpack, an except-as, a `global` — emitted as an `Assign`
+        (the kind the safe-name pass reads alongside `Let`) whose value
+        is an opaque `PyExpr`. A name with such a binding can never prove
+        literal-only, whatever else it is bound to (BUG-012)."""
+        seen: Set[str] = set()
+        for name, value, line in _bindings_of(fn_node):
+            if value is None and name not in seen:
+                seen.add(name)
+                self.stmts.append({"kind": "Assign", "name": name,
+                                   "value": {"kind": "PyExpr", "py": "Binding"},
+                                   "pos": {"line": line, "column": 1}})
+
+    def _walrus_lets(self, expr: Any):
+        """`(q := build())` binds a name inside an expression; the binding
+        is a `Let` carrying the value ONCE — `_expr` translates the
+        NamedExpr itself to an opaque leaf."""
+        for sub in _pyast.walk(expr):
+            if isinstance(sub, _pyast.NamedExpr):
+                self.stmts.append({"kind": "Let", "name": sub.target.id,
+                                   "value": self._e(sub.value),
+                                   "pos": _pos(sub, self.fn_line)})
+
     def visit_stmt(self, stmt: Any):
-        """Collect the statements the detectors read: single-target
-        assignments (the safe-name pass's input) and expression calls
-        (the sink sites). Everything else contributes nothing — control
-        flow is not modeled, exactly as in the Aether passes themselves."""
+        """Translate ONE statement into what the detectors read: `Let`
+        nodes for the bindings the safe-name pass consumes, and every
+        value expression the statement evaluates, in place.
+
+        Total over statement kinds. The old walk translated four
+        (`Assign`, `Expr(Call)`, `Return`, `With`) and dropped the rest,
+        so a sink in a `for` iterable, an `if` test, a `yield`, an
+        `assert`, a tuple-target assignment, an augmented assignment or
+        a decorator was never seen — 89 sink calls on the framework
+        corpus, plus 603 behind `await` (BUG-012). Control flow is still
+        not modeled, exactly as in the Aether passes themselves; what
+        changed is that no POSITION hides a value."""
         if isinstance(stmt, (_pyast.Assign, _pyast.AnnAssign)):
             targets = stmt.targets if isinstance(stmt, _pyast.Assign) else [stmt.target]
-            if len(targets) == 1 and isinstance(targets[0], _pyast.Name) \
-                    and stmt.value is not None:
-                self.stmts.append({"kind": "Let", "name": targets[0].id,
-                                   "value": _expr(stmt.value, self.imp, self.safe_xml, self.scope),
-                                   "pos": _pos(stmt, self.fn_line)})
+            if stmt.value is None:          # a bare annotation binds nothing
+                return
+            if _is_none_const(stmt.value):
+                # `stmt = None` before `stmt = select(...)`: a None can
+                # never reach a sink as a query, path or command
+                # (executing it is a TypeError), so it is not a binding
+                # the safe-name pass needs to see. Every other constant
+                # kind still binds an opaque value.
+                return
+            self._walrus_lets(stmt.value)
+            val = self._e(stmt.value)
+            carried = False
+            for t in targets:
+                if isinstance(t, _pyast.Name):
+                    # `a = b = f()`: the value travels with the first name;
+                    # later names get an opaque binding (never a cleared one).
+                    self.stmts.append({"kind": "Let", "name": t.id,
+                                       "value": val if not carried
+                                       else {"kind": "PyExpr", "py": "Assign"},
+                                       "pos": _pos(stmt, self.fn_line)})
+                    carried = True
+                else:
+                    # `self.x = ...`, `out[k] = ...`, `a, b = ...`: no local
+                    # name proves anything, but the value is still a
+                    # statement the rules must see. The index/base of the
+                    # target can hold calls too.
+                    for sub in _exprs_in(t):
+                        for c in _expr_children(sub):
+                            self.stmts.append(self._e(c))
+            if not carried:
+                self.stmts.append(val)
             return
-        if isinstance(stmt, _pyast.Expr) and isinstance(stmt.value, _pyast.Call):
-            self.stmts.append(_expr(stmt.value, self.imp, self.safe_xml, self.scope))
-            return
-        if isinstance(stmt, _pyast.Return) and stmt.value is not None:
-            self.stmts.append({"kind": "Return", "value": _expr(stmt.value, self.imp, self.safe_xml, self.scope),
-                               "pos": _pos(stmt, self.fn_line)})
+        if isinstance(stmt, _pyast.AugAssign):
+            # The name's binding was seeded unresolved; the value is a
+            # statement of its own (`out += subprocess.check_output(c)`).
+            self._walrus_lets(stmt.value)
+            self.stmts.append(self._e(stmt.value))
             return
         if isinstance(stmt, (_pyast.With, _pyast.AsyncWith)):
             # `with open(path) as f:` is THE idiomatic Python file access.
@@ -931,7 +1335,8 @@ class _FnVisitor:
             # benign-corpus false-positive count looked good only because
             # most file opens were invisible.
             for item in stmt.items:
-                val = _expr(item.context_expr, self.imp, self.safe_xml, self.scope)
+                self._walrus_lets(item.context_expr)
+                val = self._e(item.context_expr)
                 tgt = item.optional_vars
                 if isinstance(tgt, _pyast.Name):
                     self.stmts.append({"kind": "Let", "name": tgt.id,
@@ -939,6 +1344,22 @@ class _FnVisitor:
                                        "pos": _pos(stmt, self.fn_line)})
                 else:
                     self.stmts.append(val)
+            return
+        if isinstance(stmt, _pyast.Return):
+            if stmt.value is not None:
+                self._walrus_lets(stmt.value)
+                self.stmts.append({"kind": "Return", "value": self._e(stmt.value),
+                                   "pos": _pos(stmt, self.fn_line)})
+            return
+        # Every other statement — `Expr` (any value, not only a call),
+        # `for`/`if`/`while` tests and iterables, `assert`, `raise`,
+        # `match` subjects and guards, `del`, and the decorators, defaults
+        # and annotations of a nested `def` or `class` — evaluates its
+        # expression children in place. Bodies are statements and are
+        # visited on their own; targets are binding sites, seeded above.
+        for child in _stmt_expr_children(stmt):
+            self._walrus_lets(child)
+            self.stmts.append(self._e(child))
 
     def visit_call(self, call: _pyast.Call):
         func = call.func
@@ -1069,59 +1490,156 @@ def py_to_ir(source: str) -> Tuple[Dict[str, Any], Dict[str, List[Dict[str, Any]
         elif isinstance(n, _pyast.ImportFrom):
             imports.add_importfrom(n)
 
-    def collect(node, prefix=""):
-        for child in node.body:
+    # Every `def` at any STATEMENT depth outside a function body: under
+    # `try:` (the optional-dependency fallback every framework writes),
+    # under `if`, inside a `with`/`for`, in a class nested in a class.
+    # `collect` used to read only direct children of the module and of
+    # its top-level classes, so a `def` anywhere else was never analysed
+    # at all — the function-shaped instance of BUG-011 (BUG-012). Nested
+    # functions (a `def` inside a `def`) stay part of their enclosing
+    # function: `_pyast.walk` already translates their bodies there.
+    class_nodes: List[Tuple[str, Any]] = []
+
+    def scope_stmts(stmts):
+        """Statements of one scope, through `if`/`try`/`with`/`for`/
+        `match` blocks, never into a `def` or `class` body."""
+        for child in stmts:
+            yield child
+            if isinstance(child, (_pyast.FunctionDef, _pyast.AsyncFunctionDef,
+                                  _pyast.ClassDef)):
+                continue
+            for field in ("body", "orelse", "finalbody"):
+                yield from scope_stmts(getattr(child, field, None) or [])
+            for h in getattr(child, "handlers", None) or []:
+                yield from scope_stmts(h.body)
+            for c in getattr(child, "cases", None) or []:
+                yield from scope_stmts(c.body)
+
+    def collect(stmts, prefix=""):
+        for child in scope_stmts(stmts):
             if isinstance(child, (_pyast.FunctionDef, _pyast.AsyncFunctionDef)):
-                qual = (prefix + child.name)
-                func_nodes.append((qual, child))
+                func_nodes.append((prefix + child.name, child))
             elif isinstance(child, _pyast.ClassDef):
-                for m in child.body:
-                    if isinstance(m, (_pyast.FunctionDef, _pyast.AsyncFunctionDef)):
-                        func_nodes.append((child.name + "." + m.name, m))
-    collect(tree)
+                class_nodes.append((prefix + child.name, child))
+                collect(child.body, prefix + child.name + ".")
+    collect(tree.body)
 
     local_fn_names: Set[str] = set(q for q, _ in func_nodes)
     # local-call resolution uses simple names too (module-level helpers)
     simple_names: Set[str] = set(q.split(".")[-1] for q, _ in func_nodes if "." not in q)
 
+    # Module-level literal constants: a name bound exactly ONCE in the
+    # whole module, at module level, to a str literal — by any binding
+    # form, in any function (a `global` declaration or a parameter of
+    # the same name is a second binding and disqualifies it). Such a
+    # name IS its literal at every read (`conn.execute(_CREATE_TABLE)`).
+    mod_binds: Dict[str, int] = {}
+    for n, _v, _l in _bindings_of(tree):
+        mod_binds[n] = mod_binds.get(n, 0) + 1
+    module_lits: Dict[str, Tuple[str, int]] = {}
+    for s in scope_stmts(tree.body):
+        if isinstance(s, _pyast.Assign) and len(s.targets) == 1 \
+                and isinstance(s.targets[0], _pyast.Name) \
+                and _const_str(s.value) is not None \
+                and mod_binds.get(s.targets[0].id) == 1:
+            module_lits[s.targets[0].id] = (_const_str(s.value),
+                                            getattr(s, "lineno", 0))
+
     decls: List[Dict[str, Any]] = []
     unprovable_map: Dict[str, List[Dict[str, Any]]] = {}
     export_names: List[str] = []
 
-    for qual, node in func_nodes:
-        line = getattr(node, "lineno", 0)
-        sql_names, lit_names = _sql_expression_names(node, imports)
-        v = _FnVisitor(imports, simple_names, qual, line,
-                       _safe_xml_parser_names(node, imports),
-                       _local_constants(node, imports),
-                       sql_names, lit_names)
-        # Two separate walks, deliberately. `visit_call` drives the untouched
-        # capability/UNPROVABLE analysis over EVERY call anywhere in the
-        # function (including inside comprehensions and nested calls);
-        # `visit_stmt` builds the expression shapes the detectors judge.
-        # Merging them would change what the capability pass sees.
-        for sub in _pyast.walk(node):
-            if isinstance(sub, _pyast.Call):
-                v.visit_call(sub)
-        for sub in _pyast.walk(node):
-            if isinstance(sub, (_pyast.Assign, _pyast.AnnAssign, _pyast.Expr,
-                                _pyast.Return, _pyast.With, _pyast.AsyncWith)):
-                v.visit_stmt(sub)
+    def translate(qual: str, node: Any, line: int):
+        v = _FnVisitor(imports, simple_names, qual, line, module_lits=module_lits)
+        try:
+            sql_names, lit_names = _sql_expression_names(node, imports, module_lits)
+            v = _FnVisitor(imports, simple_names, qual, line,
+                           _safe_xml_parser_names(node, imports),
+                           _local_constants(node, imports),
+                           sql_names, lit_names,
+                           {n for n, _v, _l in _bindings_of(node)},
+                           module_lits)
+            # Two separate walks, deliberately. `visit_call` drives the
+            # untouched capability/UNPROVABLE analysis over EVERY call
+            # anywhere in the function (including inside comprehensions
+            # and nested calls); `visit_stmt` builds the expression shapes
+            # the detectors judge. Merging them would change what the
+            # capability pass sees.
+            for sub in _pyast.walk(node):
+                if isinstance(sub, _pyast.Call):
+                    v.visit_call(sub)
+            v.seed_bindings(node)
+            for sub in _pyast.walk(node):
+                if isinstance(sub, (_pyast.stmt, _pyast.excepthandler)) \
+                        or type(sub).__name__ == "match_case":
+                    v.visit_stmt(sub)
+            if v.scope.too_deep:
+                v._add_unprovable("too_deep", qual,
+                                  f"an expression in this scope is nested deeper "
+                                  f"than {_MAX_EXPR_DEPTH} levels; the part below "
+                                  f"the cap was not translated and its calls were "
+                                  f"not judged", line)
+        except RecursionError:
+            # An expression deeper than the interpreter's stack. The old
+            # behaviour let it escape and the CLI counted the WHOLE FILE
+            # as unreadable — every other function's findings lost, exit
+            # 0. Now this one scope reports an unprovable region and the
+            # rest of the file is judged (BUG-012).
+            v.stmts = []
+            v._add_unprovable("too_deep", qual,
+                              "an expression in this scope is nested deeper "
+                              "than the analyzer can translate; its calls "
+                              "were not judged", line)
         body_calls = [{"kind": "Call",
                        "func": {"kind": "Ident", "name": c},
                        "args": [], "pos": {"line": line, "column": 1}}
                       for c in v.local_calls]
-        body = v.stmts + body_calls
         decls.append({
             "kind": "FunctionDecl",
             "name": qual,
             "effects": v.effects,
-            "body": body,
+            "body": v.stmts + body_calls,
             "pos": {"line": line, "column": 1},
         })
         export_names.append(qual)
         if v.unprovable:
             unprovable_map[qual] = v.unprovable
+
+    for qual, node in func_nodes:
+        translate(qual, node, getattr(node, "lineno", 0))
+
+    # Code that runs when the module is imported — `os.system(sys.argv[1])`
+    # at the top level, an `if __name__ == "__main__":` block, a class
+    # attribute computed at class-creation time — was never analysed:
+    # `n_functions: 0, ok: true` for a script whose whole body is a sink
+    # (BUG-012). Each such scope becomes one synthetic decl, `<module>` or
+    # `Class.<class>`, run through the identical machinery; a scope with
+    # no call at all is omitted so a module of plain assignments adds
+    # nothing to the output.
+    n_scopes = 0
+    # Stripped IN PLACE, after every `def` has been translated from its
+    # own node: removing a `def` from its parent's list does not touch
+    # the node. No copy — a deep copy of a deep expression is itself a
+    # RecursionError. `generic_visit`, not `visit`, on a class: strip
+    # its CHILDREN and keep the class node (`visit_ClassDef` deletes).
+    stripper = _ScopeStripper()
+    scopes = [(q + ".<class>", c, getattr(c, "lineno", 0)) for q, c in class_nodes]
+    scopes.append(("<module>", tree, 1))
+    for qual, node, line in scopes:
+        try:
+            stripped = stripper.generic_visit(node)
+        except RecursionError:
+            unprovable_map.setdefault(qual, []).append({
+                "fn": qual, "line": line, "granularity": "function",
+                "callee": qual, "reason": "too_deep",
+                "detail": "an expression in this scope is nested deeper than "
+                          "the analyzer can translate; its calls were not judged",
+                "construct_line": line, "needs": "human review or a runtime check"})
+            continue
+        if not _scope_has_content(stripped):
+            continue
+        n_scopes += 1
+        translate(qual, stripped, line)
 
     module_name = "PythonModule"
     decls.insert(0, {
@@ -1134,8 +1652,8 @@ def py_to_ir(source: str) -> Tuple[Dict[str, Any], Dict[str, List[Dict[str, Any]
 
     ast_dict = {"kind": "Program", "decls": decls}
     meta = {"lang": "python", "module": module_name,
-            "n_functions": len(func_nodes), "pymap_version": PYMAP_VERSION,
-            "mode": "sound"}
+            "n_functions": len(func_nodes), "n_scopes": n_scopes,
+            "pymap_version": PYMAP_VERSION, "mode": "sound"}
     return ast_dict, unprovable_map, meta
 
 
@@ -1164,6 +1682,7 @@ def mapping_table() -> Dict[str, Any]:
             "roots": sorted(_SQL_EXPR_ROOTS),
             "builders": sorted(_SQL_EXPR_BUILDERS),
             "table_methods_argument_free_only": sorted(_SQL_TABLE_METHODS),
-            "raw_string_entry_points": sorted(_SQL_RAW_ENTRY)},
+            "raw_string_entry_points": sorted(_SQL_RAW_ENTRY),
+            "raw_string_methods": sorted(_SQL_RAW_METHODS)},
         "mode": "sound",
     }
