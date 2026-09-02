@@ -505,7 +505,7 @@ Residual: `collect()` still discovers FUNCTIONS only as direct children of
 module and class bodies, so a `def` nested under `if TYPE_CHECKING:` or
 `try:` is not analysed at all. Different gap, same shape; not fixed here.
 
-### BUG-012  a sink in any statement position the translator did not model was SILENT, and a rebinding it did not model proved a name literal-only  [OPEN]
+### BUG-012  a sink in any statement position the translator did not model was SILENT, and a rebinding it did not model proved a name literal-only  [FIXED 8afdfad]
 test: tests/test_py_frontend_sinks.py
 
 
