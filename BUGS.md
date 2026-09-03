@@ -889,7 +889,11 @@ on the old marker-wide rule. E0730 (return laundering) is untouched — a
 return has no callee parameter to summarise, so the coarseness stands
 there.
 
-### BUG-024  the iter-51 rules over-flagged: shadowed names and self-sanitizing callees (false reject)  [OPEN]
+### BUG-024  the iter-51 rules over-flagged: shadowed names and self-sanitizing callees (false reject)  [FIXED 8f94e59]
+test: tests/test_static_effects.py
+(half (a) above; half (b) is locked by
+`tests/test_effect_scope.py::test_boundary_callee_sanitizes_internally_clean`
+and `::test_boundary_callee_wraps_without_sanitizing_still_rejected`)
 
 Found 2026-09-03 by the review of iteration 51's own commit `eaeb316`.
 Two over-flags shipped in that commit; both were exit 0 on `3986d38` and
@@ -962,7 +966,8 @@ BEFORE a later `let` of the same name is also treated as shadowed, which
 is the accept direction. The sanitizer prune is syntactic at the sink
 call, which the pre-existing one-level/direct-Ident limit already bounds.
 
-### BUG-025  an alias of a function-typed parameter reopened BUG-022 (false accept)  [OPEN]
+### BUG-025  an alias of a function-typed parameter reopened BUG-022 (false accept)  [FIXED 8f94e59]
+test: tests/test_effect_scope.py
 
 Found 2026-09-03 by the review of iteration 51. `check_marker_boundary`
 matched `ftparams` against the LITERAL callee name, and `_fn_aliases`
