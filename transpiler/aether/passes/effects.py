@@ -621,6 +621,11 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
             ftparams = {p["name"] for p in d.get("params", [])
                         if isinstance(p.get("type"), dict)
                         and p["type"].get("kind") == "FunctionType"}
+            # An alias of one is the same callee (BUGS.md BUG-025):
+            # `let g = f  g(x)` reaches whatever the caller supplied,
+            # exactly as `f(x)` does. Matching the literal callee name
+            # only let one `let` reopen the laundering BUG-022 closed.
+            ft_al = _fn_aliases(d, frozenset(ftparams)) if ftparams else {}
             leaks = lambda node, uw: _expr_leaks_marked(   # noqa: E731
                 node, tainted, uw, src_l, pmask_l, mfields, rec_names)
             for call in walk(d.get("body", []), "Call"):
@@ -629,7 +634,9 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
                 cands = [direct] if direct is not None else \
                     [decls[t] for t in sorted(al.get(cname, set())) if t in decls]
                 if not cands:
-                    if cname not in ftparams:
+                    ftn = cname if cname in ftparams else next(
+                        iter(sorted(ft_al.get(cname, set()))), None)
+                    if ftn is None:
                         continue  # stdlib / unknown: covered by sink passes
                     # No sanctioned crossing exists here on purpose: a
                     # function TYPE's parameter types are not checked
@@ -648,7 +655,10 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
                             message=(
                                 f"function {fn!r} passes a {marker}<...>-marked "
                                 f"value through function-typed parameter "
-                                f"{cname!r}; the callee is not known at analysis "
+                                f"{ftn!r}"
+                                + ("" if ftn == cname
+                                   else f" (through alias {cname!r})")
+                                + f"; the callee is not known at analysis "
                                 f"time, so the marker is erased and every sink "
                                 f"check goes blind (taint laundering)"
                             ),
@@ -663,7 +673,7 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
                             ),
                             confidence=1.0,
                             extra={"function": fn, "callee": cname,
-                                   "param": cname, "marker": marker,
+                                   "param": ftn, "marker": marker,
                                    "via": "function_type"},
                         ))
                     continue
@@ -700,8 +710,9 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
                             if mism is None:
                                 continue
                             why = (f"; it was cleared with {mism[0]}(...), but "
-                                   f"{callee['name']!r} passes it to "
-                                   f"{mism[1]!r}, whose sanitizer is {mism[2]}")
+                                   f"inside {callee['name']!r} it reaches "
+                                   f"{mism[1]!r} unsanitized, whose sanitizer "
+                                   f"is {mism[2]}")
                             extra_reason = {"cleared_with": mism[0],
                                             "reaches_sink": mism[1],
                                             "needs": mism[2]}
@@ -1929,6 +1940,11 @@ def check_effects(ast: Dict[str, Any]) -> List[Diagnostic]:
         caller_effects = _declared_effects(d)
         pos = d.get("pos") or {"line": 0, "column": 0}
         al = _fn_aliases(d, alias_targets)
+        # A bare Ident argument names a FUNCTION only when nothing local
+        # shadows it. A `String` PARAMETER called `logIt`, or
+        # `let notify = "hello"`, is a value — resolving it by global
+        # name invented an effect for a string (BUGS.md BUG-024).
+        local = {p.get("name") for p in d.get("params", [])}             | {n for n, _, _ in _walk_binds(d.get("body", []))}
 
         for call in walk(d.get("body", []), "Call"):
             name = callee_name(call)
@@ -1941,14 +1957,23 @@ def check_effects(ast: Dict[str, Any]) -> List[Diagnostic]:
             # (BUGS.md BUG-022): `apply(logIt, s)` from a `pure` caller
             # performs `log`. A pure function value adds nothing, so
             # `map(double, xs)` stays clean.
-            passed = [a["name"] for a in (call.get("args") or [])
-                      if isinstance(a, dict) and a.get("kind") == "Ident"
-                      and a.get("name") not in union_cases
-                      and (a.get("name") in user_effects
-                           or a.get("name") in _STDLIB_EFFECTS)]
-            targets = [(c, False) for c in
-                       ([name] if direct else sorted(al.get(name, set())))]
-            targets += [(c, True) for c in passed]
+            passed: List[Tuple[str, str]] = []
+            for a in call.get("args") or []:
+                if not isinstance(a, dict) or a.get("kind") != "Ident":
+                    continue
+                nm = a.get("name")
+                if nm in union_cases:
+                    continue
+                if nm in local:
+                    # Shadowed: only an alias binding (`let g = logIt`)
+                    # still names a function, and `al` resolved it.
+                    passed += [(t, nm) for t in sorted(al.get(nm, set()))]
+                elif nm in user_effects or nm in _STDLIB_EFFECTS:
+                    passed.append((nm, nm))
+            targets: List[Tuple[str, Optional[str]]] = [
+                (c, None) for c in
+                ([name] if direct else sorted(al.get(name, set())))]
+            targets += passed
             for callee, as_value in targets:
                 if callee in user_effects:
                     callee_effects = user_effects[callee]
@@ -1960,10 +1985,12 @@ def check_effects(ast: Dict[str, Any]) -> List[Diagnostic]:
                         continue
                     missing_pretty = _format_effect(callee_eff)
                     caller_pretty = _format_effect_list(caller_effects)
-                    if as_value:
-                        what = (f"passes {callee!r} as a value to {name!r}, "
-                                f"whose effect {missing_pretty} is not covered "
-                                f"by the caller")
+                    if as_value is not None:
+                        alias = ("" if as_value == callee
+                                 else f" (alias of {callee!r})")
+                        what = (f"passes {as_value!r}{alias} as a value to "
+                                f"{name!r}, whose effect {missing_pretty} is "
+                                f"not covered by the caller")
                     else:
                         via = "" if callee == name else f" (through alias {name!r})"
                         what = (f"calls {callee!r}{via} which has effect "
@@ -1989,7 +2016,8 @@ def check_effects(ast: Dict[str, Any]) -> List[Diagnostic]:
                                 [list(p), a] for p, a in caller_effects
                             ],
                             "missing_effect": [list(callee_eff[0]), callee_eff[1]],
-                            **({"via": "function_value"} if as_value else {}),
+                            **({"via": "function_value"}
+                               if as_value is not None else {}),
                         },
                     ))
     return diags

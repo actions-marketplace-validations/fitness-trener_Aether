@@ -692,6 +692,63 @@ def test_covered_function_value_clean():
     print("B.1 E0801: a caller declaring the effect covers the passed value")
 
 
+def test_shadowed_name_is_not_a_function_value():
+    # Review of iter-51: the function-value rule resolved a bare Ident
+    # argument by GLOBAL name with no check that it was bound locally,
+    # so a plain String PARAMETER named after a `log` function invented
+    # an effect for a string. BUGS.md BUG-024.
+    src = """
+function logIt(s: String) returns Unit
+  effects log
+do
+  print(s)
+end
+
+function main(logIt: String) returns String
+  effects pure
+do
+  return concat(logIt, "x")
+end
+"""
+    assert _check(src) == [], "a shadowing parameter is a value, not a function"
+    src2 = """
+function notify(s: String) returns Unit
+  effects net
+do
+  httpGet(s)
+end
+
+function keep(s: String) returns String
+  effects pure
+do
+  return s
+end
+
+function main() returns String
+  effects pure
+do
+  let notify = "hello"
+  return keep(notify)
+end
+"""
+    assert _check(src2) == [], "a shadowing let-binding is a value too"
+    print("B.1 E0801: a locally shadowed name is not a function value")
+
+
+def test_aliased_function_value_escape():
+    # The same edit closes the gap iter-51 documented: `let g = logIt`
+    # then `apply(g, s)` is the same obligation as passing logIt.
+    src = FN_VALUE_ESCAPE_SRC.replace(
+        "  apply(logIt, s)", "  let g = logIt\n  apply(g, s)")
+    diags = [d for d in _check(src) if d.code == "E0801"]
+    pairs = {(d.extra.get("caller"), d.extra.get("callee")) for d in diags}
+    assert ("main", "logIt") in pairs,         f"an alias of a function value carries the same effects; got {pairs}"
+    d = next(d for d in diags if d.extra.get("caller") == "main")
+    assert d.extra.get("via") == "function_value"
+    assert "passes 'g' (alias of 'logIt')" in d.message
+    print("B.1 E0801: an aliased function value is an effect escape")
+
+
 # Tack the B.2 tests onto the __main__ runner.
 if __name__ == "__main__":
     test_positive_glob()
@@ -699,4 +756,6 @@ if __name__ == "__main__":
     test_function_value_effect_escape()
     test_pure_function_value_clean()
     test_covered_function_value_clean()
+    test_shadowed_name_is_not_a_function_value()
+    test_aliased_function_value_escape()
     print("B.2 glob tests pass")

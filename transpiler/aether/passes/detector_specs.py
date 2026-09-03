@@ -808,6 +808,21 @@ def _marker_sink_args() -> Dict[str, Optional[Tuple[int, ...]]]:
     return out
 
 
+def _marker_sink_unwrappers() -> Dict[str, frozenset]:
+    """sink name -> every sanitizer a marker row demands AT that sink,
+    plus the sink-agnostic assertions (`trusted(...)`). A parameter that
+    reaches a sink only THROUGH one of these does not reach it raw:
+    counting it reported the idiomatic callee that sanitizes internally
+    (`htmlResponse(htmlEscape(s))`) as feeding the sink unsanitized, and
+    told the caller to sanitize a second time (BUGS.md BUG-024)."""
+    extra = {u for us in _EXTRA_UNWRAPPERS.values() for u in us}
+    out: Dict[str, Set[str]] = {}
+    for spec in MARKER_FLOW_SPECS:
+        for s in spec.sinks:
+            out.setdefault(s.name, set()).add(spec.sanitizer)
+    return {s: frozenset(v | extra) for s, v in out.items()}
+
+
 def param_sink_reach(ast: Dict[str, Any]) -> Dict[str, Dict[int, frozenset]]:
     """user function name -> param index -> the marker-flow SINK names
     that parameter reaches inside the body. A parameter reaches a sink
@@ -820,9 +835,13 @@ def param_sink_reach(ast: Dict[str, Any]) -> Dict[str, Dict[int, frozenset]]:
     crossing (BUGS.md BUG-023). One level only, and by direct Ident:
     a callee that rebinds the parameter, or passes it on to a THIRD
     function, contributes no sinks — the summary then names none and
-    E0729 keeps its pre-BUG-023 behaviour. Residual recorded in
+    E0729 keeps its pre-BUG-023 behaviour. The sanitizer prune is
+    syntactic at the sink call: it recognises `htmlResponse(htmlEscape(s))`
+    (BUGS.md BUG-024) but not a sanitize-into-a-local, which the direct-Ident
+    rule already drops from the summary anyway. Residual recorded in
     `vault/wiki/questions/q1-taint-marker-soundness-boundary.md`."""
     sinks = _marker_sink_args()
+    unwrap_at = _marker_sink_unwrappers()
     out: Dict[str, Dict[int, frozenset]] = {}
     for d in ast.get("decls", []):
         if d.get("kind") != "FunctionDecl":
@@ -839,8 +858,10 @@ def param_sink_reach(ast: Dict[str, Any]) -> Dict[str, Dict[int, frozenset]]:
                 checked = args if idx is None else \
                     [args[i] for i in idx if i < len(args)]
                 for i, p in enumerate(params):
-                    # tainted={param}, no unwrappers: "this Ident is here".
-                    if _expr_leaks_marked(checked, {p["name"]}, frozenset()):
+                    # tainted={param}, unwrapped by whatever THIS sink
+                    # accepts: "this Ident arrives here unsanitized".
+                    if _expr_leaks_marked(checked, {p["name"]},
+                                          unwrap_at.get(sink, frozenset())):
                         per.setdefault(i, set()).add(sink)
         if per:
             out[d["name"]] = {i: frozenset(v) for i, v in per.items()}

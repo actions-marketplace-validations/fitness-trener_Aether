@@ -888,3 +888,104 @@ THIRD function, contributes no sinks, and the crossing is then accepted
 on the old marker-wide rule. E0730 (return laundering) is untouched — a
 return has no callee parameter to summarise, so the coarseness stands
 there.
+
+### BUG-024  the iter-51 rules over-flagged: shadowed names and self-sanitizing callees (false reject)  [OPEN]
+
+Found 2026-09-03 by the review of iteration 51's own commit `eaeb316`.
+Two over-flags shipped in that commit; both were exit 0 on `3986d38` and
+exit 2 on the branch, i.e. introduced by the fix, not pre-existing.
+
+**(a) E0801 resolved a bare Ident argument by GLOBAL name.** The `passed`
+comprehension in `check_effects` asked only whether the argument's name
+appears in `user_effects` / `_STDLIB_EFFECTS`, never whether the name is
+bound locally. Every argument position of every call was affected:
+
+    function logIt(s: String) returns Unit
+      effects log
+    do
+      print(s)
+    end
+
+    function main(logIt: String) returns String
+      effects pure
+    do
+      return concat(logIt, "x")
+    end
+    -> [E0801] ... passes 'logIt' as a value to 'concat', whose effect
+       'log' is not covered by the caller
+
+`logIt` here is a plain `String` PARAMETER handed to the pure stdlib
+`concat`. `let notify = "hello"` shadowing a `net` function produced the
+same thing for a string LITERAL. This is not over-flagging a risky shape;
+it invents an effect for a String.
+
+**(b) E0729 counted a parameter as reaching a sink it only reaches
+through that sink's own sanitizer.** `param_sink_reach` passed
+`frozenset()` as the unwrapper set on purpose, so the idiomatic safe
+helper was reported as feeding the sink unsanitized:
+
+    function render(s: String) returns String
+      effects pure
+    do
+      return htmlResponse(htmlEscape(s))
+    end
+
+    function handle(u: Untrusted<String>) returns String
+      effects pure
+    do
+      return render(sanitizeLog(u))
+    end
+    -> [E0729] ... it was cleared with sanitizeLog(...), but 'render'
+       passes it to 'htmlResponse', whose sanitizer is htmlEscape
+       hint: apply htmlEscape(...) instead
+
+`render` does not pass `s` to `htmlResponse`; it passes `htmlEscape(s)`.
+Following the hint gives `render(htmlEscape(u))`, so `htmlEscape` runs
+twice and the response body carries `&amp;lt;`. The message was factually
+false and the suggested fix corrupted output.
+
+Fix. (a) `check_effects` computes `local` — this function's parameter
+names plus every `_walk_binds` target in its body — and a shadowed Ident
+argument resolves ONLY through `_fn_aliases`, which already maps a local
+binding to the function it aliases. The same edit closes the gap iter-51
+documented but left open: `let g = logIt  apply(g, s)` now reports
+E0801 naming `g` as an alias of `logIt`. (b) `_marker_sink_unwrappers()`
+derives, per sink, every sanitizer a marker row demands there (plus the
+sink-agnostic `trusted`), and `param_sink_reach` summarises with that set
+— so a value that arrives at the sink already sanitized is not counted as
+reaching it. Any other wrapper still leaks: `htmlResponse(concat(s, "!"))`
+is still reported, and the message now says "reaches ... unsanitized"
+rather than "passes it to".
+
+Residual. The shadow set is function-wide, not scoped: a call textually
+BEFORE a later `let` of the same name is also treated as shadowed, which
+is the accept direction. The sanitizer prune is syntactic at the sink
+call, which the pre-existing one-level/direct-Ident limit already bounds.
+
+### BUG-025  an alias of a function-typed parameter reopened BUG-022 (false accept)  [OPEN]
+
+Found 2026-09-03 by the review of iteration 51. `check_marker_boundary`
+matched `ftparams` against the LITERAL callee name, and `_fn_aliases`
+resolves aliases against `frozenset(decls)` only, so an alias bound to a
+function-typed PARAMETER was never a target and the crossing fell through
+`if not cands: ... if cname not in ftparams: continue`:
+
+    function apply(f: function(String) returns Unit, x: Secret<String>)
+      returns Unit
+      effects log
+    do
+      let g = f
+      g(x)
+    end
+    -> OK (1 decls), exit 0   [both on 3986d38 and on eaeb316]
+
+while the identical program without the `let` fires E0729 after BUG-022.
+One line of aliasing reopened exactly the laundering that slice claims to
+have closed — the same alias class q1 already records as CLOSED for named
+functions (BUG-002).
+
+Fix. `check_marker_boundary` resolves the callee through
+`_fn_aliases(d, frozenset(ftparams))` before giving up, and reports the
+underlying parameter with `extra.param` naming it and the message adding
+"(through alias 'g')". The alias map is built separately from the marker
+alias map so nothing else in the pass changes behaviour.

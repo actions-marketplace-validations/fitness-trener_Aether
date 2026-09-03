@@ -2872,6 +2872,59 @@ def test_boundary_trusted_still_clears():
     print("E0729: trusted(...) still clears the crossing")
 
 
+def test_function_typed_param_alias_rejected():
+    # Review of iter-51: `ftparams` matched the LITERAL callee name, so
+    # one `let` reopened the laundering BUG-022 had just closed.
+    src = FN_TYPE_LAUNDER_SRC.replace("  f(x)", "  let g = f\n  g(x)")
+    assert _mb_codes(src) == ["E0729"],         "an alias of a function-typed parameter is the same callee"
+    d = check_marker_boundary(parse(src, "<mb>"))[0]
+    assert d.extra.get("param") == "f" and d.extra.get("callee") == "g"
+    assert "through alias 'g'" in d.message
+    print("E0729: alias of a function-typed parameter rejected (BUG-025)")
+
+
+def test_boundary_callee_sanitizes_internally_clean():
+    # Review of iter-51: `param_sink_reach` summarised with NO unwrappers,
+    # so a callee that applies the sink's own sanitizer was reported as
+    # feeding it raw — and the hint said to sanitize a second time.
+    src = """
+function render(s: String) returns String
+  effects pure
+do
+  return htmlResponse(htmlEscape(s))
+end
+
+function handle(u: Untrusted<String>) returns String
+  effects pure
+do
+  return render(sanitizeLog(u))
+end
+"""
+    assert _mb_codes(src) == [],         "a parameter reaching a sink only through that sink's sanitizer "         "does not reach it raw"
+    print("E0729: callee that sanitizes internally passes clean (BUG-024)")
+
+
+def test_boundary_callee_wraps_without_sanitizing_still_rejected():
+    # The prune must not swallow the real case: any other wrapper leaks.
+    src = """
+function render(s: String) returns String
+  effects pure
+do
+  return htmlResponse(concat(s, "!"))
+end
+
+function handle(u: Untrusted<String>) returns String
+  effects pure
+do
+  return render(sanitizeLog(u))
+end
+"""
+    assert _mb_codes(src) == ["E0729"],         "concat(...) is nobody's sanitizer; the sink is still reached raw"
+    d = check_marker_boundary(parse(src, "<mb>"))[0]
+    assert d.extra.get("needs") == "htmlEscape"
+    print("E0729: a non-sanitizing wrapper still reaches the sink")
+
+
 def test_boundary_sanitizer_matches_writefile_sink():
     # writeFile's CONTENTS slot only: the path argument is not the sink
     # position, so a param used only as a path reaches nothing.
@@ -3074,5 +3127,8 @@ if __name__ == "__main__":
     test_right_boundary_sanitizer_clean()
     test_boundary_sanitizer_no_sink_in_callee_clean()
     test_boundary_trusted_still_clears()
+    test_function_typed_param_alias_rejected()
+    test_boundary_callee_sanitizes_internally_clean()
+    test_boundary_callee_wraps_without_sanitizing_still_rejected()
     test_boundary_sanitizer_matches_writefile_sink()
     print("E0710..E0731 ALL REACH-SCOPE TESTS PASS")
