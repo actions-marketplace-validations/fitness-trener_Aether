@@ -609,7 +609,7 @@ sentinel before `stmt = select(...)` binds nothing.
 shapes and seven documented fixes, all labelled.
 
 
-### BUG-020  a sanctioned wrapper was accepted on its NAME; its pinning argument was never judged (false accept)  [OPEN]
+### BUG-020  a sanctioned wrapper was accepted on its NAME; its pinning argument was never judged (false accept)  [FIXED c35b3f3]
 test: tests/test_effect_scope.py
 
 
@@ -649,7 +649,7 @@ every Call the frontend emits carries `"py": True` and the pinning check
 skips it. That marker is the ONLY difference between the two IRs the
 rules see; a frontend Call without it would be judged by the Aether rule.
 
-### BUG-021  the argv form `["bash", "-c", cmd]` was read as the safe exit (false accept)  [OPEN]
+### BUG-021  the argv form `["bash", "-c", cmd]` was read as the safe exit (false accept)  [FIXED c35b3f3]
 test: tests/test_py_frontend_sinks.py
 
 
