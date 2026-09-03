@@ -607,3 +607,81 @@ sentinel before `stmt = select(...)` binds nothing.
 
 `bench/py_frontend/corpus/totality_repro.py` carries twelve silent
 shapes and seven documented fixes, all labelled.
+
+### BUG-013  `var` bindings and `x = ...` re-assignments were invisible to every binding walker (false accepts)  [OPEN]
+test: tests/test_effect_scope.py
+
+
+Found 2026-09-03 by the improvement survey (candidates AEDET-01/02/03),
+probe-confirmed before the fix. The parser emits three binding kinds —
+`Let` (name), `Var` (name) and `Assign` (target) — and `detector_specs.py`'s
+`_bindings`, the marker-taint fixpoint `_marked_tainted_names`, the
+literal-or-wrapper safe-name pass `_safe_names`, `_fn_aliases` and
+E0717's stable-name proof all walked `Let`/`Assign` by `name` only. A
+`var` was never a binding, and an `Assign` (which carries `target`) never
+matched. So:
+
+```aether
+var x: String = password      // Secret<String> param
+print(x)                      // exit 0: x was never tainted
+
+let p: String = "/etc/motd"
+p = userPath
+readFile(p)                   // exit 0: the only VISIBLE binding is the literal
+
+var docId: String = requestedId
+let proof = authorizeResource(user, "docs:edit", docId)
+docId = victimId
+sqlByOwner("...", docId, proof)   // exit 0: E0717's stable-name proof missed the rebinding
+```
+
+Fix: one shared walker (`_walk_binds` / `_bind_target` over `Let`,
+`Var`, `Assign`) that every consumer uses, plus `_mutable_names` for the
+proofs that need "bound exactly once". Flag-more only. The survey's
+in-memory rewrite over 418 parseable `.aeth` changed 0 files; the gate
+confirms 0 corpus deltas.
+
+### BUG-014  `for` loop variables and match-EXPRESSION arm bindings did not carry taint (false accepts)  [OPEN]
+test: tests/test_effect_scope.py
+
+
+Found 2026-09-03 (candidates AEDET-06/07). BUG-001 (iteration 41) made
+match-STATEMENT arm bindings over a tainted scrutinee tainted; the
+match-EXPRESSION form (`let r = match o do ... end`) and the `for x in
+markedList do ... end` loop variable were left out, so
+`for s in secrets do print(s) end` with `secrets: List<Secret<String>>`
+was exit 0. Fix: the taint fixpoint treats a `For` target over a tainted
+iterable and every arm binding of a tainted match expression as tainted
+(every arm, every binding — conservative).
+
+### BUG-015  an alias of a STDLIB sink hid it from every detector and from E0801 (false accept)  [OPEN]
+test: tests/test_effect_scope.py
+
+
+Found 2026-09-03 (candidate AEDET-04). Iteration 42 resolved aliases of
+USER functions (`let f = logIt; f(secret)`); a stdlib sink aliased the
+same way — `let run = sqlQuery; run(input)`, `let w = writeFile`, `let
+p = print`, `let sh = shellExec` — matched no row (the callee name was
+`run`) and no effect (`_STDLIB_EFFECTS` keyed on `shellExec`), so the
+query, path, secret, command and the E0801/E0701 effect all went silent.
+Fix: `_fn_aliases` targets extended with the stdlib sink names and
+`_STDLIB_EFFECTS` keys; an aliased SINK is the sink, an aliased
+sanitizer/unwrapper is still never honoured (flag-more only). E0716/E0717
+keep demanding their proofs through the alias.
+
+### BUG-016  a record carrying a marker field reached a sink whole, unflagged (false accept)  [OPEN]
+test: tests/test_effect_scope.py
+
+
+Found 2026-09-03 (candidate AEDET-10). Iteration 44 made a marker-typed
+FIELD read a taint source (`u.email`), but the record VALUE itself was
+not tainted, so `print(u)` and `writeFile(path, u)` with `u: User`
+(`record User do email: PII<String> ... end`) were exit 0 — the whole
+record, PII included, in the log. Fix: `_marked_records` (records whose
+fields carry the marker, transitively) and `_record_names` (names whose
+declared type, constructor call or seeding return is such a record);
+a carrier at a sink is a leak; a PLAIN field read of a carrier
+(`u.name`) is not; passing a carrier into a parameter typed with that
+record is a sanctioned crossing and into a plain parameter is E0729;
+returning it under a plain return type is E0730. `Authorized<T>` is
+untouched (a proof marker is never widened).

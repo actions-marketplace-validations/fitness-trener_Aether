@@ -1,0 +1,30 @@
+// expect: E0715x2
+// Example 30 — the WHOLE record at a sink.
+// Example 28 made a marker-typed FIELD survive its record: reading
+// `u.email` into a log is refused. But the record itself was still an
+// ordinary value, so `print(u)` and `writeFile(path, u)` — which dump
+// the email along with everything else — checked CLEAN. A record with a
+// marker-typed field now CARRIES the marker: the value is refused at a
+// sink, is a sanctioned crossing into a `User`-typed parameter, and is
+// an honest return under a `User` return type. Reading the UNMARKED
+// field (`u.name`) stays clean: that is not personal data.
+// Click "check".
+
+record User do
+  email: PII<String>
+  name: String
+end
+
+function report(u: User) returns Unit
+  effects log, fs.write
+do
+  print("user=" + u.name)                                       // safe: not personal data
+  print(u)                                                      // E0715: the record holds the email
+  let _r: Result<Unit, String> = writeFile("/var/log/u.log", u) // E0715: to disk, in the clear
+end
+
+function main() returns Unit
+  effects log, fs.write
+do
+  report(User(classifyPII("jane.doe@corp.example"), "jane"))
+end

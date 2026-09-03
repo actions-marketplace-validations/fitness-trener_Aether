@@ -24,8 +24,9 @@ from aether.passes.effects import (                   # noqa: E402
     check_metadata_fetch, check_hardcoded_secret, check_log_injection,
     check_reflected_xss, check_header_injection, check_xxe,
     check_csv_injection, check_marker_boundary, check_return_laundering,
-    check_effects, _net_authority_wildcarded,
+    check_effects, check_unsatisfiable_refinement, _net_authority_wildcarded,
 )
+from aether.passes.capability import check_capabilities  # noqa: E402
 
 
 def _codes(src: str):
@@ -2157,6 +2158,469 @@ end
     print("E0712: aliased unwrapper still flagged (documented over-flag)")
 
 
+# --- BUG-013: `var` bindings and `x = ...` assignments are bindings ----
+# The parser emits `Var` (name) and `Assign` (target, no name). Every
+# walker that reasons about what a name holds must see all three kinds;
+# each of these shapes was exit 0 before the shared `_walk_binds`.
+
+def _fn(body: str, params: str = "password: Secret<String>",
+        effects: str = "log") -> str:
+    return (f"function main({params}) returns Unit\n  effects {effects}\ndo\n"
+            f"{body}\nend\n")
+
+
+def test_var_bound_secret_rejected():
+    assert _sec_codes(_fn("  var x: String = password\n  print(x)")) == ["E0712"]
+    assert _sec_codes(_fn("  var y = password\n  print(y)")) == ["E0712"]
+    print("E0712: var-bound secret rejected (BUG-013)")
+
+
+def test_assign_after_literal_tainted():
+    src = _fn('  var x: String = ""\n  x = password\n  print(x)')
+    assert _sec_codes(src) == ["E0712"], "an assignment is a binding"
+    print("E0712: assignment re-taints a literal-initialised var (BUG-013)")
+
+
+def test_assign_inside_loop_tainted():
+    src = _fn('  var i: Int = 0\n  var acc: String = ""\n'
+              '  while i < 1 do\n    acc = pw\n    i = i + 1\n  end\n  print(acc)',
+              params="pw: Secret<String>")
+    assert _sec_codes(src) == ["E0712"]
+    print("E0712: assignment inside a loop tainted (BUG-013)")
+
+
+def test_reassigned_literal_path_unsafe():
+    src = """
+function readIt(userPath: String) returns Unit
+  effects fs.read
+do
+  let p: String = "/etc/motd"
+  p = userPath
+  let _r: Result<String, String> = readFile(p)
+end
+"""
+    assert _fs_codes(src) == ["E0711"], "a re-assigned name is not a fixed literal"
+    print("E0711: literal-then-reassigned path rejected (BUG-013)")
+
+
+def test_reassigned_literal_query_unsafe():
+    src = """
+function q(input: String) returns String
+  effects db.query
+do
+  let s: String = "SELECT 1"
+  s = input
+  return sqlQuery(s)
+end
+"""
+    assert _sql_codes(src) == ["E0713"]
+    print("E0713: literal-then-reassigned query rejected (BUG-013)")
+
+
+def test_var_literal_never_proven_safe():
+    # Direction pin: a `var`-bound literal was never in the safe set
+    # (invisible) and still is not — a mutable name is not a fixed literal.
+    src = """
+function q() returns String
+  effects db.query
+do
+  var s: String = "SELECT 1"
+  return sqlQuery(s)
+end
+"""
+    assert _sql_codes(src) == ["E0713"]
+    print("E0713: var-bound literal stays refused (flag-more kept)")
+
+
+def test_var_rebound_resource_id_rejected():
+    src = """
+function updateDoc(requestedId: String, victimId: String, user: String) returns Unit
+  effects db.exec
+do
+  var docId: String = requestedId
+  let proof: Authorized<String> = authorizeResource(user, "docs:edit", docId)
+  docId = victimId
+  let _r: String = sqlByOwner("UPDATE docs SET b='x' WHERE id = ?", docId, proof)
+end
+"""
+    assert _idor_codes(src) == ["E0717"], "a var declaration counts as a binding"
+    print("E0717: var-declared id rebound between guard and sink rejected (BUG-013)")
+
+
+def test_var_proof_bound_once_accepted():
+    # `var` bound exactly once denotes one value, like `let` — the same
+    # rule E0716 already applies (test_var_bound_authorize_clean).
+    src = """
+function updateDoc(docId: String, user: String) returns Unit
+  effects db.exec
+do
+  var proof: Authorized<String> = authorizeResource(user, "docs:edit", docId)
+  let _r: String = sqlByOwner("UPDATE docs SET b='x' WHERE id = ?", docId, proof)
+end
+"""
+    assert _idor_codes(src) == []
+    print("E0717: var-bound proof on the same id, bound once, accepted")
+
+
+# --- BUG-014: `for` variables and match-EXPRESSION arms carry taint ---
+
+def test_for_loop_over_marked_list_rejected():
+    src = _fn("  for s in secrets do\n    print(s)\n  end",
+              params="secrets: List<Secret<String>>")
+    assert _sec_codes(src) == ["E0712"]
+    src = _fn('  for e in emails do\n    let line: String = "e=" + e\n    print(line)\n  end',
+              params="emails: List<PII<String>>")
+    assert _pii_codes(src) == ["E0715"]
+    print("E0712/E0715: for-loop variable over a marked list rejected (BUG-014)")
+
+
+def test_for_loop_over_plain_list_clean():
+    src = _fn("  for s in names do\n    print(s)\n  end", params="names: List<String>")
+    assert _sec_codes(src) == []
+    print("E0712: for-loop over a plain list passes clean")
+
+
+def test_match_expr_arm_secret_rejected():
+    src = _fn('  let _r: Unit = match o do\n    case Some(v) do print(v) end\n'
+              '    case None() do print("none") end\n  end',
+              params="o: Option<Secret<String>>")
+    assert _sec_codes(src) == ["E0712"], "match-expression arms bind like match statements"
+    print("E0712: match-expression arm over a secret scrutinee rejected (BUG-014)")
+
+
+# --- BUG-015: an alias of a stdlib sink IS the sink -------------------
+
+def test_sink_alias_sql_rejected():
+    src = """
+function q(input: String) returns String
+  effects db.query
+do
+  let run = sqlQuery
+  return run(input)
+end
+"""
+    assert _sql_codes(src) == ["E0713"]
+    print("E0713: aliased sqlQuery rejected (BUG-015)")
+
+
+def test_sink_alias_path_rejected():
+    src = """
+function w(userPath: String) returns Unit
+  effects fs.write
+do
+  let wr = writeFile
+  let _r: Result<Unit, String> = wr(userPath, "x")
+end
+"""
+    assert _fs_codes(src) == ["E0711"]
+    print("E0711: aliased writeFile rejected (BUG-015)")
+
+
+def test_sink_alias_print_secret_rejected():
+    assert _sec_codes(_fn("  let out = print\n  out(password)")) == ["E0712"]
+    print("E0712: aliased print rejected (BUG-015)")
+
+
+def test_sink_alias_effect_rejected():
+    src = """
+function pureButExecs() returns String
+  effects pure
+do
+  let sh = shellExec
+  return sh("ls")
+end
+"""
+    codes = [d.code for d in check_effects(parse(src, "<alias>"))]
+    assert codes == ["E0801"], "an aliased effectful stdlib call needs the effect"
+    print("E0801: aliased shellExec under `effects pure` rejected (BUG-015)")
+
+
+def test_sink_alias_capability_rejected():
+    src = """
+module M
+  requires capability log
+end
+function run() returns String
+  effects exec.run
+do
+  let sh = shellExec
+  return sh("ls")
+end
+"""
+    codes = [d.code for d in check_capabilities(parse(src, "<alias>"))]
+    assert codes == ["E0701"], "the call graph must follow the alias"
+    print("E0701: aliased shellExec reaches the capability check (BUG-015)")
+
+
+def test_sink_alias_mutation_needs_proof():
+    src = """
+function cancel(orderId: String) returns Unit
+  effects db.exec
+do
+  let ex = sqlExec
+  let _r: String = ex(sqlBind("UPDATE o SET s='c' WHERE id = ?", orderId))
+end
+"""
+    assert _authz_codes(src) == ["E0716"]
+    print("E0716: aliased sqlExec still needs an authorization proof (BUG-015)")
+
+
+def test_sink_alias_resource_needs_bound_proof():
+    src = """
+function updateDoc(requestedId: String, victimId: String, user: String) returns Unit
+  effects db.exec
+do
+  let proof: Authorized<String> = authorizeResource(user, "docs:edit", requestedId)
+  let owner = sqlByOwner
+  let _r: String = owner("UPDATE docs SET b='x' WHERE id = ?", victimId, proof)
+end
+"""
+    assert _idor_codes(src) == ["E0717"]
+    print("E0717: aliased sqlByOwner still needs a same-id proof (BUG-015)")
+
+
+# --- BUG-016: a record with a marked field CARRIES the marker ---------
+
+REC = """
+record User do
+  email: PII<String>
+  name: String
+end
+"""
+
+
+def test_whole_record_at_sink_rejected():
+    src = REC + """
+function report(u: User) returns Unit
+  effects log, fs.write
+do
+  print(u)
+  let _r: Result<Unit, String> = writeFile("/var/log/u.log", u)
+end
+"""
+    assert _pii_codes(src) == ["E0715", "E0715"], "the record carries the PII field"
+    print("E0715: whole record into print/writeFile rejected (BUG-016)")
+
+
+def test_constructed_record_at_sink_rejected():
+    src = REC + """
+function report2(e: PII<String>) returns Unit
+  effects log
+do
+  let r: User = User(e, "jane")
+  print(r)
+end
+"""
+    assert _pii_codes(src) == ["E0715"]
+    print("E0715: freshly constructed record into print rejected (BUG-016)")
+
+
+def test_plain_field_of_record_clean():
+    # Reading the UNMARKED field of a record-typed name is not a leak —
+    # example 28's `print("user=" + u.name)` must stay clean, also through
+    # a bare alias of the record and a record-returning call.
+    src = REC + """
+function build(e: PII<String>) returns User
+  effects pure
+do
+  return User(e, "jane")
+end
+function report(u: User) returns Unit
+  effects log
+do
+  print("user=" + u.name)
+  let r = u
+  print(r.name)
+  let b = build(classifyPII("x"))
+  print(b.name)
+end
+"""
+    assert _pii_codes(src) == []
+    print("E0715: plain field of a carrier record passes clean")
+
+
+def test_marked_field_of_record_still_rejected():
+    src = REC + """
+function report(u: User) returns Unit
+  effects log
+do
+  print(u.email)
+end
+"""
+    assert _pii_codes(src) == ["E0715"]
+    print("E0715: marked field of a carrier record still rejected")
+
+
+def test_secret_wrapped_record_field_still_rejected():
+    # The prune is for a name whose TYPE is the record; under Secret<User>
+    # every field is secret, so `s.name` leaks.
+    src = """
+record Acct do
+  name: String
+end
+function f(s: Secret<Acct>) returns Unit
+  effects log
+do
+  print(s.name)
+end
+"""
+    assert _sec_codes(src) == ["E0712"]
+    print("E0712: field read through Secret<Record> still rejected")
+
+
+def test_record_param_crossing_sanctioned():
+    src = REC + """
+function helper(x: User) returns Unit
+  effects log
+do
+  print(x.name)
+end
+function report(u: User) returns Unit
+  effects log
+do
+  helper(u)
+end
+"""
+    assert _mb_codes(src) == [], "a record-typed param carries the marker"
+    print("E0729: record into a record-typed param passes clean")
+
+
+def test_record_into_plain_param_rejected():
+    src = REC + """
+function helper(x: String) returns Unit
+  effects log
+do
+  print(x)
+end
+function report(u: User) returns Unit
+  effects log
+do
+  helper(u)
+end
+"""
+    assert _mb_codes(src) == ["E0729"]
+    print("E0729: record into a plain param rejected (BUG-016)")
+
+
+def test_record_returned_under_plain_type_rejected():
+    src = REC + """
+function leak(u: User) returns String
+  effects pure
+do
+  return u
+end
+function honest(u: User) returns User
+  effects pure
+do
+  return u
+end
+"""
+    assert _rl_codes(src) == ["E0730"], "only the plain-typed return launders"
+    print("E0730: record returned under a plain type rejected (BUG-016)")
+
+
+# --- AEDET-11/12/13: one URL-authority parser for E0710/E0721/E0722 ----
+
+def test_authority_wildcards_inside_host_rejected():
+    for a in ("https://*.*/*", "https://api.*/*", "https://trusted.example@*/*",
+              "https://a*/*", "https://api.example.com*/*", "https://[*]/*",
+              "https://*.com/*", "https://api.*.example.com/*"):
+        assert _net_authority_wildcarded(a) is not None, f"should flag: {a!r}"
+    for a in ("https://*.example.com:443/*", "https://user@api.example.com/*"):
+        assert _net_authority_wildcarded(a) is None, f"should allow: {a!r}"
+    print("E0710: wildcards inside the host/authority flagged")
+
+
+def _scope(url: str) -> str:
+    return f'function f() returns String\n  effects net.fetch("{url}")\ndo\n  return "x"\nend\n'
+
+
+def test_loopback_spellings():
+    for url in ("http://127.0.0.1.evil.com/*", "http://127.0.0.1@evil.com/*",
+                "http://localhost@evil.com/*", "http://127.0.0.1.nip.io/*",
+                "http://2130706433/*"):     # an obfuscated spelling is not a sanctioned loopback
+        assert _ct_codes(_scope(url)) == ["E0721"], f"should flag: {url!r}"
+    for url in ("http://[::1]/*", "http://[::1]:8080/*", "http://[::ffff:127.0.0.1]/*",
+                "http://evil.com@127.0.0.1/*", "http://LOCALHOST/*", "http://0.0.0.0/*"):
+        assert _ct_codes(_scope(url)) == [], f"should allow: {url!r}"
+    print("E0721: loopback exemption is host-exact (userinfo, brackets, suffixes handled)")
+
+
+def test_metadata_spellings_rejected():
+    for url in ("https://[fd00:ec2::254]/*", "https://fd00:ec2::254/*",
+                "https://metadata.google.internal/*", "https://metadata/*",
+                "https://instance-data/*", "https://100.100.100.200/*",
+                "https://2852039166/*", "https://0xa9fea9fe/*",
+                "https://0251.0376.0251.0376/*", "https://0xA9.0xFE.0xA9.0xFE/*",
+                "https://169.254.43518/*", "https://user@169.254.169.254/*",
+                "https://[::ffff:169.254.169.254]/*", "https://[::ffff:a9fe:a9fe]/*",
+                "https://169.254.169.254.nip.io/*", "169.254.169.254/*"):
+        assert _md_codes(_scope(url)) == ["E0722"], f"should flag: {url!r}"
+    for url in ("https://10.0.0.1/*", "https://0x10.0.0.1/*", "https://api.metadata.example/*"):
+        assert _md_codes(_scope(url)) == [], f"should allow: {url!r}"
+    print("E0722: IPv6/DNS/decimal/hex/octal/userinfo metadata spellings rejected")
+
+
+# --- AEDET-14/15: E0723 provider shapes, PEM body, literal position ----
+
+PROVIDER_TOKENS = (
+    "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef",
+    "sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKL",
+    "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-abcdefAA",
+    "hf_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ",
+    "gsk_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUV",
+    "ya29.a0AfH6SMBabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "glpat-abcdefghijklmnopqrst",
+    "SG.abcdefghijklmnopqrstuv.abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+    "npm_abcdefghijklmnopqrstuvwxyz0123456789",
+    "pypi-AgEIcHlwaS5vcmcCJGFiY2RlZmdoLWlqa2wtbW5vcC1xcnN0LXV2d3h5ejEyMzQ1NgACKlszLCJmZTY0",
+    "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX",
+)
+
+
+def _lit(s: str) -> str:
+    return f'function k() returns String\n  effects pure\ndo\n  return "{s}"\nend\n'
+
+
+def test_provider_tokens_rejected():
+    for tok in PROVIDER_TOKENS:
+        assert _hc_codes(_lit(tok)) == ["E0723"], f"should flag: {tok[:16]}..."
+    for s in ("sk-short", "hf_short", "gsk_x", "glpat-short", "npm_short", "SG.a.b",
+              "ask-" + "a" * 48, "sk-proj-tooshort"):
+        assert _hc_codes(_lit(s)) == [], f"should allow: {s!r}"
+    print(f"E0723: {len(PROVIDER_TOKENS)} provider token shapes rejected, short look-alikes clean")
+
+
+def test_pem_needs_a_body():
+    header_only = _lit("expected a -----BEGIN RSA PRIVATE KEY----- block")
+    assert _hc_codes(header_only) == [], "a PEM header in prose is not a key"
+    body = ("-----BEGIN RSA PRIVATE KEY-----\\n"
+            "MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHiM6ZbLe8h0aQ9wVxa7\\n"
+            "-----END RSA PRIVATE KEY-----")
+    assert _hc_codes(_lit(body)) == ["E0723"], "a PEM header with a base64 body is a key"
+    print("E0723: PEM header alone clean, header + body rejected")
+
+
+def test_hardcoded_secret_positioned():
+    src = 'function k() returns String\n  effects pure\ndo\n  return "AKIAIOSFODNN7EXAMPLE"\nend\n'
+    d = check_hardcoded_secret(parse(src, "<pos>"))[0]
+    assert (d.position.line, d.position.column) == (4, 10), \
+        f"E0723 must anchor on the literal, got {d.position}"
+    print("E0723: reported at the string literal's line and column")
+
+
+# --- AEDET-18: E0207 over Int treats open bounds as integers -----------
+
+def test_int_open_bounds_rejected():
+    ref = lambda s: [d.code for d in check_unsatisfiable_refinement(parse(s, "<ref>"))]
+    assert ref("type Bad = Int where self > 5 and self < 6") == ["E0207"], \
+        "no integer lies strictly between 5 and 6"
+    assert ref("type Ok = Int where self > 5 and self < 7") == []
+    assert ref("type Real = Float where self > 5.0 and self < 6.0") == [], \
+        "a real interval (5, 6) is inhabited"
+    print("E0207: adjacent open Int bounds rejected, Float and inhabited Int clean")
+
+
 if __name__ == "__main__":
     test_authority_predicate()
     test_broad_rejected()
@@ -2290,4 +2754,37 @@ if __name__ == "__main__":
     test_source_alias_seeding_rejected()
     test_fn_alias_clean_arg_clean()
     test_unwrap_alias_not_honored()
+    test_var_bound_secret_rejected()
+    test_assign_after_literal_tainted()
+    test_assign_inside_loop_tainted()
+    test_reassigned_literal_path_unsafe()
+    test_reassigned_literal_query_unsafe()
+    test_var_literal_never_proven_safe()
+    test_var_rebound_resource_id_rejected()
+    test_var_proof_bound_once_accepted()
+    test_for_loop_over_marked_list_rejected()
+    test_for_loop_over_plain_list_clean()
+    test_match_expr_arm_secret_rejected()
+    test_sink_alias_sql_rejected()
+    test_sink_alias_path_rejected()
+    test_sink_alias_print_secret_rejected()
+    test_sink_alias_effect_rejected()
+    test_sink_alias_capability_rejected()
+    test_sink_alias_mutation_needs_proof()
+    test_sink_alias_resource_needs_bound_proof()
+    test_whole_record_at_sink_rejected()
+    test_constructed_record_at_sink_rejected()
+    test_plain_field_of_record_clean()
+    test_marked_field_of_record_still_rejected()
+    test_secret_wrapped_record_field_still_rejected()
+    test_record_param_crossing_sanctioned()
+    test_record_into_plain_param_rejected()
+    test_record_returned_under_plain_type_rejected()
+    test_authority_wildcards_inside_host_rejected()
+    test_loopback_spellings()
+    test_metadata_spellings_rejected()
+    test_provider_tokens_rejected()
+    test_pem_needs_a_body()
+    test_hardcoded_secret_positioned()
+    test_int_open_bounds_rejected()
     print("E0710..E0730 ALL REACH-SCOPE TESTS PASS")
