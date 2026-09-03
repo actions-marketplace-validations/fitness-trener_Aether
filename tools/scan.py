@@ -9,7 +9,8 @@ This is the product shape of Aether's phase-2 story: not "model a known
 CVE", but "scan real code and surface real issues".
 
 Usage:
-    python -m tools.scan <dir-or-file>... [--json|--sarif] [--expect] [--min-risk RATING]
+    python -m tools.scan <dir-or-file>... [--json|--sarif] [--expect]
+                         [--min-risk RATING] [--min-confidence FLOAT]
 
 Exit code: 0 if no findings, 1 if any file has findings, 2 on usage error.
 Parse errors (E0201) are reported separately as generation failures, not
@@ -77,13 +78,17 @@ def scan_file(path: str) -> dict:
         return {"path": path, "parse_error": str(e), "findings": []}
     findings = [{"code": d.code, "message": d.message,
                  "line": d.position.line, "column": d.position.column,
-                 "risk": risk_of(d.code), "suggestion": d.suggestion,
+                 "risk": risk_of(d.code), "confidence": d.confidence,
+                 "suggestion": d.suggestion,
                  "extra": d.extra}
                 for d in analyze_flat(ast)]
-    # Worst-first: a reviewer reading only the top of a 4,000-finding
-    # scan must be reading the critical ones. Line/code break ties so
-    # output stays deterministic (tests/test_deterministic.py).
-    findings.sort(key=lambda x: (-rank(x["code"]), x["line"], x["code"]))
+    # Worst-first, then most-certain-first: a reviewer reading only the
+    # top of a 4,000-finding scan must be reading the critical ones, and
+    # of two equally-risky findings the one the analysis is surest about
+    # reads first. Line/code break ties so output stays deterministic
+    # (tests/test_deterministic.py).
+    findings.sort(key=lambda x: (-rank(x["code"]), -x["confidence"],
+                                 x["line"], x["code"]))
     declared, _run = parse_header(src, path)
     return {"path": path, "findings": findings, "declared": declared}
 
@@ -130,9 +135,10 @@ def main(argv) -> int:
     as_sarif = "--sarif" in argv
     expect = "--expect" in argv
 
-    # `--min-risk <rating>` takes a value, so its argument must not be
-    # mistaken for a scan target.
+    # `--min-risk <rating>` and `--min-confidence <float>` take values, so
+    # their arguments must not be mistaken for scan targets.
     min_risk = "info"
+    min_conf_raw = None
     args, skip = [], False
     for i, a in enumerate(argv):
         if skip:
@@ -145,15 +151,35 @@ def main(argv) -> int:
             min_risk, skip = argv[i + 1], True
         elif a.startswith("--min-risk="):
             min_risk = a.split("=", 1)[1]
+        elif a == "--min-confidence":
+            if i + 1 >= len(argv):
+                sys.stderr.write("--min-confidence needs a number\n")
+                return 2
+            min_conf_raw, skip = argv[i + 1], True
+        elif a.startswith("--min-confidence="):
+            min_conf_raw = a.split("=", 1)[1]
         elif not a.startswith("--"):
             args.append(a)
     if min_risk not in ORDER:
         sys.stderr.write(f"unknown --min-risk {min_risk!r}; "
                          f"expected one of {', '.join(sorted(ORDER))}\n")
         return 2
+    min_conf = 0.0
+    if min_conf_raw is not None:
+        try:
+            min_conf = float(min_conf_raw)
+        except ValueError:
+            sys.stderr.write(f"--min-confidence wants a number in [0,1], "
+                             f"got {min_conf_raw!r}\n")
+            return 2
+        if not 0.0 <= min_conf <= 1.0:
+            sys.stderr.write(f"--min-confidence must be in [0,1], "
+                             f"got {min_conf}\n")
+            return 2
     if not args:
         sys.stderr.write("usage: python -m tools.scan <dir-or-file>... "
-                         "[--json|--sarif] [--expect] [--min-risk RATING]\n")
+                         "[--json|--sarif] [--expect] [--min-risk RATING] "
+                         "[--min-confidence FLOAT]\n")
         return 2
     if expect and min_risk != "info":
         sys.stderr.write(
@@ -162,11 +188,24 @@ def main(argv) -> int:
             "filtered-out declared code reads as a regressed detector, not "
             "as a filtered one\n")
         return 2
+    if expect and min_conf > 0.0:
+        # Same reason as --min-risk: a declared code filtered out by
+        # confidence is indistinguishable from a detector that regressed.
+        sys.stderr.write(
+            "--min-confidence cannot be combined with --expect: expectation "
+            "mode gates on the diff from each file's `// expect:` header, and "
+            "a filtered-out declared code reads as a regressed detector, not "
+            "as a filtered one\n")
+        return 2
     files = sorted({p for a in args for p in _files(a)})
     results = [scan_file(p) for p in files]
     if min_risk != "info":
         results = [dict(r, findings=[f for f in r["findings"]
                                      if at_or_above(f["code"], min_risk)])
+                   for r in results]
+    if min_conf > 0.0:
+        results = [dict(r, findings=[f for f in r["findings"]
+                                     if f["confidence"] >= min_conf])
                    for r in results]
 
     parse_errs = [r for r in results if r.get("parse_error")]

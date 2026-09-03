@@ -1135,6 +1135,52 @@ def test_slice2_sink_rows_fire():
     print(f"slice 2: {len(shapes)} sink-row shapes behave; tables auditable")
 
 
+def test_match_kind_reaches_extra_for_every_sink_match():
+    """How the frontend named a sink is data on the finding.
+
+    The confidence axis (`transpiler/aether/confidence.py`) rates the
+    match kind, so a finding that does not carry one silently claims an
+    Aether-source finding's certainty. `tests/test_confidence.py` owns
+    the ratings; this owns the wiring from `_sink_match` to `extra`."""
+    from aether.py_frontend import SINK_MATCH_KINDS
+    shapes = {
+        "qualified": ("import pickle\ndef f(b):\n    pickle.loads(b)\n", "E0720"),
+        "guard": ("import subprocess\ndef f(c):\n    subprocess.run(c, shell=True)\n", "E0714"),
+        "argv": ("import subprocess\ndef f(c):\n    subprocess.run(['bash', '-c', c])\n", "E0714"),
+        "builtin": ("def f(s):\n    exec(s)\n", "E0731"),
+        "builtin_compile": ("def f(s):\n    compile(s, '<s>', 'exec')\n", "E0731"),
+        "method": ("def f(cur, x):\n    cur.execute('SELECT ' + x)\n", "E0713"),
+    }
+    assert sorted(shapes) == sorted(SINK_MATCH_KINDS), (
+        f"every match kind the frontend publishes needs a shape here: "
+        f"{sorted(set(shapes) ^ set(SINK_MATCH_KINDS))}")
+    bad = []
+    for kind, (src, code) in shapes.items():
+        ast_dict, _u, _m = py_to_ir(src)
+        ds = [d for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES)
+              if d.code == code]
+        if len(ds) != 1:
+            bad.append((kind, "expected one finding", [d.code for d in ds]))
+            continue
+        if ds[0].extra.get("match") != kind:
+            bad.append((kind, "wrong match in extra", ds[0].extra))
+    assert not bad, bad
+    # A wrapper call the frontend NAMED (shlex.quote as shellArg) matched
+    # no sink, so it carries no match kind — there is nothing to be more
+    # or less sure of.
+    ast_dict, _u, _m = py_to_ir(
+        "import shlex, subprocess\n"
+        "def f(c):\n    subprocess.run('ls ' + shlex.quote(c), shell=True)\n")
+    for call in walk(ast_dict, "Call"):
+        if call["func"]["name"] == "shellArg":
+            assert "match" not in call, call
+            break
+    else:
+        raise AssertionError("shlex.quote did not become a shellArg call")
+    print(f"match: all {len(shapes)} match kinds reach `extra`; "
+          f"a wrapper carries none")
+
+
 def test_unreadable_and_skipped_are_visible_in_every_mode():
     import json as _json
     import subprocess as sp
@@ -1262,5 +1308,6 @@ if __name__ == "__main__":
     test_let_count_is_unchanged_by_seeded_bindings()
     test_code_injection_sinks_fire()
     test_slice2_sink_rows_fire()
+    test_match_kind_reaches_extra_for_every_sink_match()
     test_unreadable_and_skipped_are_visible_in_every_mode()
     print("PY FRONTEND: ALL TESTS PASS")

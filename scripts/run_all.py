@@ -131,6 +131,16 @@ def main() -> int:
             "stderr": r.stderr.strip(),
         }
 
+    conf_t = os.path.join(ROOT, "tests", "test_confidence.py")
+    if os.path.isfile(conf_t):
+        cmd = [sys.executable, "-B", conf_t]
+        r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
+        results["confidence"] = {
+            "ok": r.returncode == 0,
+            "stdout": r.stdout.strip(),
+            "stderr": r.stderr.strip(),
+        }
+
     # The Python frontend's two contracts. `test_py_soundness.py` guards
     # the capability tables (nothing UNPROVABLE may become clean) and is
     # cited as "4/4 green" by four result documents, but it was never in
@@ -425,6 +435,7 @@ def main() -> int:
     ex_ok = bool(results.get("exhaustiveness") and results["exhaustiveness"]["ok"])
     scan_ok = bool(results.get("scan_tool") and results["scan_tool"]["ok"])
     risk_ok = bool(results.get("risk") and results["risk"]["ok"])
+    conf_ok = bool(results.get("confidence") and results["confidence"]["ok"])
     ratchet_ok = bool(results.get("ratchet") and results["ratchet"]["ok"])
     pysound_ok = bool(results.get("py_soundness") and results["py_soundness"]["ok"])
     pysink_ok = bool(results.get("py_frontend_sinks")
@@ -466,6 +477,7 @@ def main() -> int:
     print(f"# static_semantic: {'PASS' if ex_ok else 'FAIL'} (E0202-E0207: match/reachability/dead-store/error/impossible-type)", file=sys.stderr)
     print(f"# scan_tool:      {'PASS' if scan_ok else 'FAIL'} (tools/scan.py corpus scanner)", file=sys.stderr)
     print(f"# risk:           {'PASS' if risk_ok else 'FAIL'} (diagnostic risk ratings)", file=sys.stderr)
+    print(f"# confidence:     {'PASS' if conf_ok else 'FAIL'} (per-finding match-kind confidence)", file=sys.stderr)
     print(f"# ratchet:        {'PASS' if ratchet_ok else 'FAIL'} (monotonic: detector count never drops)", file=sys.stderr)
     print(f"# parser_recovery:{'PASS' if recovery_ok else 'FAIL'} (C.6)", file=sys.stderr)
     print(f"# deterministic:  {'PASS' if det_ok else 'FAIL'} (C.5)", file=sys.stderr)
@@ -500,7 +512,8 @@ def main() -> int:
                   and smt_ok and bb_ok and pack_ok and rel_ok
                   and arch_ok and f_ok and llm_ok and pkg_ok and pg_ok
                   and demos_ok and fuzz_ok and scope_ok and rte_ok and fp_ok
-                  and ex_ok and scan_ok and risk_ok and ratchet_ok and corpus_ok
+                  and ex_ok and scan_ok and risk_ok and conf_ok and ratchet_ok
+                  and corpus_ok
                   and alsp_ok and flc_ok and capfw_ok
                   and pysound_ok and pysink_ok and action_ok)
     return 0 if everything else 1

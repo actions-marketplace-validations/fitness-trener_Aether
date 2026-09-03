@@ -227,6 +227,69 @@ def test_sarif_carries_risk_metadata():
     print("scan: SARIF carries security-severity, tags and mapped level")
 
 
+def test_findings_carry_confidence_and_sort_by_it_within_a_risk():
+    p = os.path.join(ROOT, "demos", "case_studies", "sql_injection",
+                     "aether", "vulnerable.aeth")
+    r = scan.scan_file(p)
+    assert r["findings"], "expected findings on the vulnerable demo"
+    for f in r["findings"]:
+        assert 0.0 <= f["confidence"] <= 1.0, f
+        # An Aether-source finding guesses nothing about its sink.
+        assert f["confidence"] == 1.0, f
+    keys = [(-scan.rank(f["code"]), -f["confidence"]) for f in r["findings"]]
+    assert keys == sorted(keys), (
+        f"findings must sort worst-first then most-certain-first: {keys}")
+
+    # A synthetic pair at the same risk: the more certain one leads.
+    findings = [{"code": "E0713", "message": "less sure", "line": 9,
+                 "confidence": 0.6},
+                {"code": "E0713", "message": "sure", "line": 9,
+                 "confidence": 0.95}]
+    findings.sort(key=lambda x: (-scan.rank(x["code"]), -x["confidence"],
+                                 x["line"], x["code"]))
+    assert findings[0]["message"] == "sure", findings
+    print("scan: findings carry confidence and sort most-certain-first")
+
+
+def test_min_confidence_filters_and_refuses_expect():
+    p = os.path.join(ROOT, "demos", "case_studies", "sql_injection",
+                     "aether", "vulnerable.aeth")
+    # Aether-source findings are 1.0, so no floor removes them...
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = scan.main([p, "--json", "--min-confidence", "1.0"])
+    assert rc == 1, rc
+    assert json.loads(buf.getvalue())["results"], "1.0 must keep 1.0 findings"
+    # ...and a floor above 1.0 is a usage error, not a silent empty scan.
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        assert scan.main([p, "--json", "--min-confidence", "1.5"]) == 2
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        assert scan.main([p, "--json", "--min-confidence", "high"]) == 2
+    # Same reason --min-risk is refused: a declared code filtered out by
+    # confidence is indistinguishable from a detector that regressed.
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = scan.main([p, "--expect", "--min-confidence", "0.9"])
+    assert rc == 2, (
+        f"--min-confidence with --expect must be refused, got {rc}")
+    print("scan: --min-confidence filters, validates, and refuses --expect")
+
+
+def test_sarif_carries_per_finding_confidence():
+    p = os.path.join(ROOT, "demos", "case_studies", "sql_injection",
+                     "aether", "vulnerable.aeth")
+    doc = scan.to_sarif([scan.scan_file(p)])
+    res = doc["runs"][0]["results"][0]
+    assert res["properties"]["confidence"] == 1.0, res
+    # Per FINDING, not per rule: the rule properties carry the class-level
+    # security-severity and must not grow a confidence.
+    rule = doc["runs"][0]["tool"]["driver"]["rules"][0]
+    assert "confidence" not in rule["properties"], rule
+    print("scan: SARIF carries per-finding confidence under properties")
+
+
 def test_sarif_level_maps_below_high_to_warning_and_note():
     assert scan._sarif_level("critical") == "error"
     assert scan._sarif_level("high") == "error"
@@ -249,5 +312,8 @@ if __name__ == "__main__":
     test_bad_min_risk_is_a_usage_error()
     test_min_risk_with_expect_is_a_usage_error()
     test_sarif_carries_risk_metadata()
+    test_findings_carry_confidence_and_sort_by_it_within_a_risk()
+    test_min_confidence_filters_and_refuses_expect()
+    test_sarif_carries_per_finding_confidence()
     test_sarif_level_maps_below_high_to_warning_and_note()
     print("SCAN TOOL: all tests pass")

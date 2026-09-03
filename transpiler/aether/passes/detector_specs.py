@@ -38,6 +38,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
+from ..confidence import confidence_of
 from ..diagnostics import Diagnostic, Position
 from .ast_walk import walk, callee_name
 
@@ -880,6 +881,9 @@ def literal_or_wrapper(spec: LiteralOrWrapperSpec) -> Callable[[Dict[str, Any]],
                 if reason is None:
                     continue
                 pos = call.get("pos") or fpos
+                # How the Python frontend named this call a sink — absent
+                # on an Aether-source finding, where nothing was guessed.
+                match = call.get("match")
                 for sink in targets:
                     diags.append(Diagnostic(
                         code=spec.code,
@@ -888,8 +892,9 @@ def literal_or_wrapper(spec: LiteralOrWrapperSpec) -> Callable[[Dict[str, Any]],
                         message=spec.message.format(fn=fn, sink=sink, reason=reason),
                         position=Position(pos.get("line", 0), pos.get("column", 0)),
                         suggestion=spec.suggestion,
-                        confidence=1.0,
-                        extra={"function": fn, "sink": sink, "reason": reason},
+                        confidence=confidence_of(match),
+                        extra=({"function": fn, "sink": sink, "reason": reason}
+                               | ({"match": match} if match else {})),
                     ))
         return diags
 
@@ -934,6 +939,7 @@ def marker_flow(spec: MarkerFlowSpec) -> Callable[[Dict[str, Any]], List[Diagnos
                     continue
                 args = call.get("args") or []
                 pos = call.get("pos") or fpos
+                match = call.get("match")
                 for sname in hits:
                     sink = sinks[sname]
                     checked = args if sink.arg_indices is None else \
@@ -949,8 +955,9 @@ def marker_flow(spec: MarkerFlowSpec) -> Callable[[Dict[str, Any]], List[Diagnos
                         message=spec.message.format(fn=fn, sink=sname, where=sink.where),
                         position=Position(pos.get("line", 0), pos.get("column", 0)),
                         suggestion=spec.suggestion,
-                        confidence=1.0,
-                        extra={"function": fn, "sink": sname},
+                        confidence=confidence_of(match),
+                        extra=({"function": fn, "sink": sname}
+                               | ({"match": match} if match else {})),
                     ))
         return diags
 

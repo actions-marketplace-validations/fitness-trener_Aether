@@ -37,13 +37,49 @@ any specific finding's impact.
 - Do not present a rating as CVSS in any report or README.
 
 ## Residual
-Ratings are per **code**, so every E0713 ranks identically whether the
-tainted value arrives from a request handler or a test fixture. The
-per-FINDING axis already exists and is unused: `Diagnostic.confidence` is
-the constant `1.0` at all 30 detectors. Varying it needs something the
-detectors actually compute — for example iteration 45's
-`_local_constants` distinction between a resolved local and an
-unresolvable one.
+
+**Closed (2026-09-03, iter 52): the per-finding axis now varies.** The
+residual asked for "something the detectors actually compute". Iteration
+50 supplied it, measured: the Python frontend names a sink in six
+different ways, and they are not equally certain
+(`bench/framework_scan/REPORT.md` §8). `_sink_match` now returns *how* it
+matched alongside *what* it matched, `_call_expr` parks that on the Call
+node as `match`, and the two `detector_specs.py` drivers set
+`confidence=confidence_of(call.get("match"))` and put the kind in
+`extra`. The ratings live in `transpiler/aether/confidence.py`:
+
+| match kind | rating | why |
+|---|---|---|
+| `qualified` / `guard` | 0.95 | resolved through the file's imports to a known dotted path |
+| `builtin` / `argv` | 0.9 | a bare builtin, or a literal `["bash","-c",cmd]` |
+| `builtin_compile` | 0.6 | `compile()` builds a code object and runs nothing — 4 of 8 corpus sites are linters checking syntax |
+| `method` | 0.6 | method NAME only, receiver unresolved — [[q5-sink-matching-vs-purity-matching]]'s sanctioned over-flag |
+| *(absent)* | 1.0 | an Aether-source finding: the sink is spelled in the source, nothing was guessed |
+
+An unknown non-empty kind takes the FLOOR, never 1.0 — a new frontend
+match kind must not claim certainty by being new
+(`tests/test_confidence.py`).
+
+**It changed no detection.** 676 findings on the 15-framework corpus
+before, 676 after, identical multiset (`bench/framework_scan/run_scan.py
+--skip-download --json`, same 4,946 files; per-dist stats identical). The
+axis is read at OUTPUT time, exactly like `risk.py`: `tools/scan.py` and
+`check-py` sort by `(-risk, -confidence, line, code)`, both grow
+`--min-confidence FLOAT`, SARIF carries it under
+`properties.confidence`. The distribution: 0.95 ×44, 0.9 ×3, 0.6 ×629 —
+so `--min-confidence 0.9` hides 93% of the corpus, almost all of it
+`cursor.execute`-shaped SQL matched by name.
+
+**What it still does NOT do.** It is per-MATCH-KIND, not per-flow: two
+`cursor.execute` findings rank identically whether the query came from a
+request handler or a test fixture, which is the same limitation this
+Residual originally named one level up. It says nothing about
+exploitability — a 0.6 finding is not "probably a false positive", it is
+"the analysis is less sure this callee is the sink it matched". And it
+reaches only the two spec-driven drivers: the hand-written detectors in
+`passes/effects.py` still construct at 1.0, so an E0710/E0721/E0722/E0723
+finding on Python carries an Aether-source finding's certainty it did not
+earn. That is the next residual.
 
 ## Related
 - [[../clusters/violation-taxonomy]] — the class each rating rates

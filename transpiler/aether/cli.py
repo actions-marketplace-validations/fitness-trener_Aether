@@ -309,6 +309,69 @@ def _py_files(target: str, skipped: list = None) -> list:
     return found
 
 
+def _scan_one(job):
+    """Analyze ONE Python file. Everything `cmd_check_py`'s loop collects
+    for a file, as one picklable tuple, so the loop can run in a worker
+    process unchanged:
+
+        ("ok", path, [Diagnostic], unprovable, meta)
+      | ("unreadable", path, why, detail)
+      | ("crashed", path, error_text)
+
+    Module-level and self-contained on purpose: `ProcessPoolExecutor`
+    pickles the callable by qualified name, and a closure over
+    `cmd_check_py`'s locals would not survive. The per-file `except` walls
+    stay INSIDE the worker — a detector that crashes must come back as
+    this file's ANALYZER ERROR line, not as a BrokenProcessPool that
+    loses the whole run.
+    """
+    path, skip, strict = job
+    from .py_frontend import py_to_ir
+    from .passes import analyze_flat
+    from .risk import rank
+    try:
+        src = _read_py(path)
+    except (OSError, UnicodeDecodeError, SyntaxError) as e:
+        # `tokenize.open` raises SyntaxError for an unknown cookie.
+        return ("unreadable", path, type(e).__name__, str(e))
+    try:
+        ast, unprovable, meta = py_to_ir(src)
+        diags = analyze_flat(ast, skip=skip)
+    except (SyntaxError, ValueError) as e:
+        # py2 sources, templates and test fixtures are normal in a real
+        # tree; they are counted, not fatal.
+        return ("unreadable", path, type(e).__name__, str(e))
+    except RecursionError as e:
+        # The frontend catches this per scope and reports an `unprovable`
+        # region; one that still escapes is the analyzer's limit, not the
+        # input's — loud, like any crash, never a silently "unreadable"
+        # file with exit 0.
+        return ("crashed", path,
+                f"RecursionError: expression too deep for the analyzer ({e})")
+    except Exception as e:
+        # An analyzer crash is a BUG in Aether, not a property of the
+        # input. It must be loud and must fail the run — `passes/
+        # __init__.py` deliberately does not swallow exceptions.
+        return ("crashed", path, f"{type(e).__name__}: {e}")
+    if not strict:
+        diags = [d for d in diags if d.code not in _PY_STRICT_ONLY_CODES]
+    # Worst-first, then most-certain-first: the top of a long scan is the
+    # part worth reading, and of two equally-risky findings the one the
+    # analysis is surest about leads. Line and code break ties so the
+    # order stays deterministic (tests/test_deterministic.py).
+    diags.sort(key=lambda d: (-rank(d.code), -d.confidence,
+                              d.position.line, d.code))
+    return ("ok", path, diags, unprovable, meta)
+
+
+# Below this many files a worker pool costs more (process start-up, and
+# pickling every Diagnostic back) than the parallelism buys. Measured on
+# 8 logical cores: 300 files serially 23.6 s, 4 workers 9.4 s, 8 workers
+# 9.2 s, identical findings — but a handful of files is dominated by the
+# ~0.5 s of interpreter start-up per worker.
+_JOBS_THRESHOLD = 32
+
+
 def cmd_check_py(args) -> int:
     """Run the language-independent detectors over Python files.
 
@@ -319,15 +382,8 @@ def cmd_check_py(args) -> int:
     guarantee set is genuinely smaller than `check` on a .aeth file. That
     is printed, not implied: a tool that quietly offers less than it looks
     like it offers is worse than one that offers less out loud."""
-    # Relative, and no sys.path surgery: the frontend used to live in
-    # `tools/`, which `[tool.setuptools.packages.find]` does not package,
-    # so `check-py` raised ModuleNotFoundError in every pip-installed copy
-    # while working fine from a checkout. Library code the CLI depends on
-    # belongs in the library (BUG-007).
-    from .py_frontend import py_to_ir
-    from .passes import analyze_flat
-    from .risk import rank
-
+    # The per-file work — and the frontend/pass imports it needs — lives
+    # in `_scan_one`, which is also what a worker process runs.
     strict = getattr(args, "strict", False)
     skip = _PY_SKIP_STAGES if strict else _PY_SKIP_STAGES + ("capability",)
 
@@ -341,6 +397,11 @@ def cmd_check_py(args) -> int:
         sys.stderr.write("aether: --sarif and --json are two different "
                          "output formats; pick one\n")
         return 2
+    min_conf = getattr(args, "min_confidence", 0.0) or 0.0
+    if not 0.0 <= min_conf <= 1.0:
+        sys.stderr.write(f"aether: --min-confidence must be in [0,1], "
+                         f"got {min_conf}\n")
+        return 2
     skipped_dirs: list = []
     paths = sorted({p for t in targets for p in _py_files(t, skipped_dirs)})
     skipped_dirs = sorted(set(skipped_dirs))
@@ -349,42 +410,35 @@ def cmd_check_py(args) -> int:
     # its path, because otherwise line numbers name nothing.
     show_paths = not (len(targets) == 1 and os.path.isfile(targets[0]))
 
+    jobs = getattr(args, "jobs", None)
+    if jobs is None:
+        jobs = (os.cpu_count() or 1) if (
+            len(paths) > _JOBS_THRESHOLD and (os.cpu_count() or 1) > 1) else 1
+    work = [(p, skip, strict) for p in paths]
+    if jobs > 1 and len(paths) > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=jobs) as ex:
+            # `map` over the ALREADY-SORTED paths: results come back in
+            # submission order, so the output is byte-identical to the
+            # serial loop's (tests/test_deterministic.py).
+            outcomes = list(ex.map(_scan_one, work, chunksize=4))
+    else:
+        outcomes = [_scan_one(w) for w in work]
+
     results, unreadable, crashed = [], [], []
-    for p in paths:
-        try:
-            src = _read_py(p)
-        except (OSError, UnicodeDecodeError, SyntaxError) as e:
-            # `tokenize.open` raises SyntaxError for an unknown cookie.
-            unreadable.append((p, type(e).__name__, str(e)))
-            continue
-        try:
-            ast, unprovable, meta = py_to_ir(src)
-            diags = analyze_flat(ast, skip=skip)
-        except (SyntaxError, ValueError) as e:
-            # py2 sources, templates and test fixtures are normal in a real
-            # tree; they are counted, not fatal.
-            unreadable.append((p, type(e).__name__, str(e)))
-            continue
-        except RecursionError as e:
-            # The frontend catches this per scope and reports an
-            # `unprovable` region; one that still escapes is the
-            # analyzer's limit, not the input's — loud, like any crash,
-            # never a silently "unreadable" file with exit 0.
-            crashed.append((p, f"RecursionError: expression too deep for "
-                               f"the analyzer ({e})"))
-            continue
-        except Exception as e:
-            # An analyzer crash is a BUG in Aether, not a property of the
-            # input. It must be loud and must fail the run — `passes/
-            # __init__.py` deliberately does not swallow exceptions.
-            crashed.append((p, f"{type(e).__name__}: {e}"))
-            continue
-        if not strict:
-            diags = [d for d in diags if d.code not in _PY_STRICT_ONLY_CODES]
-        # Worst-first, so the top of a long scan is the part worth reading.
-        # Line and code break ties so the order stays deterministic.
-        diags.sort(key=lambda d: (-rank(d.code), d.position.line, d.code))
-        results.append((p, diags, unprovable, meta))
+    for o in outcomes:
+        if o[0] == "ok":
+            results.append(o[1:])
+        elif o[0] == "unreadable":
+            unreadable.append(o[1:])
+        else:
+            crashed.append(o[1:])
+    if min_conf > 0.0:
+        # A filter on the OUTPUT, like `tools/scan.py`'s `--min-risk`: it
+        # hides rows the analysis is less sure of, and changes nothing
+        # about which findings the detectors produced.
+        results = [(p, [d for d in ds if d.confidence >= min_conf], unp, m)
+                   for p, ds, unp, m in results]
 
     n_find = sum(len(ds) for _, ds, _, _ in results)
     n_func = sum(m["n_functions"] for _, _, _, m in results)
@@ -425,6 +479,7 @@ def cmd_check_py(args) -> int:
                             "line": d.position.line,
                             "column": d.position.column,
                             "risk": risk_of(d.code),
+                            "confidence": d.confidence,
                             "suggestion": d.suggestion, "extra": d.extra}
                            for d in ds]}
              for p, ds, _u, _m in results], base=os.getcwd(),
@@ -752,6 +807,21 @@ def main(argv=None) -> int:
                     help="emit SARIF v2.1.0 on stdout for GitHub Code "
                          "Scanning; paths are relative to the working "
                          "directory, which under CI is the checkout root")
+    sp.add_argument("--min-confidence", type=float, default=0.0,
+                    metavar="FLOAT",
+                    help="hide findings the analysis is less sure of, on a "
+                         "0-1 scale (see transpiler/aether/confidence.py): "
+                         "0.6 is a sink matched by method name on an "
+                         "unresolved receiver, 0.95 one resolved through "
+                         "the imports. A filter on the output; it changes "
+                         "nothing about what the detectors found")
+    sp.add_argument("--jobs", type=int, default=None, metavar="N",
+                    help="analyze files in N worker processes. Default: a "
+                         "pool only when it can pay for itself (more than "
+                         f"{_JOBS_THRESHOLD} files on a multi-core machine), "
+                         "else the serial loop — so single-file and "
+                         "small-tree runs stay byte-identical. --jobs 1 "
+                         "forces serial. Output order does not depend on it")
 
     sp = sub.add_parser("check", help="parse + emit (no execution)")
     sp.add_argument("file")
