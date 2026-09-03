@@ -2,6 +2,25 @@
 
 Produced by a five-lens survey (Python-frontend misses, Aether-side detectors, Python sink coverage, toolchain, SQL helper census) with one surviving soundness judge; every row was probe-confirmed by the finder and re-run by the judge (`probe_valid`). Full records (probe command, observed output, design, prevalence, breaking risk, judge reasoning): `survey_2026-09-03_ranked.json`. This file is the backlog for iterations 49+; LOOP_LOG iteration 48 records what Slice 1 took from it.
 
+## Status 2026-09-03 (end of day) — what has been consumed
+
+Iterations 48–52 took **every P0 row and every P1 row** in this table.
+The priorities below are as the survey judged them on the morning of
+2026-09-03 and are left unedited; `demos/case_studies/LOOP_LOG.md`
+iterations 48–52 record which iteration took which row, and `BUGS.md`
+BUG-012..025 carry the probes. Two of the closures were themselves
+wrong on the first attempt and were corrected the same day (BUG-024,
+BUG-025) — read the LOOP_LOG entry before trusting a row here as done.
+
+**Not taken, and why:** SQLSUM-04/05 (per-module and cross-module SQL
+helper summaries) stay parked — the source-level census repriced them
+from "~100 sites" to 34, which does not pay for ~180 loc of new
+machinery. PYSINK-14 (Zip-Slip via `extractall`) needs a member-path
+model E0711 does not have. TC-05 (a per-function walk index, ~47% of
+profiled time) is the one measured win left on the table; TC-06 shipped
+as `--jobs` in iteration 52 and took the same wall-clock from the other
+side. AEDET-16/17 remain precision items.
+
 | pri | id | kind | dir | loc | title |
 |---|---|---|---|---:|---|
 | P0 | PYFE-01 | false_accept | fixes_miss | 45 | Rebinding forms the safe-name pass cannot see (AugAssign, for-target, tuple-unpack, walrus, except-as) make a tainted name look literal-only |
