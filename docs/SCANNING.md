@@ -3,7 +3,7 @@
 Aether is a compile-time firewall for AI-generated code. Point the scanner
 at a directory of `.aeth` source and it runs the full default-on suite —
 the base effect/capability/refinement passes, the security family
-(E0710–E0730), and the static-semantic checks (E0202–E0207) — and reports
+(E0710–E0731), and the static-semantic checks (E0202–E0207) — and reports
 every finding. Aether is stdlib-only (Python 3.10+); there is nothing to
 install.
 

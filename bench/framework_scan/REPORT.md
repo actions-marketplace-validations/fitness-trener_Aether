@@ -1,8 +1,8 @@
 # `aether check-py` on 15 AI-agent frameworks
 
 **Date:** 2026-09-01, re-measured 2026-09-02 after BUG-010 and BUG-011,
-and again 2026-09-03 after BUG-012 (§7 — the tables in §1–§5 are the
-2026-09-02 numbers; §7 supersedes the totals).
+and again 2026-09-03 after BUG-012 (§7) and after iterations 49–50 (§8 — the
+tables in §1–§5 are the 2026-09-02 numbers; §8 supersedes the totals).
 **Question:** `bench/pypi_scan/` scanned whatever happened to be in
 site-packages. What does the tool do on the population it actually claims
 to be for — the frameworks that generate and execute AI-written Python?
@@ -275,3 +275,49 @@ relaxation.
 the tool seeing more of the same code, not the code getting worse; the
 ground-truth bench moved 29 → 41 true positives at 0 false negatives and
 0 false positives, and the 76-module benign corpus did not move.
+
+
+## 8. Re-measured 2026-09-03 (evening), after iterations 49–50: 628 → 676, with E0731 on the corpus
+
+Same wheels (per-distribution file counts identical to §7's cache; the
+cache was re-downloaded, and every count matched), same interpreter.
+
+| code | §7 | **§8** | what moved |
+|---|---:|---:|---|
+| E0713 | 590 | **600** | `fetch_all` by name: langchain-community's HTTP loaders (`async_html`, `web_base`; over-flags the survey predicted) and cassandra's CQL wrappers (true by shape) |
+| E0714 | 14 | 14 | |
+| E0718 | 0 | **5** | `RedirectResponse(url)` in agno's MCP consent/media routes and mcp's OAuth `AuthorizationHandler` — dynamic targets; the repair (validate against registered URIs) is outside any argument-shape rule |
+| E0719 | 2 | **26** | the `from_string` row: ~14 jinja2 prompt templates rendered from strings by design (haystack builders/routers, semantic-kernel, langchain-core `jinja2_formatter`, smolagents, openhands' invariant policy); ~8 non-jinja `.from_string` methods matched by name (momento ×3, llama-cpp ×2, bigquery, networkx, agno) — q5's cost, about a third of the row |
+| E0720 | 14 | **17** | agno `code_mode`, databricks `_load_pickled_fn_from_hex_string` (cloudpickle, by design), tfidf via `joblib` |
+| E0723 | 2 | **0** | the PEM header inside a docstring and an error message no longer match: a key BODY is required (iteration 49) |
+| E0727 | 6 | 6 | |
+| **E0731** | — | **8** | see below |
+| **total** | **628** | **676** | 0 analyzer errors, 0 unparseable |
+
+**E0731, read at source.** Four sites are the class the detector was
+built for — the interpreter is the product: `agno/tools/python.py:159`
+(`exec(code, ...)` running the model's code), `smolagents/tools.py:575`
+(`Tool.from_code`, `exec(tool_code, module.__dict__)`),
+`browser_use/mcp/cli_mcp.py:128` (`exec(code, ns)`),
+`crewai/flow/runtime/_actions.py:309` (`exec(compile(module, filename,
+"exec"), namespace)`). None is a reportable vulnerability — each is a
+documented "run code" feature — but each is exactly what a reviewer of
+an agent framework wants pointed at, with the line. The other four are
+`compile()` without `exec`: `aider/linter.py:179`,
+`openhands/linter/languages/python.py:11` and `:66` (syntax-checking
+linters) and `langchain_community/tools/e2b_data_analysis/unparse.py:744`
+(a round-trip test). `compile` yields a code object and runs nothing;
+the rule treats it as the sink because `exec(compile(...))` is the
+common form and the frontend already collapses that pair to one
+finding. Precision item, recorded: judge `compile` only when its result
+reaches `exec`/`eval`, or rate it below `exec` on the per-finding
+confidence axis (q6).
+
+**What this measures.** 48 net new findings on unchanged code is the
+tool seeing more of the same code, in three ways: a class it did not
+have (E0731), rows it did not have (`from_string`, `RedirectResponse`,
+`fetch_all`, joblib/cloudpickle), and two false positives it no longer
+has (PEM headers). The by-name rows carry their measured cost with them:
+`from_string` at roughly one non-template hit in three, `fetch_all` at
+four HTTP loaders — both the direction q5 sanctions, both now numbers
+rather than predictions.

@@ -1759,6 +1759,161 @@ State carried forward: the full gate suite must stay green
 
 ---
 
+## Iteration 49 — the language side had the same bug: `var` was never a binding (four false-accept classes, no new detector)
+
+- **Target:** the Aether-side rows of the 2026-09-03 survey
+  (`audits/survey_2026-09-03_ranked.md`, AEDET-01..07/10), every one a
+  probe-confirmed SILENT MISS in the language the detectors were written
+  for. Same family as iteration 48's BUG-012, one layer down: the parser
+  emits three binding kinds — `Let` (name), `Var` (name), `Assign`
+  (target) — and every walker that reasons about what a name holds read
+  `Let`/`Assign` by `name`. A `var` was never a binding; an `Assign`
+  never matched.
+- **Gap confirmed empirically first (all exit 0 before):**
+  `var x = password; print(x)` (E0712); `let p = "/etc/motd"; p =
+  userPath; readFile(p)` (E0711 — the only VISIBLE binding was the
+  literal); `var docId = requestedId; ...authorizeResource(..., docId);
+  docId = victimId; sqlByOwner(..., docId, proof)` (E0717's stable-name
+  proof missed the rebinding); `for s in secrets do print(s) end` over
+  `List<Secret<String>>` and a match-EXPRESSION arm over a secret
+  scrutinee (BUG-001 had fixed only the statement form); `let run =
+  sqlQuery; run(input)` — an aliased STDLIB sink matched no row and no
+  effect, so E0713/E0711/E0712/E0801/E0701 were all silent (iteration 42
+  had resolved aliases of USER functions only); and `print(u)` with
+  `record User do email: PII<String> end` — iteration 44 made the FIELD
+  read a source but never the record value. BUGS.md BUG-013..016.
+- **Improvement (`passes/detector_specs.py`, `passes/effects.py`,
+  `passes/capability.py`, `parser.py`):** one shared binding walker
+  (`_walk_binds` / `_bind_target` over `Let`/`Var`/`Assign`, plus
+  `_mutable_names` for the proofs that need "bound exactly once") feeds
+  the marker-taint fixpoint, the literal-or-wrapper safe-name pass,
+  `_fn_aliases` and the E0716/E0717 proofs; `For` targets over a tainted
+  iterable and every arm binding of a tainted match expression are
+  tainted; alias targets include the stdlib sink names and the
+  `_STDLIB_EFFECTS` keys (an aliased sink IS the sink; an aliased
+  sanitizer is still never honoured; E0801/E0701 follow the alias edge);
+  records whose fields carry a marker are carriers (`_marked_records`,
+  `_record_names`): a carrier at a sink leaks, a PLAIN field read of a
+  carrier does not, a record-typed parameter is a sanctioned crossing,
+  a plain parameter is E0729, a plain return type is E0730;
+  `Authorized<T>` untouched — a proof marker is never widened.
+- **Widenings in the same slice, flag-more, 0× on the corpus:** E0710,
+  E0721 and E0722 share one host normalizer — userinfo, port, brackets,
+  a wildcard anywhere inside the host (`*.*`, `api.*`, `a*`,
+  `[*]`, `trusted@*`), decimal/hex/octal/short and IPv4-mapped IPv6
+  spellings of 169.254/16, `fd00:ec2::254`, `metadata.google.internal`,
+  `metadata`, `100.100.100.200`; the E0721 loopback exemption is
+  host-exact (`127.0.0.1.evil.com` and `127.0.0.1@evil.com` no longer
+  pass). E0723 gains OpenAI (`sk-proj-`, `sk-`), Anthropic (`sk-ant-`),
+  Hugging Face (`hf_`), Groq (`gsk_`), Google OAuth (`ya29.`), GitLab
+  (`glpat-`), SendGrid (`SG.`), npm (`npm_`), PyPI (`pypi-`) and Slack
+  incoming-webhook shapes — 0 matches over every in-tree file and the
+  4,946-file framework corpus — and the PEM pattern now requires a key
+  BODY after the header, which is exactly the two docstring/message
+  hits iteration 48 reported as its precision cost. `StringLit` carries
+  a position, so E0723 reports a line instead of `0:0`. E0207 treats
+  `Int` bounds as integers (`Int where self > 5 and self < 6` is
+  uninhabited). Marker-flow param masks are computed once per module
+  (was once per function, O(n²) in function count).
+- **Measured:** 33 new tests in `tests/test_effect_scope.py`; playground
+  `29_sink_alias.aeth` and `30_record_at_sink.aeth`; no existing
+  `// expect:` header changed (the survey's in-memory rewrite over 418
+  parseable `.aeth` had predicted 0 files; the gate confirmed it).
+  Merged as `60f60e6`; gate exit 0.
+- **Ratchet:** unchanged (54 codes / 30 detectors at this point; iteration
+  50 raises it).
+- **TYPE gap surfaced for next iter:** the survey's remaining Aether-side
+  P0 — boundary-sanitizer coarseness (AEDET-09: `render(sanitizeLog(u))`
+  clears E0729 while the callee feeds `htmlResponse`) — is a probe-
+  confirmed miss with a design cost (~50 loc) and a corpus question
+  (which playground examples sanitize at a boundary); park until the
+  corpus is measured. Record-field resolution by type (AEDET-16) stays a
+  precision item. Residuals in q1.
+
+---
+
+## Iteration 50 — E0731: the interpreter fed model output (new detector), and the sink rows the agent corpus needs
+
+- **Target:** survey candidate PYSINK-01, the top-ranked NEW detector.
+  `exec(model_output)` is what an AI-agent framework does for a living —
+  smolagents' `LocalPythonExecutor`, langchain's `PythonREPL`, openhands,
+  agno's python tool — and until now `exec`/`eval`/`compile` on a
+  non-literal was a capability NOTE under `--strict` (an UNPROVABLE
+  region), never a finding. By q3's heuristic it scores highest of the
+  batch: it reuses the E0719 shape exactly (literal-only, no sanitizer,
+  `trusted(...)` the sole exit), the population is the scanner's own,
+  and the machinery is one row.
+- **Gap confirmed empirically first:** `def run(code): exec(code)` under
+  `check-py` default flags — exit 0, no E07xx. AST census over
+  bench/framework_scan (4,946 files): 5 bare `exec()` and 9 `compile()`
+  with a non-literal first argument; `eval()` non-literal 0 (the grep
+  hits are docstrings); `importlib.import_module`/`__import__` with a
+  dynamic name 57 + 5 — deliberately NOT a sink (plugin loaders, CWE-470,
+  a different class).
+- **Improvement — the full slice:** stdlib sink `evalCode(source:
+  String) returns String` (`runtime.py` stub that never executes,
+  `grammar/stdlib.md`); `check_code_injection` row in
+  `passes/detector_specs.py` (`_CODE_RULE` = the template rule's contract
+  worded for code), bound in `effects.py`, registered in the `security`
+  stage; `grammar/diagnostics.md` row + prose; `risk.py` critical
+  (CWE-94/95); frontend `SINK_BY_BUILTIN` exec/eval/compile — bare names
+  only (`session.exec(stmt)` is the by-name SQL row, not the builtin),
+  `ast.literal_eval` is not a sink, a local `def exec` shadow is not the
+  builtin, `exec(compile(src, ...))` reports once; tests on both sides;
+  `demos/case_studies/code_injection/`, playground
+  `31_code_injection.aeth`, `bench/py_frontend/corpus/code_injection_repro.py`
+  + labels; `vault/wiki/clusters/violation-taxonomy.md` row.
+  **Ratchet raised 54 → 55 codes, 30 → 31 detectors** (`tests/ratchet_baseline.json`).
+- **Sink rows shipped alongside (PYFE-08, PYSINK-02..12), every one a
+  silent shape before, all flag-more:** deserialize — `torch.load`
+  (guard `weights_only=True`; absent is SINK, the pre-2.6 default,
+  version-dependent like lxml), joblib, dill, cloudpickle,
+  `pandas.read_pickle`, `jsonpickle.decode`, `numpy.load(allow_pickle=True)`,
+  `yaml.*load_all`; shell — `subprocess.getoutput`/`getstatusoutput`,
+  `asyncio.create_subprocess_shell`, `commands.getoutput`, paramiko
+  `exec_command`, and the argv form `["bash", "-c", cmd]` (BUG-021: the
+  argv "safe exit" whose third element the shell parses); template —
+  jinja2 `Environment.from_string` (24 non-literal corpus sites, the
+  prompt-template shape), mako `Template`; SQL — asyncpg/databases
+  `fetchrow`/`fetchval`/`fetch_all`/`fetch_one`/`fetch_val`, `mogrify`,
+  `pandas.read_sql`, django `RawSQL` (bare `fetch` deliberately not —
+  vector stores and HTTP clients spell it); redirect — starlette/fastapi
+  `RedirectResponse`, django `HttpResponseRedirect`, aiohttp `HTTPFound`;
+  XXE — `xml.dom.minidom.parse`. `bench/py_frontend/corpus/sink_coverage_repro.py`
+  carries every shape, labelled.
+- **BUG-020 (Aether side, false accept):** a sanctioned wrapper was
+  accepted on its NAME; `sqlBind(tmpl, v)`, `shellArg(tmpl, v)`,
+  `safeRedirect(host, p)` with a parameter in the pinning slot laundered
+  the very text the row refuses. `ArgRule.pin` now judges `args[0]`;
+  every frontend-emitted Call carries `"py": True` and is exempt (a
+  Python wrapper has no template slot). `safeJoin`'s base is deliberately
+  unpinned: a parameter base directory is the idiom (7 corpus sites, both
+  zip-slip demos' `fixed.aeth`) and the untrusted half is the relative
+  part — recorded as a residual, not enforced.
+- **Scanner visibility (TC-03/08/10/11):** every unreadable file is
+  reported on stderr in json/sarif/text with the parser's message (JSON
+  `detail`); SARIF carries `toolExecutionNotifications` for them plus
+  column, suggestion and `extra` per result; pruned vendored/build
+  directories are listed (JSON `skipped_dirs`, text summary); an
+  unparseable file alone never fails the run in any mode, an analyzer
+  crash always does; the Python stage-skip and strict-only lists are
+  defined once in `py_frontend.py` and imported by the CLI, both benches
+  and the tests.
+- **Measured (bench/framework_scan, same 4,946 files, after iterations
+  48–50):** frameworks **628 → 676** (+50, −2), 0 analyzer errors, 0 unreadable, wheel versions identical (per-distribution file counts match the 2026-09-02 cache). **E0731 × 8:** `agno/tools/python.py:159` (`exec(code, ...)` — the python tool running the model's code), `smolagents/tools.py:575` (`Tool.from_code` — `exec(tool_code, module.__dict__)`), `browser_use/mcp/cli_mcp.py:128` (`exec(code, ns)`), `crewai/flow/runtime/_actions.py:309` (`exec(compile(module, filename, "exec"), namespace)`) — four true-by-shape sites where the interpreter is the product — and three `compile()`-for-linting sites (`aider/linter.py:179`, `openhands/linter/languages/python.py:11,66`) plus `langchain_community/tools/e2b_data_analysis/unparse.py:744`, which compile without executing: over-flags by class (`compile` produces a code object; the rule treats it as the sink because `exec(compile(...))` is the common form). **E0719 +24**, the `from_string` row: ~14 are jinja2 prompt templates rendered from strings by design (haystack `PromptBuilder`/`ChatPromptBuilder`/`ConditionalRouter`/`OutputAdapter`, semantic-kernel `Jinja2PromptTemplate`, langchain-core `jinja2_formatter`, smolagents' gradio template, openhands' invariant policy) — the prompt-template SSTI shape, by-design context; the rest are non-jinja `.from_string(...)` methods matched by name (momento `CredentialProvider.from_string` ×3, llama-cpp `LlamaGrammar.from_string` ×2, bigquery, networkx, agno's chunking strategy) — q5's accepted cost, now measured at roughly a third of the row. **E0718 +5:** `RedirectResponse(url)` in agno's MCP consent/media routes and mcp's OAuth `AuthorizationHandler` — dynamic redirect targets, true by shape (validated-against-registered-URIs is the expected repair, outside any argument-shape rule). **E0720 +3:** agno `code_mode`, databricks `_load_pickled_fn_from_hex_string` (cloudpickle by design), tfidf `joblib`. **E0713 +10:** `fetch_all` by name on langchain-community's HTTP loaders (`async_html`, `web_base` — over-flags the survey predicted) and cassandra's CQL wrappers (true by shape, CQL). **−2:** the two E0723 PEM-header hits (a docstring and an error message) that iteration 48 recorded as its precision cost — closed by requiring a key body. benign corpus (76 modules): one new E0731 on `tools/py_corpus/17_template_render.py:8` — `eval(expr, {"__builtins__": {}}, context)`, the known-bypassable "sandboxed eval" — true by shape; the other rows unchanged (E0711 11 · E0713 1 · E0720 1). Ground truth 72 TP / 0 FN / 0 FP.
+- **Suite:** exit 0. Merged as `7c4f19d` (branch commits `c35b3f3`, `1855c2f`).
+- **TYPE gaps surfaced for next iter:** (a) `session.exec`/`execute` by
+  name on non-DB receivers (a2a handlers, riza's remote code exec) are
+  E0713 over-flags the keyword-only mapping now reaches — the per-finding
+  `confidence` axis (q6) is where a by-name match should be distinguished
+  from a resolved one; (b) boundary-sanitizer coarseness (AEDET-09) is
+  the last probe-confirmed Aether-side miss in the survey; (c) Zip-Slip
+  via `tarfile`/`zipfile.extractall` without `filter=` (PYSINK-14) needs
+  a member-path model E0711 does not have — parked with its prevalence
+  question open.
+
+---
+
 ## Next-iteration checklist (for the loop)
 
 1. Read the previous report's "TYPE gap for next iter".

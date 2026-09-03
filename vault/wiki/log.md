@@ -1,5 +1,29 @@
 # Operation Log (append-only — newest on top)
 
+## [2026-09-03] Q1 + taxonomy extended | iterations 49–50: the language side's binding walkers, E0731
+- **Iteration 49 (no detector):** four probe-confirmed false accepts on the
+  Aether side, one root cause — the parser emits `Let`/`Var`/`Assign` and
+  every binding walker read two of the three by `name`. `var x = password;
+  print(x)`, a literal-then-reassigned path, a rebound resource id, `for x
+  in markedList`, a match-expression arm, an aliased stdlib sink and a
+  whole record carrying a marker field were all exit 0 (BUGS.md
+  BUG-013..016). Q1 gains the evidence rows; the E0722 and E0723 taxonomy
+  rows record the widenings (one host normalizer, ten provider shapes,
+  PEM needs a body, StringLit carries a position).
+- **Iteration 50 (E0731 shipped):** an interpreter fed attacker-authored
+  source — `exec`/`eval`/`compile` of model output, the population's own
+  hazard — is a finding, not a capability note. Ratchet 54 → 55 codes,
+  30 → 31 detectors. Taxonomy row added by the slice. Alongside: the
+  sink rows the agent corpus needs (torch/joblib/dill/cloudpickle/numpy
+  pickle, shell-always runners, the `["bash", "-c", cmd]` argv form,
+  jinja2 `from_string`, asyncpg fetch*, framework redirects), BUG-020 (a
+  wrapper's pinning argument is judged; `safeJoin`'s base deliberately
+  not — recorded in Q1 as an accepted miss), and scanner visibility
+  (unreadable files and skipped directories reported in every mode).
+- **Design points that must not be re-litigated:** `safeJoin`'s base stays
+  unpinned (parameter base directories are the idiom); bare `fetch` is
+  not a SQL sink by name; builtin sinks match bare names only.
+
 ## [2026-09-03] Q7 added, Q5 extended | the translator was not total (BUG-012)
 - **Iteration 48 shipped no detector; it closed a false-accept class in the
   Python frontend.** A five-lens survey (65 probe-confirmed candidates)

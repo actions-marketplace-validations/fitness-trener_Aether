@@ -242,9 +242,9 @@ crawl4ai. **Five of the nine are access-control cases that mainstream SAST
 does not cover.** These are retrospective ports of public incidents, not
 live scans of anyone's systems, and the file says so first.
 
-Current surface: **54 diagnostic codes across 30 gated detectors**, held by
+Current surface: **55 diagnostic codes across 31 gated detectors**, held by
 a monotonic ratchet (`tests/ratchet_baseline.json`) that turns the build red
-if a detector is ever removed or weakened. Security family `E0710`–`E0730`;
+if a detector is ever removed or weakened. Security family `E0710`–`E0731`;
 static-semantic family `E0202`–`E0207` (non-exhaustive match, unreachable
 arm, dead code, dead store, ignored `Result`, unsatisfiable refinement).
 

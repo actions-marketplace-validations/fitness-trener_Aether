@@ -204,7 +204,19 @@ before the data keyword is what gets judged (refused, never cleared);
 non-SQL `fetch`es), so asyncpg's `conn.fetch(q)` is silent until a
 qualified row exists; the E0723 PEM pattern matches the header alone,
 which module-level strings now expose (two docstring/message hits on
-the corpus).
+the corpus) — closed in iter 49 (a body is required after the header).
+
+*Iter 50 (E0731 + the sink rows the agent corpus needs):* the builtin
+sinks `exec`/`eval`/`compile` match BARE names only — `_callee_spelling`
+falls back to the attribute name for an unresolved receiver, and
+`session.exec(stmt)` is the by-name SQL row, not the builtin; a local
+`def exec` shadow is not the builtin. `torch.load` without
+`weights_only=True` is a sink although torch ≥ 2.6 defaults it on — the
+same version-dependence lxml has, judged by the older default, over-flag
+direction. Bare `fetch` is deliberately NOT a SQL sink by name (vector
+stores and HTTP clients spell it); `fetchrow`/`fetchval`/`fetch_all`/
+`fetch_one`/`fetch_val` are. The argv form `["bash", "-c", cmd]` is a
+shell (BUG-021). `[source: README, section: Python, key: check-py]`
 
 ## Related
 - [[q1-taint-marker-soundness-boundary]] — the over-flag-never-miss contract every taint pass inherits
