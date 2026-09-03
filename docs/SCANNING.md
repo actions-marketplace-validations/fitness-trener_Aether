@@ -12,6 +12,8 @@ install.
     python -m tools.scan path/to/dir          # human-readable report
     python -m tools.scan path/to/dir --json    # machine-readable
     python -m tools.scan path/to/dir --sarif    # SARIF v2.1.0
+    python -m tools.scan path/to/dir --min-risk high        # triage floor
+    python -m tools.scan path/to/dir --min-confidence 0.9   # certainty floor
 
 Exit code: `0` = no findings, `1` = at least one finding, `2` = usage
 error. Parse errors (invalid syntax — a generation failure) are counted
@@ -57,13 +59,56 @@ annotations.
     aether check-py path/to/file.py            # one file
     aether check-py src/ scripts/              # any mix of files and directories
     aether check-py src/ --strict              # + E0711 and the E0701 inventory
+    aether check-py src/ --min-confidence 0.9  # hide the by-name matches
+    aether check-py src/ --jobs 4              # 4 worker processes
     python -B -m transpiler.aether.cli check-py src/   # without installing
 
 A directory is walked recursively for `.py`, skipping `.git`, `.venv`,
 `venv`, `node_modules`, `__pycache__`, `build`, `dist`, `site-packages`
 and the other vendored trees — a repo scan that turns into a dependency
 scan buries the findings the user can act on. Findings sort worst-first by
-the per-code risk rating (`transpiler/aether/risk.py`).
+the per-code risk rating (`transpiler/aether/risk.py`), then
+most-certain-first by the per-finding confidence below.
+
+### `--jobs`: parallel file analysis
+
+Each file is analyzed independently, so `check-py` can spread them over
+worker processes. Measured on 8 logical cores over the whole `agno`
+package in `bench/framework_scan/_work/src` (1,024 files, 430 findings):
+**241.0 s / 248.3 s serially, 69.5 s / 68.7 s pooled — 3.5x**, with all
+four `--json` outputs byte-identical.
+
+A pool is used **only when it can pay for itself**: more than 32 files on
+a multi-core machine. Below that, interpreter start-up per worker costs
+more than the parallelism buys, so a single-file or small-tree run takes
+the serial loop and is byte-identical to what it was before this flag
+existed. `--jobs 1` forces serial; `--jobs N` forces N workers. Order
+never depends on the choice — the pool maps over the already-sorted paths
+— and a detector crash still surfaces as that file's `ANALYZER ERROR`
+line, because the per-file `except` wall lives inside the worker.
+
+### `--min-confidence`: how sure the analysis is
+
+Risk rates the CLASS ("if this is real, how bad?"). Confidence rates ONE
+finding's evidence: how sure the analysis is that this call is the sink
+it says (`transpiler/aether/confidence.py`). It is neither severity nor a
+probability of exploitability.
+
+| what matched | confidence |
+|---|---|
+| a dotted path resolved through the file's imports (`pickle.loads`), or a sink guard | 0.95 |
+| a bare builtin (`exec`, `eval`, `open`), or a literal `["bash", "-c", cmd]` argv | 0.9 |
+| `compile()` — it builds a code object and executes nothing | 0.6 |
+| a METHOD NAME on a receiver whose type was never resolved (`cur.execute`, `env.from_string`) | 0.6 |
+| an Aether-source finding — the sink is spelled in the source, nothing was guessed | 1.0 |
+
+`--min-confidence FLOAT` hides everything below the floor. It is a filter
+on the output; it changes nothing about what the detectors found. On the
+15-framework corpus (`bench/framework_scan/`), 676 findings split
+0.95 x44, 0.9 x3, 0.6 x629 — so `--min-confidence 0.9` hides 629 of 676
+(93%), almost all of them `cursor.execute`-shaped SQL matched by name.
+That is a reading order, not a verdict: those findings are correct by
+Aether's rule and stay in the default output.
 
 Exit code: `0` = clean, `2` = findings **or an analyzer crash**. A file
 that cannot be parsed (py2 sources, templates, fixtures) is counted on its

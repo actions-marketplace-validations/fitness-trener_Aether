@@ -43,7 +43,7 @@ def to_sarif(results: list, base: str, unreadable=()) -> dict:
     VS Code, and most CI security dashboards ingest.
 
     `results` is `[{"path": str, "findings": [{"code", "message", "line",
-    "risk", "column"?, "suggestion"?, "extra"?}]}]`; `base` is the
+    "risk", "column"?, "confidence"?, "suggestion"?, "extra"?}]}]`; `base` is the
     directory every path is reported relative to (the checkout root under
     CI). `unreadable` is `[(path, why)]` for files the scanner could not
     parse: each becomes a `toolExecutionNotification` on the run, so a
@@ -69,6 +69,12 @@ def to_sarif(results: list, base: str, unreadable=()) -> dict:
             # Code Scanning shows `properties` on the alert, so the SARIF
             # carries the same two fields instead of dropping them.
             props = {}
+            # How sure the ANALYSIS is that this call is the sink it
+            # says (`aether/confidence.py`) — per FINDING, unlike the
+            # rule's `security-severity`, which is per class. A rule
+            # property could not carry it.
+            if f.get("confidence") is not None:
+                props["confidence"] = f["confidence"]
             if f.get("suggestion"):
                 props["suggestion"] = f["suggestion"]
             if f.get("extra"):

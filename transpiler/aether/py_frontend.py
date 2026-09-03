@@ -327,6 +327,19 @@ SINK_BY_BUILTIN: Dict[str, str] = {
     "exec": "evalCode", "eval": "evalCode", "compile": "evalCode",
 }
 
+# How `_sink_match` named a sink. This is the vocabulary the per-finding
+# confidence axis rates (`transpiler/aether/confidence.py`), published
+# through `mapping_table()` like every other frontend table so the rating
+# can be audited against what the frontend can actually emit.
+SINK_MATCH_KINDS: Tuple[str, ...] = (
+    "qualified",        # resolved through the imports to a dotted path
+    "guard",            # a SINK_GUARDS path whose guard read as unsafe
+    "builtin",          # a bare builtin name (open/exec/eval)
+    "builtin_compile",  # `compile` — builds a code object, runs nothing
+    "method",           # method name only, receiver unresolved (q5)
+    "argv",             # literal ["bash", "-c", cmd]
+)
+
 # `["bash", "-c", cmd]` handed to a subprocess runner: the argv exit the
 # `shell=` guard sanctions, carrying a shell command line in its third
 # element. Literal program and flag only; a list built elsewhere stays
@@ -1142,27 +1155,45 @@ def _sink_name(call: _pyast.Call, imp: "_Imports",
                safe_xml: Optional[Set[str]] = None,
                resolver: Optional[Any] = None) -> Optional[str]:
     """The Aether sink name for this Python call, or None."""
+    m = _sink_match(call, imp, safe_xml, resolver)
+    return m[0] if m is not None else None
+
+
+def _sink_match(call: _pyast.Call, imp: "_Imports",
+                safe_xml: Optional[Set[str]] = None,
+                resolver: Optional[Any] = None) -> Optional[Tuple[str, str]]:
+    """`(sink name, how it was matched)` for this Python call, or None.
+
+    The second element is one of `SINK_MATCH_KINDS`, and it is the whole
+    evidence the confidence axis has: the ways this function names a
+    sink are not equally certain (a dotted path resolved through the
+    imports vs. a bare method name on an unresolved receiver — q5's
+    sanctioned over-flag). It is decided HERE, where the branch is
+    taken, rather than re-derived by the caller, which would be a second
+    copy of this dispatch free to disagree with it.
+    `transpiler/aether/confidence.py` rates the kinds; `mapping_table()`
+    publishes the vocabulary."""
     dotted = _callee_spelling(call.func, imp, resolver)
     if dotted is None:
         return None
     guard = SINK_GUARDS.get(dotted)
     if guard is not None:
         if _guard_verdict(call, guard, imp, resolver):
-            return guard.sink_name
+            return guard.sink_name, "guard"
         # `subprocess.run(["bash", "-c", cmd])`: no shell= — the argv
         # exit — but the argv IS a shell invocation (BUGS.md BUG-021).
         # `_call_expr` puts the third element in the judged slot.
         if guard.sink_name == "shellExec" and _argv_shell_payload(call) is not None:
-            return guard.sink_name
+            return guard.sink_name, "argv"
         return None
     sink = SINK_BY_QUALIFIED.get(dotted)
     if sink == "parseXml":
         for a in call.args[1:]:
             if isinstance(a, _pyast.Name) and a.id in (safe_xml or set()):
                 return None      # entity resolution explicitly disabled
-        return sink
+        return sink, "qualified"
     if sink is not None:
-        return sink
+        return sink, "qualified"
     if dotted in SINK_BY_BUILTIN and isinstance(call.func, _pyast.Name):
         # Bare names only: `_callee_spelling` falls back to the ATTRIBUTE
         # name for an unresolved receiver, and `session.exec(stmt)` is
@@ -1177,7 +1208,11 @@ def _sink_name(call: _pyast.Call, imp: "_Imports",
                 and isinstance(call.args[0], _pyast.Call) \
                 and _sink_name(call.args[0], imp, safe_xml, resolver) == "evalCode":
             return None
-        return SINK_BY_BUILTIN[dotted]
+        # `compile` gets its own kind: it builds a code object and
+        # executes nothing, and 4 of the 8 measured corpus sites are
+        # linters checking syntax (bench/framework_scan/REPORT.md §8).
+        return SINK_BY_BUILTIN[dotted], (
+            "builtin_compile" if dotted == "compile" else "builtin")
     # Method on an unresolved receiver: over-flag by name (see doctrine note).
     #
     # No parameterized-query special case. `cur.execute("... id = ?", params)`
@@ -1187,8 +1222,8 @@ def _sink_name(call: _pyast.Call, imp: "_Imports",
     # `cur.execute("SELECT ... " + name, extra)` went silent: params do not
     # launder a concatenated query. BUGS.md BUG-004.
     attr = _method_name(call.func, resolver)
-    if attr is not None:
-        return SINK_BY_METHOD.get(attr)
+    if attr is not None and attr in SINK_BY_METHOD:
+        return SINK_BY_METHOD[attr], "method"
     return None
 
 
@@ -1230,7 +1265,8 @@ def _call_expr(node: _pyast.Call, imp: "_Imports",
     sink is invisible to `mapping_table()`, which is exactly what the
     auditable-surface design exists to prevent."""
     dotted = _callee_spelling(node.func, imp, resolver)
-    name = (_sink_name(node, imp, safe_xml, resolver)
+    sink = _sink_match(node, imp, safe_xml, resolver)
+    name = ((sink[0] if sink else None)
             or SANITIZER_BY_QUALIFIED.get(dotted or "")
             # A SQLAlchemy expression is a parameterized query by
             # construction; naming it as E0713's wrapper is the same move
@@ -1264,6 +1300,11 @@ def _call_expr(node: _pyast.Call, imp: "_Imports",
                            "func": {"kind": "Ident", "name": name},
                            "args": [_expr(a, imp, safe_xml, resolver) for a in args],
                            "pos": _pos(node), "py": True}
+    if sink is not None:
+        # How this call was named a sink, for the confidence axis. Only
+        # a sink carries it — a wrapper or a `py:` spelling matched
+        # nothing, so there is nothing to be more or less sure about.
+        out["match"] = sink[1]
     # Keyword values are carried too, so `f(k=cur.execute(q))` is found by
     # `walk`; `_arg_reason` reads only `args[i]`, so nothing here is ever
     # judged as the sink's own argument (BUG-012).
@@ -1823,6 +1864,7 @@ def mapping_table() -> Dict[str, Any]:
         "sink_by_qualified": SINK_BY_QUALIFIED,
         "sink_by_method": SINK_BY_METHOD,
         "sink_by_builtin": SINK_BY_BUILTIN,
+        "sink_match_kinds": list(SINK_MATCH_KINDS),
         "sink_guards": {
             name: {"sink": g.sink_name, "keyword": g.keyword,
                    "safe_values": sorted(g.safe_values),
