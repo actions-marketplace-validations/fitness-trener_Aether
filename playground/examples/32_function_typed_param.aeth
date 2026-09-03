@@ -1,0 +1,44 @@
+// expect: E0729, E0801
+// Example 32 — Function-typed parameters (iter 51, BUGS.md BUG-022).
+//
+// `grammar/grammar.ebnf` line 88 gives the language function types:
+// `function(String) returns Unit`. A call through such a parameter has
+// no declaration to look up, so BOTH of Aether's boundary rules used to
+// step over it silently:
+//
+//   * the marker rule (E0729) found no callee decl for `f`, so a
+//     Secret<String> crossed into an unknown callee and every sink check
+//     downstream went blind — `apply(print, pw)` logged the password;
+//   * the effect rule (E0801) unioned only the CALLEE's effects, so a
+//     `log` function handed to a `pure` helper by a `pure` caller
+//     performed logging that nobody declared.
+//
+// Both are refused now. There is deliberately NO sanctioned crossing at
+// a function-typed parameter: a function TYPE's argument types are never
+// checked against the function that actually arrives, and the grammar
+// gives a function type no effects clause at all, so declaring one would
+// be an exit that proves nothing. Unwrap at the call site instead, and
+// declare the effect the passed value performs.
+
+function logIt(msg: String) returns Unit
+  effects log
+do
+  print(msg)
+end
+
+function apply(f: function(String) returns Unit, x: Secret<String>) returns Unit
+  effects pure
+do
+  // E0729: `f` is a parameter — the analysis cannot see what it is.
+  // `apply` can still claim `pure` while calling `f`: a function TYPE
+  // carries no effects clause, so there is nothing here to check it
+  // against. That residual is recorded in q1, not invented away.
+  f(x)
+end
+
+function main(pw: Secret<String>) returns Unit
+  effects pure
+do
+  // E0801: `logIt` runs under this call and it logs; main claims pure.
+  apply(logIt, pw)
+end

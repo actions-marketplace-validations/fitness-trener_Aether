@@ -745,3 +745,143 @@ element spells a shell (`sh`, `bash`, `zsh`, `dash`, `ksh`, `/bin/sh`,
 `powershell`, `pwsh`) and whose second is `-c` (or `/c` for cmd), the
 call is `shellExec` and the THIRD element is the judged argument. A
 literal third element stays clean; `["ls", "-l", x]` stays the argv exit.
+
+---
+
+### BUG-022  function-typed parameters launder markers AND effects (false accept)  [OPEN]
+
+Found 2026-09-03 (iter-51, survey candidate AEDET-08; re-probed live on
+`3986d38`). q1's Evidence table asserted "`grammar.ebnf` has no function
+types", so the whole surface was written off in iter-42. The claim was
+wrong: `grammar/grammar.ebnf` line 88 is
+
+    type_atom = IDENT
+              | "function" "(" [ type_expr {"," type_expr} ] ")" "returns" type_expr ;
+
+and `parser.py:369` emits `{"kind": "FunctionType", ...}`. Two exit-0
+probes, verbatim:
+
+    function apply(f: function(String) returns Unit, x: Secret<String>) returns Unit
+      effects log
+    do
+      f(x)
+    end
+
+    function main(pw: Secret<String>) returns Unit
+      effects log
+    do
+      apply(print, pw)
+    end
+    -> OK (2 decls), exit 0
+
+    function logLine(s: String) returns Unit
+      effects log
+    do
+      print(s)
+    end
+
+    function apply(f: function(String) returns Unit, x: String) returns Unit
+      effects pure
+    do
+      f(x)
+    end
+
+    function main(s: String) returns Unit
+      effects pure
+    do
+      apply(logLine, s)
+    end
+    -> OK (3 decls), exit 0
+
+Why these are false accepts, not over-flags. (1) `check_marker_boundary`
+resolves the callee by name; `f` is a PARAMETER, so `cands` is empty and
+the `if not cands: continue` branch dropped the crossing. The marker then
+crossed into a callee the analysis cannot see AT ALL — strictly worse
+than the plain-param case E0729 already refuses — and `print` received
+the secret with every sink pass blind. (2) `check_effects` unioned only
+the CALLEE's effects into the caller's obligation. A function passed as
+a VALUE runs under that call just the same, so `log` was performed by two
+functions that both declared `pure`. Both are misses inside the modeled
+surface: the contract-breach class.
+
+Fix. (1) When a call's callee name is a function-typed parameter of the
+enclosing function and no user decl or alias resolves it, any argument
+that leaks the marker raises E0729 with `extra.via = "function_type"`.
+No sanctioned crossing is offered on purpose — a function TYPE's argument
+types are never checked against the function that actually arrives, so
+declaring `function(Secret<String>) returns Unit` would be an exit that
+proves nothing. Unwrapping at the call site is the only clearance.
+(2) In `check_effects`, every argument that is a bare `Ident` naming a
+user `FunctionDecl` or a `_STDLIB_EFFECTS` key contributes its declared
+effects to the caller's obligation, reported against the caller as the
+existing E0801 with `extra.via = "function_value"` and wording that says
+the value is passed, not called. A pure function value adds nothing, so
+`map(double, xs)` stays clean — the corpus has 9 such sites (bench
+humanize x3, three `v02_map_filter_chain` files x2 each), every one of
+them declared pure, and 0 function-typed parameters, so the change fires
+0x on the corpus.
+
+Residual (recorded in q1, not invented away): a function that merely
+DECLARES a function-typed parameter can still claim any effects clause it
+likes. The function TYPE carries no effects clause in the grammar, so
+there is nothing to check a callee's own declaration against, and
+`apply(f: function(String) returns Unit) effects pure do f(x) end` stays
+accepted. Closing it needs effect-polymorphic function types — a language
+change, not a detector change.
+
+### BUG-023  the boundary sanitizer is marker-wide, not sink-specific (false accept)  [OPEN]
+
+Found 2026-09-03 (iter-51, survey candidate AEDET-09; re-probed live on
+`3986d38`). q1's Recommended Actions had parked this as "probe for a MISS
+before acting — if none exists it is doctrine". The probe finds the miss:
+
+    function render(s: String) returns String
+      effects pure
+    do
+      return htmlResponse(s)
+    end
+
+    function handle(u: Untrusted<String>) returns String
+      effects pure
+    do
+      return render(sanitizeLog(u))
+    end
+    -> OK (2 decls), exit 0
+
+while the inline shape one call closer is refused:
+
+    function handle(u: Untrusted<String>) returns String
+      effects pure
+    do
+      return htmlResponse(sanitizeLog(u))
+    end
+    -> [E0725] ... (sanitizeLog does NOT protect here), exit 2
+
+`boundary_markers()` unions EVERY `Untrusted` row's sanitizer into one
+set, so any one of them cleared the E0729 crossing regardless of which
+sink the callee actually reached. E0725's own hint says sanitizeLog does
+not protect at `htmlResponse`; stripping CR/LF does nothing about
+`<script>`. Moving the sink one call away laundered it — a miss, and the
+same class of laundering E0729 exists to refuse.
+
+Fix. `param_sink_reach(ast)` in `detector_specs.py` summarises, per user
+function and per parameter index, which marker-flow SINK names that
+parameter's Ident reaches inside the body — using the same argument-index
+rule `marker_flow` applies (`Sink.arg_indices`, so `writeFile`'s path
+slot does not count) and honouring aliased sinks via `_sink_targets`.
+`marker_sink_sanitizers()` derives (marker, sink) -> sanitizer from
+`MARKER_FLOW_SPECS`; nothing restates the map. `check_marker_boundary`
+then accepts a cleared crossing only when the unwrapper that cleared it
+is the right sanitizer for every sink the callee's parameter feeds, and
+otherwise reports E0729 naming the mismatch (`cleared_with`,
+`reaches_sink`, `needs`). `trusted(...)` is nobody's row sanitizer — it
+is an explicit assertion, not inference — and still clears. An empty
+reached-sink set keeps the pre-fix behaviour exactly, so the change fires
+0x on the corpus.
+
+Residuals (recorded in q1): the summary is ONE LEVEL and by direct Ident.
+A callee that rebinds the parameter before the sink, or passes it on to a
+THIRD function, contributes no sinks, and the crossing is then accepted
+on the old marker-wide rule. E0730 (return laundering) is untouched — a
+return has no callee parameter to summarise, so the coarseness stands
+there.

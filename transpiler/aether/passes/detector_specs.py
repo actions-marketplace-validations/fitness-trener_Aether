@@ -779,6 +779,74 @@ LITERAL_OR_WRAPPER_SPECS: Tuple[LiteralOrWrapperSpec, ...] = (
 _EXTRA_UNWRAPPERS: Dict[str, Tuple[str, ...]] = {"Untrusted": (TRUSTED,)}
 
 
+def marker_sink_sanitizers() -> Dict[str, Dict[str, str]]:
+    """marker -> sink name -> the sanitizer that marker's row demands AT
+    THAT SINK. `boundary_markers()` flattens this into one set per
+    marker, which is exactly the coarseness BUGS.md BUG-023 reports:
+    `sanitizeLog(u)` clears an Untrusted crossing into a callee that
+    feeds `htmlResponse`, whose sanitizer is `htmlEscape`. Derived from
+    MARKER_FLOW_SPECS; nothing restates the map."""
+    out: Dict[str, Dict[str, str]] = {}
+    for spec in MARKER_FLOW_SPECS:
+        for s in spec.sinks:
+            out.setdefault(spec.marker, {})[s.name] = spec.sanitizer
+    return out
+
+
+def _marker_sink_args() -> Dict[str, Optional[Tuple[int, ...]]]:
+    """sink name -> the argument positions marker-flow rows check there
+    (None = every argument), unioned across rows."""
+    out: Dict[str, Optional[Tuple[int, ...]]] = {}
+    for spec in MARKER_FLOW_SPECS:
+        for s in spec.sinks:
+            if s.name not in out:
+                out[s.name] = s.arg_indices
+            elif out[s.name] is None or s.arg_indices is None:
+                out[s.name] = None
+            else:
+                out[s.name] = tuple(sorted(set(out[s.name]) | set(s.arg_indices)))
+    return out
+
+
+def param_sink_reach(ast: Dict[str, Any]) -> Dict[str, Dict[int, frozenset]]:
+    """user function name -> param index -> the marker-flow SINK names
+    that parameter reaches inside the body. A parameter reaches a sink
+    when its Ident appears in one of the argument positions that sink's
+    rows actually check (`Sink.arg_indices`) — the same rule
+    `marker_flow` applies. Aliased sinks count (`_sink_targets`,
+    flag-more).
+
+    E0729 consumes this to judge WHICH sanitizer clears a boundary
+    crossing (BUGS.md BUG-023). One level only, and by direct Ident:
+    a callee that rebinds the parameter, or passes it on to a THIRD
+    function, contributes no sinks — the summary then names none and
+    E0729 keeps its pre-BUG-023 behaviour. Residual recorded in
+    `vault/wiki/questions/q1-taint-marker-soundness-boundary.md`."""
+    sinks = _marker_sink_args()
+    out: Dict[str, Dict[int, frozenset]] = {}
+    for d in ast.get("decls", []):
+        if d.get("kind") != "FunctionDecl":
+            continue
+        params = d.get("params", [])
+        if not params:
+            continue
+        al = _fn_aliases(d, frozenset(sinks))
+        per: Dict[int, Set[str]] = {}
+        for call in walk(d.get("body", []), "Call"):
+            args = call.get("args") or []
+            for sink in _sink_targets(callee_name(call), al, sinks):
+                idx = sinks[sink]
+                checked = args if idx is None else \
+                    [args[i] for i in idx if i < len(args)]
+                for i, p in enumerate(params):
+                    # tainted={param}, no unwrappers: "this Ident is here".
+                    if _expr_leaks_marked(checked, {p["name"]}, frozenset()):
+                        per.setdefault(i, set()).add(sink)
+        if per:
+            out[d["name"]] = {i: frozenset(v) for i, v in per.items()}
+    return out
+
+
 def boundary_markers() -> Dict[str, frozenset]:
     """Marker -> sanctioned call-site unwrappers, DERIVED from
     MARKER_FLOW_SPECS. E0729 (marker boundary) and E0730 (return

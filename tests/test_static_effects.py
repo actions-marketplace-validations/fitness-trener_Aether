@@ -628,8 +628,75 @@ def test_negative_glob():
     print(f"B.2 glob negative: {len(NEGATIVE_GLOB)}/{len(NEGATIVE_GLOB)} caught")
 
 
+# ----------------------------------------------------------------------
+# Iter 51 / BUGS.md BUG-022 — a function passed as a VALUE is an escape
+# ----------------------------------------------------------------------
+# `apply(logIt, s)` runs logIt's `log` effect under the caller, but only
+# the CALLEE's effects were ever unioned into the obligation, so a `pure`
+# main handing a `log` function to a `pure` apply was exit 0.
+
+FN_VALUE_ESCAPE_SRC = """
+function logIt(s: String) returns Unit
+  effects log
+do
+  print(s)
+end
+
+function apply(f: function(String) returns Unit, x: String) returns Unit
+  effects pure
+do
+  f(x)
+end
+
+function main(s: String) returns Unit
+  effects pure
+do
+  apply(logIt, s)
+end
+"""
+
+
+def test_function_value_effect_escape():
+    diags = [d for d in _check(FN_VALUE_ESCAPE_SRC) if d.code == "E0801"]
+    pairs = {(d.extra.get("caller"), d.extra.get("callee")) for d in diags}
+    assert ("main", "logIt") in pairs, \
+        f"passing a log function as a value must obligate the caller; got {pairs}"
+    d = next(d for d in diags if d.extra.get("caller") == "main")
+    assert d.extra.get("via") == "function_value"
+    assert "passes 'logIt' as a value to 'apply'" in d.message
+    print("B.1 E0801: function value passed as an argument is an effect escape")
+
+
+def test_pure_function_value_clean():
+    src = """
+function double(n: Int) returns Int
+  effects pure
+do
+  return n * 2
+end
+
+function run(xs: List<Int>) returns List<Int>
+  effects pure
+do
+  return map(double, xs)
+end
+"""
+    assert _check(src) == [], "a pure function value adds no obligation"
+    print("B.1 E0801: map(double, xs) stays clean")
+
+
+def test_covered_function_value_clean():
+    src = FN_VALUE_ESCAPE_SRC.replace("effects pure", "effects log")
+    assert [d for d in _check(src) if d.code == "E0801"] == [], \
+        "declaring the effect covers the passed value"
+    print("B.1 E0801: a caller declaring the effect covers the passed value")
+
+
 # Tack the B.2 tests onto the __main__ runner.
 if __name__ == "__main__":
     test_positive_glob()
     test_negative_glob()
+    test_function_value_effect_escape()
+    test_pure_function_value_clean()
+    test_covered_function_value_clean()
     print("B.2 glob tests pass")
