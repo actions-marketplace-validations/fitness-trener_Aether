@@ -1,0 +1,27 @@
+// expect: E0731
+// Code injection (CWE-94/95). BROKEN on purpose.
+//
+// The AI-agent incident shape: a "run Python" tool takes the code the
+// model wrote and hands it to an interpreter. A prompt injection in a
+// page the agent read, a poisoned document, or a hostile user decides
+// what the model emits — and exec()/eval()/compile() run it with the
+// process's full privileges. That is remote code execution.
+//
+// Each function type-checks and every unit test on the happy path
+// passes. The lie is that `modelOutput` reaches the SOURCE position of
+// the interpreter. Aether refuses it with E0731 — run `aether check`.
+// There is no sanitizer for attacker-authored code: the source must be a
+// fixed literal, or an explicitly vetted trusted(...) bundle.
+
+function runPythonTool(modelOutput: String) returns String
+  effects pure
+do
+  // modelOutput IS the program — this is the injection.
+  return evalCode(modelOutput)
+end
+
+function main() returns Unit
+  effects log
+do
+  print(runPythonTool("import os; os.system('id')"))
+end

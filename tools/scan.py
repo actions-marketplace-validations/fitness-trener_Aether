@@ -76,7 +76,9 @@ def scan_file(path: str) -> dict:
         # Generation failure — invalid syntax. Reported separately.
         return {"path": path, "parse_error": str(e), "findings": []}
     findings = [{"code": d.code, "message": d.message,
-                 "line": d.position.line, "risk": risk_of(d.code)}
+                 "line": d.position.line, "column": d.position.column,
+                 "risk": risk_of(d.code), "suggestion": d.suggestion,
+                 "extra": d.extra}
                 for d in analyze_flat(ast)]
     # Worst-first: a reviewer reading only the top of a 4,000-finding
     # scan must be reading the critical ones. Line/code break ties so

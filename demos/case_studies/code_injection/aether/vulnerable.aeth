@@ -1,0 +1,26 @@
+// expect: E0731
+// Code injection — an interpreter fed attacker-authored source (CWE-94/95).
+// BROKEN on purpose.
+//
+// The agent-framework incident shape: a tool takes the code an LLM wrote
+// and hands it to exec()/eval()/compile(). Whatever the model was talked
+// into emitting — by a prompt injection in a web page it read, a poisoned
+// document, a hostile user — runs with the process's full privileges.
+// That is remote code execution by construction, not a cosmetic bug.
+//
+// Each function type-checks and every unit test on the happy path
+// passes. The lie is that `toolCode` reaches the SOURCE position of the
+// interpreter. Aether refuses it with E0731 — run `aether check`.
+
+function runTool(toolCode: String) returns String
+  effects pure
+do
+  // toolCode IS the program — this is the injection.
+  return evalCode(toolCode)
+end
+
+function main() returns Unit
+  effects log
+do
+  print(runTool("import os; os.system('id')"))
+end

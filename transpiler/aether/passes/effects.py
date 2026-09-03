@@ -416,6 +416,7 @@ check_csv_injection    = build("check_csv_injection")
 #   E0719  renderTemplate     template   (none)           CWE-94
 #   E0720  deserialize        data       schemaDecode()   CWE-502
 #   E0727  parseXml           data       parseXmlSafe()   CWE-611
+#   E0731  evalCode           source     (none)           CWE-94/95
 #
 # The precondition each refuses is the same one: a command, query, path,
 # URL, template or document assembled from input the caller does not
@@ -440,6 +441,7 @@ check_open_redirect      = build("check_open_redirect")
 check_template_injection = build("check_template_injection")
 check_deserialization    = build("check_deserialization")
 check_xxe                = build("check_xxe")
+check_code_injection     = build("check_code_injection")
 
 
 # ----------------------------------------------------------------------

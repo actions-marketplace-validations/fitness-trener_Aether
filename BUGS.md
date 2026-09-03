@@ -607,3 +607,64 @@ sentinel before `stmt = select(...)` binds nothing.
 
 `bench/py_frontend/corpus/totality_repro.py` carries twelve silent
 shapes and seven documented fixes, all labelled.
+
+
+### BUG-020  a sanctioned wrapper was accepted on its NAME; its pinning argument was never judged (false accept)  [OPEN]
+test: tests/test_effect_scope.py
+
+
+Found 2026-09-03 by the improvement survey (candidate AEDET-05), probe-
+confirmed before the fix. The literal-or-wrapper rows accept an argument
+that is "a fixed literal or the result of a sanctioned wrapper call":
+`_arg_reason` returned safe for ANY call whose callee was in the row's
+wrapper list, without looking at the wrapper's own arguments. Every
+wrapper pins the untrusted value to its FIRST argument — the template
+`sqlBind` binds into, the command line `shellArg` quotes into, the host
+`safeRedirect` pins to — so a wrapper handed a non-literal there launders
+the very thing the row exists to refuse:
+
+```aether
+function q(tmpl: String, v: String) returns String
+  effects db.query
+do
+  return sqlQuery(sqlBind(tmpl, v))      // exit 0: the QUERY TEXT is tmpl
+end
+```
+
+Same for `shellExec(shellArg(tmpl, v))` and `redirect(safeRedirect(host,
+p))`. All three were exit 0.
+
+Fix: `ArgRule.pin` — a reason string per row; when the callee is a
+wrapper, `args[0]` must itself satisfy the rule (literal or literal-bound
+name), else the call is refused with that reason. `safeJoin(base, rel)`
+deliberately has no `pin`: it strips `..` and absolute roots from `rel`,
+the base directory arriving as a parameter is the idiom (7 corpus sites,
+both zip-slip demos' `fixed.aeth`), and the base is program-chosen, not
+the untrusted half — pinning it would refuse the sanctioned exit itself.
+Recorded as a residual, not enforced.
+
+The Python frontend's wrapper calls have no template slot — `shlex.quote(x)`
+arrives as `shellArg(x)`, a SQLAlchemy expression as `sqlBind(...)` — so
+every Call the frontend emits carries `"py": True` and the pinning check
+skips it. That marker is the ONLY difference between the two IRs the
+rules see; a frontend Call without it would be judged by the Aether rule.
+
+### BUG-021  the argv form `["bash", "-c", cmd]` was read as the safe exit (false accept)  [OPEN]
+test: tests/test_py_frontend_sinks.py
+
+
+Found 2026-09-03 (survey candidate PYSINK-07). `subprocess.run` without
+`shell=` IS the documented fix — the argv form — so the guard read it as
+safe. But an argv whose program is a shell and whose flag is `-c` hands
+its third element to that shell to PARSE: `subprocess.run(["bash", "-c",
+"ls " + user])` is `os.system("ls " + user)` with extra steps, and was
+silent. Same for `os.execvp("sh", ["sh", "-c", cmd])` (recorded, not
+mapped: 0 corpus sites).
+
+Fix: `_argv_shell_payload` — when a subprocess-guard call is NOT a shell
+by keyword and its first positional is a list/tuple literal whose first
+element spells a shell (`sh`, `bash`, `zsh`, `dash`, `ksh`, `/bin/sh`,
+`/bin/bash`, `/usr/bin/sh`, `/usr/bin/bash`, `cmd`, `cmd.exe`,
+`powershell`, `pwsh`) and whose second is `-c` (or `/c` for cmd), the
+call is `shellExec` and the THIRD element is the judged argument. A
+literal third element stays clean; `["ls", "-l", x]` stays the argv exit.

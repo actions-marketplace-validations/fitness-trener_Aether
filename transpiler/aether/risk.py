@@ -105,6 +105,7 @@ RISK = {
     "E0728": "medium",     # CSV / formula injection (CWE-1236)
     "E0729": "high",       # marker laundering at a boundary
     "E0730": "high",       # return laundering / lying signature
+    "E0731": "critical",   # code injection -> RCE (CWE-94/95)
 
     # --- static effect (E08xx) --------------------------------------
     "E0801": "high",       # effect leak — the Log4Shell shape

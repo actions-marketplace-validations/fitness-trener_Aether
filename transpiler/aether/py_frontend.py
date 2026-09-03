@@ -38,6 +38,22 @@ from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 PYMAP_VERSION = "py-cap-map/0.2"
 
+# Stages and rows that do not apply to Python — defined ONCE here and
+# imported by the CLI, both benches and the tests (they were four literal
+# copies with one drift test between them).
+#   effects  — E0801 compares a call site against a DECLARED effects
+#              clause; Python has none, so there is nothing to compare.
+#   semantic — E0202-E0207 check Aether language constructs (match
+#              exhaustiveness, dead `let` stores, ignored Results). On
+#              translated Python they describe the translation, not the
+#              program: `cur = conn.cursor()` read as a dead store.
+PY_SKIP_STAGES = ("effects", "semantic")
+# Rows held back from the DEFAULT Python output by measurement, not taste
+# (`bench/py_frontend/REPORT.md`, 76 benign modules): E0711 fired 11
+# times, 8 of them `open(path_param)` — real, but at a ratio that buries
+# the other rows. `--strict` adds it back. The rationale stays in cli.py.
+PY_STRICT_ONLY_CODES = ("E0711",)
+
 # ----------------------------------------------------------------------
 # THE AUDITABLE CAPABILITY MAPPING TABLE
 # ----------------------------------------------------------------------
@@ -156,6 +172,40 @@ SINK_BY_QUALIFIED: Dict[str, str] = {
     "xml.etree.ElementTree.fromstring": "parseXml",
     "xml.etree.ElementTree.parse": "parseXml",
     "xml.dom.minidom.parseString": "parseXml",
+    # Slice 2 (2026-09-03): callees that are the same hazard as a mapped
+    # row but were silent because their spelling was absent. Every value
+    # is an existing sink string; prevalence per row is the AST census
+    # over bench/framework_scan/_work/src (4,946 files).
+    "xml.dom.minidom.parse": "parseXml",          # parse/parseString asymmetry
+    # pickle-protocol loaders (E0720). joblib/dill/cloudpickle ARE pickle;
+    # pandas.read_pickle unpickles; jsonpickle.decode instantiates
+    # arbitrary py/object classes (over-flag direction). 1 site each for
+    # joblib/dill/cloudpickle on the corpus, 0 for the pandas/jsonpickle.
+    "joblib.load": "deserialize",
+    "dill.load": "deserialize", "dill.loads": "deserialize",
+    "cloudpickle.load": "deserialize", "cloudpickle.loads": "deserialize",
+    "pandas.read_pickle": "deserialize",
+    "jsonpickle.decode": "deserialize",
+    # shell-always runners (E0714): each goes through /bin/sh whatever
+    # the caller passes. 0 corpus sites; the shape is common in scripts.
+    "subprocess.getoutput": "shellExec",
+    "subprocess.getstatusoutput": "shellExec",
+    "asyncio.create_subprocess_shell": "shellExec",
+    "commands.getoutput": "shellExec",            # py2 legacy
+    # template engines (E0719). jinja2's `Environment.from_string` is the
+    # METHOD row below; mako's constructor takes the template text.
+    "mako.template.Template": "renderTemplate",
+    # SQL string executors (E0713). 0 corpus sites; pandas.read_sql is the
+    # common LLM-generated analytics shape.
+    "pandas.read_sql": "sqlQuery", "pandas.read_sql_query": "sqlQuery",
+    "django.db.models.expressions.RawSQL": "sqlQuery",
+    "django.db.models.RawSQL": "sqlQuery",
+    # framework redirect constructors (E0718): 5 non-literal
+    # RedirectResponse sites on the corpus (agno, mcp).
+    "starlette.responses.RedirectResponse": "redirect",
+    "fastapi.responses.RedirectResponse": "redirect",
+    "django.http.HttpResponseRedirect": "redirect",
+    "aiohttp.web.HTTPFound": "redirect",
 }
 
 # ----------------------------------------------------------------------
@@ -205,13 +255,28 @@ _YAML_SAFE_LOADERS = ("yaml.SafeLoader", "yaml.CSafeLoader",
                       "yaml.BaseLoader", "yaml.CBaseLoader")
 
 SINK_GUARDS: Dict[str, "Guard"] = {}
-for _fn in ("yaml.load", "yaml.full_load", "yaml.unsafe_load"):
+for _fn in ("yaml.load", "yaml.full_load", "yaml.unsafe_load",
+            "yaml.load_all", "yaml.full_load_all", "yaml.unsafe_load_all"):
     # Absent Loader= is a sink (that is the classic yaml.load(x) RCE);
     # a SANCTIONED loader clears it; anything else does not.
     # `yaml.load(stream, Loader)`: the loader is also the second positional.
+    # The `*_all` variants take the same Loader and were silent.
     SINK_GUARDS[_fn] = Guard("deserialize", keyword="Loader", arg_index=1,
                              safe_values=_YAML_SAFE_LOADERS,
                              absent_is_sink=True)
+# torch.load is pickle. `weights_only=True` is the documented fix, and the
+# default only from torch 2.6 — so, like lxml, the absent case is judged
+# by the older default: SINK. (CVE-2025-32434: weights_only=True on
+# torch<=2.5.1 is itself bypassable; the guard clears the documented fix,
+# not the version.) 0 corpus sites; the dominant shape in ML repos.
+SINK_GUARDS["torch.load"] = Guard("deserialize", keyword="weights_only",
+                                  safe_values=("True",), absent_is_sink=True)
+# numpy.load re-enables pickle by keyword: absent/False is safe (the
+# default since numpy 1.16.3), a literal True is a sink, an unresolvable
+# value is a sink — the same shape as the subprocess `shell=` row.
+# 1 corpus site (langchain_community document_loaders/parsers/images.py).
+SINK_GUARDS["numpy.load"] = Guard("deserialize", keyword="allow_pickle",
+                                  sink_values=("True",), absent_is_sink=False)
 for _fn in ("subprocess.run", "subprocess.call", "subprocess.check_call",
             "subprocess.check_output", "subprocess.Popen"):
     # No shell= means no shell — the argv form, which IS the documented
@@ -230,16 +295,53 @@ SINK_BY_METHOD: Dict[str, str] = {
     # 22 of 31 `exec_driver_sql` sites in bench/framework_scan were
     # f-strings and every one was silent (BUG-012 survey).
     "exec_driver_sql": "sqlQuery", "exec": "sqlQuery",
+    # asyncpg / `databases` / aiopg query methods (slice 2). Unambiguous
+    # DB names; bare `fetch` is deliberately NOT here — vector stores
+    # (`index.fetch(ids)`) and HTTP clients (`client.fetch(url)`) spell it
+    # too, so it stays a measured decision (q5 residual). fetch_all: 9
+    # non-literal corpus sites (langchain_community; 5 cassandra, 4 HTTP
+    # loaders that will over-flag — accepted direction).
+    "fetchrow": "sqlQuery", "fetchval": "sqlQuery", "fetch_all": "sqlQuery",
+    "fetch_one": "sqlQuery", "fetch_val": "sqlQuery",
+    "mogrify": "sqlQuery",                        # psycopg's query renderer
+    # jinja2 `Environment.from_string(src)` — the prompt-template SSTI
+    # shape agent frameworks actually use: 24 non-literal corpus sites
+    # (haystack PromptBuilder, semantic-kernel, langchain). A non-jinja
+    # `.from_string` over-flags (q5 direction). SandboxedEnvironment is
+    # NOT a sanctioned exit: CVE-2024-22195/-56201/-56326 are escapes.
+    "from_string": "renderTemplate",
+    # paramiko `client.exec_command(cmd)` runs `cmd` through the remote
+    # shell. 0 corpus sites.
+    "exec_command": "shellExec",
 }
 
-# Builtins that are sinks.
-SINK_BY_BUILTIN: Dict[str, str] = {"open": "readFile"}
+# Builtins that are sinks. `exec`/`eval`/`compile` on a non-literal source
+# is code injection (E0731, CWE-94/95) — THE hazard of agent frameworks
+# (5 bare exec() + 9 compile() non-literal sites on the corpus). The
+# capability side still files them as `dynamic_construct` UNPROVABLE
+# notes; this row is what makes them a finding. `ast.literal_eval` is
+# not here (literals only), and a name the module or function binds
+# itself (`def exec(...)`) is not the builtin — see `_sink_name`.
+SINK_BY_BUILTIN: Dict[str, str] = {
+    "open": "readFile",
+    "exec": "evalCode", "eval": "evalCode", "compile": "evalCode",
+}
+
+# `["bash", "-c", cmd]` handed to a subprocess runner: the argv exit the
+# `shell=` guard sanctions, carrying a shell command line in its third
+# element. Literal program and flag only; a list built elsewhere stays
+# the recorded residual (q1). 0 real corpus sites (one docstring).
+_ARGV_SHELLS = frozenset({
+    "sh", "bash", "zsh", "dash", "ksh", "/bin/sh", "/bin/bash",
+    "/usr/bin/sh", "/usr/bin/bash", "cmd", "cmd.exe", "powershell", "pwsh",
+})
+_ARGV_SHELL_FLAGS = frozenset({"-c", "/c"})
 
 # Python's sanctioned exits, mapped onto Aether's wrapper names so a fixed
 # call site reads as clean instead of as an unknown call.
 SANITIZER_BY_QUALIFIED: Dict[str, str] = {
     "shlex.quote": "shellArg", "pipes.quote": "shellArg",
-    "yaml.safe_load": "schemaDecode",
+    "yaml.safe_load": "schemaDecode", "yaml.safe_load_all": "schemaDecode",
     "json.loads": "schemaDecode", "json.load": "schemaDecode",
     "werkzeug.utils.secure_filename": "safeJoin",
     "flask.render_template": "trusted",
@@ -309,12 +411,17 @@ class _FnScope:
     `module_lits` maps a module-level name bound exactly once, to a str
     literal, nowhere else in the module, to that literal."""
     def __init__(self, consts: Dict[str, str], sql_names=(), lit_names=(),
-                 local_names=(), module_lits: Optional[Dict[str, Tuple[str, int]]] = None):
+                 local_names=(), module_lits: Optional[Dict[str, Tuple[str, int]]] = None,
+                 local_fns=()):
         self.consts = consts
         self.sql_names = frozenset(sql_names)
         self.lit_names = frozenset(lit_names)
         self.local_names = frozenset(local_names)
         self.module_lits: Dict[str, Tuple[str, int]] = module_lits or {}
+        # Names that are NOT the builtin of the same spelling: bound in
+        # this function, or a module-level `def`. `SINK_BY_BUILTIN` is
+        # keyed by builtin name, so a local `def exec(...)` must win.
+        self.shadowed = self.local_names | frozenset(local_fns)
         self.depth = 0            # current `_expr` nesting (see _MAX_EXPR_DEPTH)
         self.too_deep = False     # set when the cap was hit in this scope
 
@@ -1018,6 +1125,19 @@ def _safe_xml_parser_names(fn_node: Any, imp: "_Imports") -> Set[str]:
     return {n for n, flags in bound.items() if flags and all(flags)}
 
 
+def _argv_shell_payload(call: _pyast.Call) -> Optional[Any]:
+    """The third element of a literal `["bash", "-c", <cmd>]` argv — the
+    string the shell parses, so the argument E0714 judges — or None."""
+    if not call.args or not isinstance(call.args[0], (_pyast.List, _pyast.Tuple)):
+        return None
+    elts = call.args[0].elts
+    if len(elts) < 3:
+        return None
+    if _const_str(elts[0]) in _ARGV_SHELLS and _const_str(elts[1]) in _ARGV_SHELL_FLAGS:
+        return elts[2]
+    return None
+
+
 def _sink_name(call: _pyast.Call, imp: "_Imports",
                safe_xml: Optional[Set[str]] = None,
                resolver: Optional[Any] = None) -> Optional[str]:
@@ -1027,8 +1147,14 @@ def _sink_name(call: _pyast.Call, imp: "_Imports",
         return None
     guard = SINK_GUARDS.get(dotted)
     if guard is not None:
-        return guard.sink_name if _guard_verdict(call, guard, imp, resolver) \
-            else None
+        if _guard_verdict(call, guard, imp, resolver):
+            return guard.sink_name
+        # `subprocess.run(["bash", "-c", cmd])`: no shell= — the argv
+        # exit — but the argv IS a shell invocation (BUGS.md BUG-021).
+        # `_call_expr` puts the third element in the judged slot.
+        if guard.sink_name == "shellExec" and _argv_shell_payload(call) is not None:
+            return guard.sink_name
+        return None
     sink = SINK_BY_QUALIFIED.get(dotted)
     if sink == "parseXml":
         for a in call.args[1:]:
@@ -1037,7 +1163,20 @@ def _sink_name(call: _pyast.Call, imp: "_Imports",
         return sink
     if sink is not None:
         return sink
-    if dotted in SINK_BY_BUILTIN:
+    if dotted in SINK_BY_BUILTIN and isinstance(call.func, _pyast.Name):
+        # Bare names only: `_callee_spelling` falls back to the ATTRIBUTE
+        # name for an unresolved receiver, and `session.exec(stmt)` is
+        # not the builtin (it reported E0731 until this guard; the
+        # by-name SQL row still judges it).
+        if call.func.id in getattr(resolver, "shadowed", ()):
+            return None          # a local def / binding, not the builtin
+        # `exec(compile(src, "<s>", "exec"))`: the source text enters at
+        # compile(), which is judged on its own; the outer call runs a
+        # code object, not text — one finding per line, not two.
+        if dotted in ("exec", "eval") and call.args \
+                and isinstance(call.args[0], _pyast.Call) \
+                and _sink_name(call.args[0], imp, safe_xml, resolver) == "evalCode":
+            return None
         return SINK_BY_BUILTIN[dotted]
     # Method on an unresolved receiver: over-flag by name (see doctrine note).
     #
@@ -1100,6 +1239,13 @@ def _call_expr(node: _pyast.Call, imp: "_Imports",
             or ("py:" + dotted if dotted else "<expr>"))
     args = list(node.args)
     kws = list(node.keywords or [])
+    if name == "shellExec":
+        payload = _argv_shell_payload(node)
+        if payload is not None:
+            # `["bash", "-c", cmd]`: the shell parses `cmd`, so `cmd` is
+            # the judged argument (BUG-021). The literal program name and
+            # flag carry nothing worth keeping.
+            args = [payload]
     if not args and kws:
         # A sink fed keyword-only — `yaml.load(stream=raw)`,
         # `cur.execute(query=q)`, `subprocess.run(args=cmd, shell=True)` —
@@ -1109,10 +1255,15 @@ def _call_expr(node: _pyast.Call, imp: "_Imports",
         # it is a literal or a sanctioned wrapper (BUG-012).
         args = [kw.value for kw in kws]
         kws = []
+    # `py` marks a frontend-emitted Call. A wrapper call written in Aether
+    # carries its pinning template/base/host in args[0] and `_arg_reason`
+    # judges it (BUG-020); one the frontend named — `shlex.quote(x)` as
+    # shellArg, a SQLAlchemy expression as sqlBind — has no such slot,
+    # and the mark exempts it.
     out: Dict[str, Any] = {"kind": "Call",
                            "func": {"kind": "Ident", "name": name},
                            "args": [_expr(a, imp, safe_xml, resolver) for a in args],
-                           "pos": _pos(node)}
+                           "pos": _pos(node), "py": True}
     # Keyword values are carried too, so `f(k=cur.execute(q))` is found by
     # `walk`; `_arg_reason` reads only `args[i]`, so nothing here is ever
     # judged as the sink's own argument (BUG-012).
@@ -1214,7 +1365,7 @@ class _FnVisitor:
         # What the expression translator resolves against. Empty sets mean
         # no name holds a SQL expression or a literal — the sound default.
         self.scope = _FnScope(self.consts, sql_names or (), lit_names or (),
-                              local_names or (), module_lits)
+                              local_names or (), module_lits, local_fns)
         self.local_fns = local_fns
         self.fn_name = fn_name
         self.fn_line = fn_line
@@ -1592,7 +1743,8 @@ def py_to_ir(source: str) -> Tuple[Dict[str, Any], Dict[str, List[Dict[str, Any]
                               "were not judged", line)
         body_calls = [{"kind": "Call",
                        "func": {"kind": "Ident", "name": c},
-                       "args": [], "pos": {"line": line, "column": 1}}
+                       "args": [], "pos": {"line": line, "column": 1},
+                       "py": True}
                       for c in v.local_calls]
         decls.append({
             "kind": "FunctionDecl",
@@ -1678,6 +1830,9 @@ def mapping_table() -> Dict[str, Any]:
                    "absent_is_sink": g.absent_is_sink}
             for name, g in sorted(SINK_GUARDS.items())},
         "sanitizer_by_qualified": SANITIZER_BY_QUALIFIED,
+        "argv_shell_form": {"programs": sorted(_ARGV_SHELLS),
+                            "flags": sorted(_ARGV_SHELL_FLAGS),
+                            "judged_element": 2},
         "sql_expression_builders": {
             "roots": sorted(_SQL_EXPR_ROOTS),
             "builders": sorted(_SQL_EXPR_BUILDERS),
