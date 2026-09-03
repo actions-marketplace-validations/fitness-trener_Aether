@@ -748,7 +748,9 @@ literal third element stays clean; `["ls", "-l", x]` stays the argv exit.
 
 ---
 
-### BUG-022  function-typed parameters launder markers AND effects (false accept)  [OPEN]
+### BUG-022  function-typed parameters launder markers AND effects (false accept)  [FIXED eaeb316]
+test: tests/test_effect_scope.py
+test: tests/test_static_effects.py
 
 Found 2026-09-03 (iter-51, survey candidate AEDET-08; re-probed live on
 `3986d38`). q1's Evidence table asserted "`grammar.ebnf` has no function
@@ -829,7 +831,8 @@ there is nothing to check a callee's own declaration against, and
 accepted. Closing it needs effect-polymorphic function types — a language
 change, not a detector change.
 
-### BUG-023  the boundary sanitizer is marker-wide, not sink-specific (false accept)  [OPEN]
+### BUG-023  the boundary sanitizer is marker-wide, not sink-specific (false accept)  [FIXED eaeb316]
+test: tests/test_effect_scope.py
 
 Found 2026-09-03 (iter-51, survey candidate AEDET-09; re-probed live on
 `3986d38`). q1's Recommended Actions had parked this as "probe for a MISS
