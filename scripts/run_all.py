@@ -7,6 +7,7 @@ Exit 0 if everything passes, 1 otherwise.
 from __future__ import annotations
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -422,6 +423,14 @@ def main() -> int:
     rte_ok = bool(results.get("runtime_enforcement") and results["runtime_enforcement"]["ok"])
     fp_ok = bool(results.get("false_positive") and results["false_positive"]["ok"])
     corpus_ok = bool(results.get("corpus") and results["corpus"]["ok"])
+    # Read the count out of the suite's own line rather than restating it:
+    # the literal here said 83 while the corpus had grown to 93, and a
+    # summary that has to be edited by hand is a summary that goes stale.
+    n_corpus = "?"
+    _m = re.search(r"corpus: (\d+) programs",
+                   (results.get("corpus") or {}).get("stdout", "") or "")
+    if _m:
+        n_corpus = _m.group(1)
     ex_ok = bool(results.get("exhaustiveness") and results["exhaustiveness"]["ok"])
     scan_ok = bool(results.get("scan_tool") and results["scan_tool"]["ok"])
     risk_ok = bool(results.get("risk") and results["risk"]["ok"])
@@ -462,7 +471,7 @@ def main() -> int:
     print(f"# effect_scope:   {'PASS' if scope_ok else 'FAIL'} (E0710: SSRF host-pin)", file=sys.stderr)
     print(f"# runtime_enforce:{'PASS' if rte_ok else 'FAIL'} (8 defenses defang real payloads)", file=sys.stderr)
     print(f"# false_positive: {'PASS' if fp_ok else 'FAIL'} (every fixed.aeth + clean examples, 0 diagnostics)", file=sys.stderr)
-    print(f"# corpus:         {'PASS' if corpus_ok else 'FAIL'} (83 programs state + meet their own expectation)", file=sys.stderr)
+    print(f"# corpus:         {'PASS' if corpus_ok else 'FAIL'} ({n_corpus} programs state + meet their own expectation)", file=sys.stderr)
     print(f"# static_semantic: {'PASS' if ex_ok else 'FAIL'} (E0202-E0207: match/reachability/dead-store/error/impossible-type)", file=sys.stderr)
     print(f"# scan_tool:      {'PASS' if scan_ok else 'FAIL'} (tools/scan.py corpus scanner)", file=sys.stderr)
     print(f"# risk:           {'PASS' if risk_ok else 'FAIL'} (diagnostic risk ratings)", file=sys.stderr)
