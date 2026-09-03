@@ -127,11 +127,11 @@ does not blur them.
 
 ---
 
-## 3. Where Aether is now (2026-09-02)
+## 3. Where Aether is now (2026-09-03)
 
 **Strong:** installable and proven so in CI · 4,946 + 5,588 third-party
-files parsed with zero crashes · 30 detectors / 54 codes, ratchet-held ·
-57 labelled ground-truth functions at 0 FN / 0 FP · 11 fixed bugs, each
+files parsed with zero crashes · 31 detectors / 55 codes, ratchet-held ·
+122 labelled ground-truth functions at 0 FN / 0 FP · 18 fixed bugs, each
 with a live regression test · Action on main, SARIF into Code Scanning ·
 nine named-prospect CVE ports.
 
@@ -252,3 +252,29 @@ things changes them. Nothing in §4 is spent on YC alone.
 
 Signals at close of day: stars 0, PyPI downloads unknown (pypistats lags a
 day). The next number that matters is a reply.
+
+---
+
+## Status 2026-09-03 — three improvement iterations, no outreach sent
+
+A whole-repo survey (65 probe-confirmed candidates,
+`audits/survey_2026-09-03_ranked.md`) drove iterations 48–50. What moved:
+
+| | |
+|---|---|
+| detectors / codes | 30 / 54 → **31 / 55** (E0731 code injection: `exec`/`eval`/`compile` of model output) |
+| fixed bugs, each test-pinned | 11 → **18** (BUG-012..016, 020, 021) |
+| labelled ground truth | 57 → **122** functions, still 0 FN / 0 FP |
+| framework corpus, same 4,946 files | 411 → **676** findings, 0 analyzer errors |
+
+The corpus number went UP because the scanner was blind, not because the
+frameworks got worse: a sink behind `await` was invisible (603 of them),
+`var` was never a binding on the Aether side, and a wrapper was trusted
+on its name. Read `bench/framework_scan/REPORT.md` §7–§8 before quoting
+any of this — the by-name rows carry their measured false-positive cost
+with them, and the honest version of the pitch says so.
+
+**Unchanged and still the only thing that matters:** stars 0 · outreach
+sent 0 of 20 · users 0 · design partners 0 · revenue $0. The product got
+better on a day when nobody was told about it. Week 4's outreach row is
+the next move, not another iteration.
