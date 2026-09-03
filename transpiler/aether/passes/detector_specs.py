@@ -46,13 +46,41 @@ from .ast_walk import walk, callee_name
 # Generic AST access
 # ----------------------------------------------------------------------
 
+_BIND_KINDS = ("Let", "Var", "Assign")
+
+
+def _bind_target(n: Dict[str, Any]) -> Optional[str]:
+    """The name a binding statement writes. `Let`/`Var` carry `name`;
+    `Assign` carries `target` (parser.py). Every walker that reasons
+    about what a name holds goes through here — BUGS.md BUG-013: the
+    taint fixpoint, the literal-or-wrapper safe-name proof, the alias
+    map and E0717's stable-name proof each walked only `Let`/`Assign`
+    and read only `name`, so a `var` binding was never seen and an
+    assignment was dropped — `var x = password; print(x)` was exit 0."""
+    tgt = n.get("name") or n.get("target")
+    return tgt if isinstance(tgt, str) else None
+
+
+def _walk_binds(body: Any):
+    """Yield (name, value, node) for every Let/Var/Assign in `body`."""
+    for n in walk(body, *_BIND_KINDS):
+        tgt = _bind_target(n)
+        if tgt is not None and "value" in n:
+            yield tgt, n["value"], n
+
+
 def _bindings(body: Any) -> Dict[str, List[Any]]:
-    """name -> every Let/Assign value bound to it in this body."""
+    """name -> every Let/Var/Assign value bound to it in this body."""
     out: Dict[str, List[Any]] = {}
-    for n in walk(body, "Let", "Assign"):
-        if "name" in n and "value" in n:
-            out.setdefault(n["name"], []).append(n["value"])
+    for name, value, _ in _walk_binds(body):
+        out.setdefault(name, []).append(value)
     return out
+
+
+def _mutable_names(body: Any) -> Set[str]:
+    """Names with a `var` declaration or a re-assignment in this body."""
+    return {_bind_target(n) for n in walk(body, "Var", "Assign")
+            if _bind_target(n) is not None}
 
 
 # ----------------------------------------------------------------------
@@ -64,10 +92,15 @@ def _is_marker_type(ty: Any, marker: str) -> bool:
         and ty.get("name") == marker
 
 
-def _type_carries_marker(ty: Any, marker: str) -> bool:
+def _type_carries_marker(ty: Any, marker: str,
+                         carriers: frozenset = frozenset()) -> bool:
     """True if `marker` appears ANYWHERE in the type tree: at the top
     (`PII<String>`) or nested inside a container's type arguments
-    (`List<PII<String>>`, `Option<Secret<T>>`, `Map<String, PII<T>>`).
+    (`List<PII<String>>`, `Option<Secret<T>>`, `Map<String, PII<T>>`),
+    or if the tree names a record in `carriers` — a record with a
+    marker-typed field (transitively), see `_marked_records`. A `User`
+    with `email: PII<String>` CARRIES the marker, so a `User` value at a
+    sink is a leak exactly as a `PII<String>` is (BUGS.md BUG-016).
 
     Deliberately separate from `_is_marker_type`, which stays
     top-level-only because it also serves `Authorized<T>` — a PROOF
@@ -77,10 +110,39 @@ def _type_carries_marker(ty: Any, marker: str) -> bool:
     consistent with over-flag-never-miss."""
     if _is_marker_type(ty, marker):
         return True
-    if isinstance(ty, dict) and ty.get("kind") == "GenericType":
-        return any(_type_carries_marker(a, marker)
-                   for a in ty.get("args") or [])
+    if isinstance(ty, dict):
+        if ty.get("kind") in ("TypeName", "GenericType") \
+                and ty.get("name") in carriers:
+            return True
+        if ty.get("kind") == "GenericType":
+            return any(_type_carries_marker(a, marker, carriers)
+                       for a in ty.get("args") or [])
     return False
+
+
+def _marked_records(ast: Dict[str, Any], marker: str) -> frozenset:
+    """Record names whose fields carry `marker`, transitively (a record
+    holding a carrier record carries too; fixpoint, so cycles are safe)."""
+    recs = {d["name"]: d.get("fields", []) for d in ast.get("decls", [])
+            if d.get("kind") == "RecordDecl"}
+    carriers: Set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for name, fields in recs.items():
+            if name not in carriers and any(
+                    _type_carries_marker(f.get("type"), marker, frozenset(carriers))
+                    for f in fields):
+                carriers.add(name)
+                changed = True
+    return frozenset(carriers)
+
+
+def _is_record_type(ty: Any, carriers: frozenset) -> bool:
+    """A carrier record at the TOP of the type (`u: User`), as opposed to
+    a marker wrapper (`Secret<User>`) or a container (`List<User>`)."""
+    return isinstance(ty, dict) and ty.get("kind") in ("TypeName", "GenericType") \
+        and ty.get("name") in carriers
 
 
 # Stdlib constructors that produce a marker-carrying value. User functions
@@ -97,10 +159,12 @@ def _marker_source_fns(ast: Dict[str, Any], marker: str) -> frozenset:
     """Functions whose call results carry `marker`: the stdlib
     constructors plus every user function declared with a marker-typed
     return. Signature-level only — bodies are not analyzed."""
-    names = set(_STDLIB_MARKER_CONSTRUCTORS.get(marker, frozenset()))
+    carriers = _marked_records(ast, marker)
+    # A carrier record's constructor IS a call that yields a marked value.
+    names = set(_STDLIB_MARKER_CONSTRUCTORS.get(marker, frozenset())) | set(carriers)
     for d in ast.get("decls", []):
         if d.get("kind") == "FunctionDecl" \
-                and _type_carries_marker(d.get("return_type"), marker):
+                and _type_carries_marker(d.get("return_type"), marker, carriers):
             names.add(d["name"])
     return frozenset(names)
 
@@ -114,11 +178,12 @@ def _marker_field_names(ast: Dict[str, Any], marker: str) -> frozenset:
     a same-named plain field on an unrelated record — the accepted
     direction (over-flag, never miss within the modeled surface).
     Residual: `vault/wiki/questions/q1-taint-marker-soundness-boundary.md`."""
+    carriers = _marked_records(ast, marker)
     out = set()
     for d in ast.get("decls", []):
         if d.get("kind") == "RecordDecl":
             for f in d.get("fields", []):
-                if _type_carries_marker(f.get("type"), marker):
+                if _type_carries_marker(f.get("type"), marker, carriers):
                     out.add(f["name"])
     return frozenset(out)
 
@@ -135,29 +200,47 @@ def _marker_param_mask(ast: Dict[str, Any], marker: str) -> Dict[str, Tuple[bool
     (`grammar/types.md`, "Records"), and a marker-typed FIELD preserves
     the marker exactly as a marker-typed param does. Without this, a
     record could never legitimately hold a marked value — every
-    construction site would report E0729/E0730."""
+    construction site would report E0729/E0730.
+
+    Only callables with at least one marked slot are kept: an all-False
+    mask is never consulted (`if mask:` at the prune site), and copying
+    one entry per FunctionDecl per function made the marker-flow passes
+    quadratic in function count (TC-04)."""
+    carriers = _marked_records(ast, marker)
     out: Dict[str, Tuple[bool, ...]] = {}
     for d in ast.get("decls", []):
         if d.get("kind") == "FunctionDecl":
-            out[d["name"]] = tuple(_type_carries_marker(p.get("type"), marker)
-                                   for p in d.get("params", []))
+            mask = tuple(_type_carries_marker(p.get("type"), marker, carriers)
+                         for p in d.get("params", []))
         elif d.get("kind") == "RecordDecl":
-            out[d["name"]] = tuple(_type_carries_marker(f.get("type"), marker)
-                                   for f in d.get("fields", []))
+            mask = tuple(_type_carries_marker(f.get("type"), marker, carriers)
+                         for f in d.get("fields", []))
+        else:
+            continue
+        if any(mask):
+            out[d["name"]] = mask
     return out
 
 
 def _expr_leaks_marked(node: Any, tainted: Set[str], unwrap,
                        source_fns: frozenset = frozenset(),
                        param_mask: Optional[Dict[str, Tuple[bool, ...]]] = None,
-                       marked_fields: frozenset = frozenset()) -> bool:
+                       marked_fields: frozenset = frozenset(),
+                       rec_names: frozenset = frozenset()) -> bool:
     """True if `node` exposes a tainted name, a read of a marker-typed
     record field, or a call to a marker-producing function, outside an
     `unwrap(...)` call (the sanctioned exit for this marker). `unwrap` is
     a single name or a set of names. An argument consumed by a
     marker-typed parameter of a user-declared callee — or by a
     marker-typed FIELD of a record constructor — is pruned per
-    `param_mask`: that crossing is sanctioned."""
+    `param_mask`: that crossing is sanctioned.
+
+    `rec_names` are names known to hold a carrier RECORD (`u: User`,
+    see `_record_names`). Such a name is tainted — the whole record at a
+    sink leaks its marked field — but reading one of its UNMARKED fields
+    (`u.name`) is not a leak and is pruned. The prune applies only to a
+    name whose type is the record itself, never to `s: Secret<User>`:
+    there every field is secret."""
     unwraps = {unwrap} if isinstance(unwrap, str) else unwrap
     if isinstance(node, dict):
         kind = node.get("kind")
@@ -174,33 +257,37 @@ def _expr_leaks_marked(node: Any, tainted: Set[str], unwrap,
                              if i >= len(mask) or not mask[i]]
                 rest = [v for k, v in node.items() if k != "args"]
                 return _expr_leaks_marked(open_args + rest, tainted, unwrap,
-                                          source_fns, param_mask, marked_fields)
-        if kind == "Field" and node.get("name") in marked_fields:
-            return True   # read of a marker-typed record field
+                                          source_fns, param_mask, marked_fields,
+                                          rec_names)
+        if kind == "Field":
+            if node.get("name") in marked_fields:
+                return True   # read of a marker-typed record field
+            base = node.get("value")
+            if isinstance(base, dict) and base.get("kind") == "Ident" \
+                    and base.get("name") in rec_names:
+                return False  # plain field of a carrier record — not the marked one
         if kind == "Ident" and node.get("name") in tainted:
             return True
         return any(_expr_leaks_marked(v, tainted, unwrap, source_fns,
-                                      param_mask, marked_fields)
+                                      param_mask, marked_fields, rec_names)
                    for v in node.values())
     if isinstance(node, list):
         return any(_expr_leaks_marked(x, tainted, unwrap, source_fns,
-                                      param_mask, marked_fields)
+                                      param_mask, marked_fields, rec_names)
                    for x in node)
     return False
 
 
 def _fn_aliases(fn_decl: Dict[str, Any], targets: frozenset) -> Dict[str, Set[str]]:
     """alias name -> set of target function names it may refer to, from
-    straight-line `let f = fnName` / `f = g` bindings (bare Ident
-    values; chains followed by fixpoint; conservative UNION when a name
-    is rebound). Used flag-more only — an aliased unwrapper is never
-    honored."""
+    straight-line `let f = fnName` / `var f = fnName` / `f = g` bindings
+    (bare Ident values; chains followed by fixpoint; conservative UNION
+    when a name is rebound). Used flag-more only — an aliased unwrapper
+    is never honored, an aliased SINK is a sink (BUGS.md BUG-015)."""
     binds: List[Tuple[str, str]] = []
-    for n in walk(fn_decl.get("body", []), "Let", "Assign"):
-        if "name" in n:
-            v = n.get("value")
-            if isinstance(v, dict) and v.get("kind") == "Ident":
-                binds.append((n["name"], v["name"]))
+    for name, v, _ in _walk_binds(fn_decl.get("body", [])):
+        if isinstance(v, dict) and v.get("kind") == "Ident":
+            binds.append((name, v["name"]))
     out: Dict[str, Set[str]] = {}
     changed = True
     while changed:
@@ -211,6 +298,16 @@ def _fn_aliases(fn_decl: Dict[str, Any], targets: frozenset) -> Dict[str, Set[st
                 out.setdefault(name, set()).update(ts)
                 changed = True
     return out
+
+
+def _sink_targets(name: Optional[str], aliases: Dict[str, Set[str]],
+                  sinks) -> List[str]:
+    """The sinks a call to `name` reaches: `name` itself, or every sink
+    an alias of that name may refer to. Flag-more only — resolution can
+    add sinks, never remove one."""
+    if name in sinks:
+        return [name]
+    return sorted(aliases.get(name, set()) & set(sinks))
 
 
 def _aliased_mask(pmask: Dict[str, Tuple[bool, ...]],
@@ -232,32 +329,89 @@ def _pattern_bind_names(pat: Any) -> Set[str]:
     return {n["name"] for n in walk(pat, "BindPat") if "name" in n}
 
 
-def _marked_tainted_names(fn_decl: Dict[str, Any], marker: str, unwrap,
-                          source_fns: frozenset = frozenset(),
-                          param_mask: Optional[Dict[str, Tuple[bool, ...]]] = None,
-                          marked_fields: frozenset = frozenset()) -> Set[str]:
-    """Names holding a `marker`-typed value: marker-typed params, plus any
-    let/assign target bound to an expression carrying a tainted name
-    (fixpoint; an `unwrap(...)` call breaks the taint). A call to a
-    `source_fns` member seeds taint (signature-level interprocedural).
-    Match-arm pattern bindings over a tainted scrutinee are tainted
-    (every arm, every binding — conservative).
-
-    A read of a marker-typed record field (`marked_fields`) is a taint
-    source; the record-typed name itself is NOT tainted, so passing the
-    record on stays a clean crossing."""
-    tainted: Set[str] = {
-        p["name"] for p in fn_decl.get("params", [])
-        if _type_carries_marker(p.get("type"), marker)
-    }
-    binds: List[Tuple[str, Any]] = []
-    destructures: List[Tuple[Set[str], Any]] = []  # (arm-bound names, scrutinee)
+def _record_names(fn_decl: Dict[str, Any], carriers: frozenset,
+                  rec_fns: frozenset) -> frozenset:
+    """Names whose EVERY binding is a carrier record at the top of its
+    type: a `: User` annotation (param, let, var), a `User(...)`
+    constructor call, a call to a function declared `returns User`, or a
+    bare alias of such a name (chains, fixpoint). One binding of any
+    other shape disqualifies the name — `u = pw` would make a plain-field
+    prune on `u` a miss. Syntactic and intraprocedural like everything
+    here; an unresolved shape stays out, which only over-flags."""
+    def top(ty: Any) -> bool:
+        return _is_record_type(ty, carriers)
 
     body = fn_decl.get("body", [])
-    for n in walk(body, "Let", "Assign"):
-        if "name" in n and "value" in n:
-            binds.append((n["name"], n["value"]))
-    for n in walk(body, "Match"):
+    binds: Dict[str, List[Tuple[Dict[str, Any], Any]]] = {}
+    for name, value, n in _walk_binds(body):
+        binds.setdefault(name, []).append((n, value))
+    params = {p["name"] for p in fn_decl.get("params", []) if top(p.get("type"))}
+
+    def rec_shaped(n: Dict[str, Any], v: Any, known: Set[str]) -> bool:
+        if top(n.get("type")):
+            return True
+        if isinstance(v, dict):
+            if v.get("kind") == "Call":
+                c = callee_name(v)
+                return c in carriers or c in rec_fns
+            if v.get("kind") == "Ident":
+                return v.get("name") in known
+        return False
+
+    names: Set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for cand in params | set(binds):
+            if cand not in names and all(rec_shaped(n, v, names)
+                                         for n, v in binds.get(cand, [])):
+                names.add(cand)
+                changed = True
+    return frozenset(names)
+
+
+def _record_fns(ast: Dict[str, Any], carriers: frozenset) -> frozenset:
+    """User functions declared to return a carrier record at the top."""
+    return frozenset(d["name"] for d in ast.get("decls", [])
+                     if d.get("kind") == "FunctionDecl"
+                     and _is_record_type(d.get("return_type"), carriers))
+
+
+def _marked_taint(fn_decl: Dict[str, Any], marker: str, unwrap,
+                  source_fns: frozenset = frozenset(),
+                  param_mask: Optional[Dict[str, Tuple[bool, ...]]] = None,
+                  marked_fields: frozenset = frozenset(),
+                  carriers: frozenset = frozenset(),
+                  rec_fns: frozenset = frozenset()) -> Tuple[Set[str], frozenset]:
+    """(tainted, rec_names): names holding a `marker`-typed value —
+    marker-typed params, let/var annotated with a marker-carrying type,
+    plus any let/var/assign target bound to an expression carrying a
+    tainted name (fixpoint; an `unwrap(...)` call breaks the taint). A
+    call to a `source_fns` member seeds taint (signature-level
+    interprocedural). Bindings introduced by a `match`/match-expression
+    arm pattern over a tainted scrutinee, and a `for` loop variable over
+    a tainted iterable, are tainted (every arm, every binding —
+    conservative; BUGS.md BUG-001 and BUG-014).
+
+    A read of a marker-typed record field (`marked_fields`) is a taint
+    source. A name typed with a carrier record (`u: User`) is tainted
+    too — the whole record at a sink leaks the field — and is reported
+    in `rec_names` so a read of one of its UNMARKED fields can be pruned
+    (see `_expr_leaks_marked`)."""
+    rec_names = _record_names(fn_decl, carriers, rec_fns) if carriers else frozenset()
+    tainted: Set[str] = {
+        p["name"] for p in fn_decl.get("params", [])
+        if _type_carries_marker(p.get("type"), marker, carriers)
+    }
+    binds: List[Tuple[str, Any]] = []
+    destructures: List[Tuple[Set[str], Any]] = []  # (bound names, source expr)
+
+    body = fn_decl.get("body", [])
+    for name, value, n in _walk_binds(body):
+        if _type_carries_marker(n.get("type"), marker, carriers):
+            tainted.add(name)  # the annotation says so
+        binds.append((name, value))
+    for n in walk(body, "Match", "MatchExpr"):
         if "scrutinee" not in n:
             continue
         names: Set[str] = set()
@@ -265,20 +419,36 @@ def _marked_tainted_names(fn_decl: Dict[str, Any], marker: str, unwrap,
             names |= _pattern_bind_names(arm.get("pattern"))
         if names:
             destructures.append((names, n["scrutinee"]))
+    for n in walk(body, "For"):
+        if isinstance(n.get("var"), str) and "iter" in n:
+            destructures.append(({n["var"]}, n["iter"]))
     changed = True
     while changed:
         changed = False
         for name, value in binds:
             if name not in tainted and _expr_leaks_marked(
-                    value, tainted, unwrap, source_fns, param_mask, marked_fields):
+                    value, tainted, unwrap, source_fns, param_mask,
+                    marked_fields, rec_names):
                 tainted.add(name)
                 changed = True
         for names, scrut in destructures:
             if not names <= tainted and _expr_leaks_marked(
-                    scrut, tainted, unwrap, source_fns, param_mask, marked_fields):
+                    scrut, tainted, unwrap, source_fns, param_mask,
+                    marked_fields, rec_names):
                 tainted |= names
                 changed = True
-    return tainted
+    return tainted, rec_names
+
+
+def _marked_tainted_names(fn_decl: Dict[str, Any], marker: str, unwrap,
+                          source_fns: frozenset = frozenset(),
+                          param_mask: Optional[Dict[str, Tuple[bool, ...]]] = None,
+                          marked_fields: frozenset = frozenset(),
+                          carriers: frozenset = frozenset(),
+                          rec_fns: frozenset = frozenset()) -> Set[str]:
+    """The tainted-name half of `_marked_taint`."""
+    return _marked_taint(fn_decl, marker, unwrap, source_fns, param_mask,
+                         marked_fields, carriers, rec_fns)[0]
 
 
 # ======================================================================
@@ -608,17 +778,22 @@ def _arg_reason(node: Any, safe_names: Set[str], rule: ArgRule) -> Optional[str]
 
 
 def _safe_names(body: Any, rule: ArgRule) -> Set[str]:
-    """Names bound ONLY to values `rule` accepts, across every Let/Assign
-    to them in this body. A single unsafe binding disqualifies the name.
-    Iterated to a fixpoint so a name bound to an earlier safe name is
-    itself safe — except where the row asks for a single pass."""
+    """Names bound ONLY to values `rule` accepts, across every binding to
+    them in this body. A single unsafe binding disqualifies the name, and
+    so does a `var` declaration or a re-assignment: a mutable name is not
+    a fixed literal (BUGS.md BUG-013 — `let p = "/etc/motd"; p = userPath;
+    readFile(p)` was proven safe by the `let` alone because the
+    assignment was invisible). Iterated to a fixpoint so a name bound to
+    an earlier safe name is itself safe — except where the row asks for a
+    single pass."""
     binds = _bindings(body)
+    mutable = _mutable_names(body)
     safe: Set[str] = set()
     changed = True
     while changed:
         changed = False
         for name, values in binds.items():
-            if name in safe:
+            if name in safe or name in mutable:
                 continue
             if all(_arg_reason(v, safe, rule) is None for v in values):
                 safe.add(name)
@@ -632,6 +807,8 @@ def literal_or_wrapper(spec: LiteralOrWrapperSpec) -> Callable[[Dict[str, Any]],
     """Build the `check_*` pass for one literal-or-wrapper row."""
     safe_rule = spec.safe_rule or spec.rule
 
+    sink_set = frozenset(spec.sinks)
+
     def check(ast: Dict[str, Any]) -> List[Diagnostic]:
         diags: List[Diagnostic] = []
         for d in ast.get("decls", []):
@@ -641,9 +818,11 @@ def literal_or_wrapper(spec: LiteralOrWrapperSpec) -> Callable[[Dict[str, Any]],
             fpos = d.get("pos") or {"line": 0, "column": 0}
             body = d.get("body", [])
             safe_names = _safe_names(body, safe_rule)
+            aliases = _fn_aliases(d, sink_set)
             for call in walk(body, "Call"):
-                sink = callee_name(call)
-                if sink not in spec.sinks:
+                # An alias of a sink is the sink (`let run = sqlQuery`).
+                targets = _sink_targets(callee_name(call), aliases, sink_set)
+                if not targets:
                     continue
                 args = call.get("args") or []
                 if len(args) <= spec.arg_index:
@@ -652,16 +831,17 @@ def literal_or_wrapper(spec: LiteralOrWrapperSpec) -> Callable[[Dict[str, Any]],
                 if reason is None:
                     continue
                 pos = call.get("pos") or fpos
-                diags.append(Diagnostic(
-                    code=spec.code,
-                    category="capability",
-                    severity="error",
-                    message=spec.message.format(fn=fn, sink=sink, reason=reason),
-                    position=Position(pos.get("line", 0), pos.get("column", 0)),
-                    suggestion=spec.suggestion,
-                    confidence=1.0,
-                    extra={"function": fn, "sink": sink, "reason": reason},
-                ))
+                for sink in targets:
+                    diags.append(Diagnostic(
+                        code=spec.code,
+                        category="capability",
+                        severity="error",
+                        message=spec.message.format(fn=fn, sink=sink, reason=reason),
+                        position=Position(pos.get("line", 0), pos.get("column", 0)),
+                        suggestion=spec.suggestion,
+                        confidence=1.0,
+                        extra={"function": fn, "sink": sink, "reason": reason},
+                    ))
         return diags
 
     return check
@@ -671,19 +851,27 @@ def marker_flow(spec: MarkerFlowSpec) -> Callable[[Dict[str, Any]], List[Diagnos
     """Build the `check_*` pass for one marker-flow row."""
     sinks = {s.name: s for s in spec.sinks}
 
+    sink_names = frozenset(sinks)
+
     def check(ast: Dict[str, Any]) -> List[Diagnostic]:
         diags: List[Diagnostic] = []
         src_fns = _marker_source_fns(ast, spec.marker)
         pmask = _marker_param_mask(ast, spec.marker)
         mfields = _marker_field_names(ast, spec.marker)
+        carriers = _marked_records(ast, spec.marker)
+        rec_fns = _record_fns(ast, carriers)
+        # Alias targets, once per module (TC-04): sources, marked
+        # callables and this row's sinks.
+        targets = src_fns | frozenset(pmask) | sink_names
         for d in ast.get("decls", []):
             if d.get("kind") != "FunctionDecl":
                 continue
-            al = _fn_aliases(d, src_fns | frozenset(pmask))
+            al = _fn_aliases(d, targets)
             src_l = src_fns | frozenset(a for a, ts in al.items() if ts & src_fns)
             pmask_l = _aliased_mask(pmask, al)
-            tainted = _marked_tainted_names(d, spec.marker, spec.sanitizer,
-                                            src_l, pmask_l, mfields)
+            tainted, rec_names = _marked_taint(d, spec.marker, spec.sanitizer,
+                                               src_l, pmask_l, mfields,
+                                               carriers, rec_fns)
             # `not mfields` is load-bearing: a function that only reads
             # `u.email` has no tainted NAMES, and the old guard skipped it.
             if not tainted and not src_l and not mfields:
@@ -691,28 +879,30 @@ def marker_flow(spec: MarkerFlowSpec) -> Callable[[Dict[str, Any]], List[Diagnos
             fn = d["name"]
             fpos = d.get("pos") or {"line": 0, "column": 0}
             for call in walk(d.get("body", []), "Call"):
-                name = callee_name(call)
-                sink = sinks.get(name)
-                if sink is None:
+                # An alias of a sink is the sink (`let out = print`).
+                hits = _sink_targets(callee_name(call), al, sink_names)
+                if not hits:
                     continue
                 args = call.get("args") or []
-                checked = args if sink.arg_indices is None else \
-                    [args[i] for i in sink.arg_indices if i < len(args)]
-                if not any(_expr_leaks_marked(a, tainted, spec.sanitizer,
-                                              src_l, pmask_l, mfields)
-                           for a in checked):
-                    continue
                 pos = call.get("pos") or fpos
-                diags.append(Diagnostic(
-                    code=spec.code,
-                    category="capability",
-                    severity="error",
-                    message=spec.message.format(fn=fn, sink=name, where=sink.where),
-                    position=Position(pos.get("line", 0), pos.get("column", 0)),
-                    suggestion=spec.suggestion,
-                    confidence=1.0,
-                    extra={"function": fn, "sink": name},
-                ))
+                for sname in hits:
+                    sink = sinks[sname]
+                    checked = args if sink.arg_indices is None else \
+                        [args[i] for i in sink.arg_indices if i < len(args)]
+                    if not any(_expr_leaks_marked(a, tainted, spec.sanitizer,
+                                                  src_l, pmask_l, mfields, rec_names)
+                               for a in checked):
+                        continue
+                    diags.append(Diagnostic(
+                        code=spec.code,
+                        category="capability",
+                        severity="error",
+                        message=spec.message.format(fn=fn, sink=sname, where=sink.where),
+                        position=Position(pos.get("line", 0), pos.get("column", 0)),
+                        suggestion=spec.suggestion,
+                        confidence=1.0,
+                        extra={"function": fn, "sink": sname},
+                    ))
         return diags
 
     return check

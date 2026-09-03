@@ -140,7 +140,7 @@ Bench-harness only. The CLI does not currently enforce timeouts;
 | **E0704** | module requires a capability outside the known vocabulary (D.3) | `module`, `capability`, `known` |
 | **E0705** | an `import` names a file that does not exist beside the importing file, or exists but cannot be read (H.E.3) | `resolved_to`, `path` (unreadable file: `resolved_to`, `os_error`) |
 | **E0706** | imports form a cycle — A imports B, B imports A (H.E.3). File-level: the cycle is detected during the DFS, past the `ImportDecl` position | `file`, `stack` |
-| **E0710** | a `net.fetch` effect leaves the host/authority unpinned (bare `*`, `scheme://*`, wildcard scheme, or leading `*` that is not a `*.subdomain` pin), admitting SSRF to internal hosts like `169.254.169.254` | `function`, `effect_arg`, `reason` |
+| **E0710** | a `net.fetch` effect leaves the host/authority unpinned (bare `*`, `scheme://*`, wildcard scheme, a leading `*` that is not a `*.subdomain` pin, or any other `*` in the authority — `*.*`, `api.*`, `a*`, `api.example.com*`, `[*]`, a userinfo-masked `user@*`, or a `*.tld` pin with no registrable domain), admitting SSRF to internal hosts like `169.254.169.254` | `function`, `effect_arg`, `reason` |
 | **E0711** | `readFile`/`writeFile` is called with a path that is neither a fixed string literal nor routed through `safeJoin(...)`, i.e. a path steerable by untrusted input (path-traversal / Zip-Slip precondition) | `function`, `sink`, `reason` |
 | **E0712** | a `Secret<...>`-marked value reaches a log sink (`print`) or is persisted to disk (`writeFile` contents) without an explicit `reveal(...)` — the "secret accidentally logged/written" class (CWE-532) | `function`, `sink` |
 | **E0713** | a `sqlQuery`/`sqlExec` query argument is built by raw string concatenation (or another dynamic expression) instead of a fixed literal or `sqlBind(...)` parameterized query — SQL injection (CWE-89) | `function`, `sink`, `reason` |
@@ -151,9 +151,9 @@ Bench-harness only. The CLI does not currently enforce timeouts;
 | **E0718** | a `redirect` target is neither a fixed literal nor a `safeRedirect(host, path)` result — an untrusted/dynamic redirect target (open redirect, CWE-601) | `function`, `sink`, `reason` |
 | **E0719** | a `renderTemplate` template argument is not a fixed string literal (built by concatenation or from a parameter) — server-side template injection (SSTI / RCE, CWE-94) | `function`, `sink`, `reason` |
 | **E0720** | a `deserialize` argument is untrusted (non-literal) data instead of a `schemaDecode(schema, data)` call — insecure deserialization (pickle/readObject RCE, CWE-502) | `function`, `sink`, `reason` |
-| **E0721** | a `net.fetch` scope uses the `http://` scheme to a non-loopback host — cleartext transmission of credentials/PII (CWE-319) | `function`, `effect_arg`, `reason` |
-| **E0722** | a `net.fetch` scope is pinned to the link-local range `169.254.0.0/16` (cloud metadata / IMDS) — server-side metadata request / IAM-credential theft (CWE-918) | `function`, `effect_arg`, `reason` |
-| **E0723** | a string literal matches a known provider-credential shape (AWS `AKIA…`, GitHub `ghp_…`, Google `AIza…`, Slack `xox…`, Stripe `sk_live_…`, PEM private key) — a hardcoded secret in source (CWE-798) | `credential_kind` |
+| **E0721** | a `net.fetch` scope uses the `http://` scheme to a non-loopback host — cleartext transmission of credentials/PII (CWE-319). Loopback is host-exact (`localhost`, `0.0.0.0`, a `127.0.0.0/8`, `::1` or `::ffff:127.x` address literal, userinfo/port/brackets stripped); `127.0.0.1.evil.com`, `127.0.0.1@evil.com` and an obfuscated spelling like `2130706433` are not loopback | `function`, `effect_arg`, `reason` |
+| **E0722** | a `net.fetch` scope is pinned to the link-local range `169.254.0.0/16` in any spelling (dotted, decimal, hex, octal, short, IPv4-mapped IPv6, with userinfo/port), the AWS IPv6 IMDS `fd00:ec2::254`, or a cloud metadata name (`metadata.google.internal`, `metadata`, `instance-data`, Alibaba `100.100.100.200`) — server-side metadata request / IAM-credential theft (CWE-918) | `function`, `effect_arg`, `reason` |
+| **E0723** | a string literal matches a known provider-credential shape (AWS `AKIA…`, GitHub `ghp_…`, Google `AIza…`, Slack `xox…` / incoming-webhook URL, Stripe `sk_live_…`, OpenAI `sk-proj-…` / `sk-…`, Anthropic `sk-ant-…`, Hugging Face `hf_…`, Groq `gsk_…`, Google OAuth `ya29.…`, GitLab `glpat-…`, SendGrid `SG.….…`, npm `npm_…`, PyPI `pypi-…`, a PEM private key with a base64 body) — a hardcoded secret in source (CWE-798); positioned at the literal | `credential_kind` |
 | **E0724** | an `Untrusted<...>`-marked value reaches a log sink (`print`) without `sanitizeLog(...)` — log injection / forging via embedded CR/LF (CWE-117) | `function`, `sink` |
 | **E0725** | an `Untrusted<...>`-marked value reaches an HTML response (`htmlResponse`) without `htmlEscape(...)` — reflected cross-site scripting (CWE-79) | `function`, `sink` |
 | **E0726** | an `Untrusted<...>`-marked value reaches a response header (`setHeader`) without `sanitizeHeader(...)` — HTTP response splitting / header injection (CWE-113) | `function`, `sink` |
@@ -326,25 +326,36 @@ reach-scope pass (CWE-319). E0710 checks that a `net.fetch` host is
 E0710 but still sends credentials and PII unencrypted, readable by any
 passive network observer. Loopback hosts (`localhost`, `127.0.0.0/8`,
 `::1`, `0.0.0.0`) are exempt — that traffic never leaves the machine. The
-fix is the `https://` scheme. Same `--no-scope-check` opt-out.
+exemption is host-exact: the host is what remains after userinfo, port
+and IPv6 brackets are stripped, so `127.0.0.1@evil.com` is `evil.com`,
+`127.0.0.1.evil.com` is a public name, and an obfuscated spelling
+(`2130706433`) is not a sanctioned loopback. The fix is the `https://`
+scheme. Same `--no-scope-check` opt-out.
 
 E0722 is the metadata-fetch sibling of E0710 in the same reach-scope pass
 (CWE-918). E0710 refuses an *unpinned* scope; E0722 refuses a scope
 *pinned* to the link-local range `169.254.0.0/16`, which holds the cloud
 metadata endpoint `169.254.169.254` (AWS/GCP/Azure IMDS) — a pinned
 metadata host satisfies E0710/E0721 yet is the crown-jewel SSRF target for
-IAM-credential theft. Application code should obtain credentials through
-the SDK/credential provider, never a raw metadata request. Private
-RFC-1918 ranges are deliberately NOT flagged (legitimate in service
-meshes). Same `--no-scope-check` opt-out.
+IAM-credential theft. The host is canonicalised before the range test —
+decimal, hex, octal and short IPv4 spellings, IPv4-mapped IPv6, userinfo
+and port are all read as the address they resolve to — and the
+provider names (`metadata.google.internal`, `metadata`, `instance-data`,
+`100.100.100.200`) and the AWS IPv6 endpoint `fd00:ec2::254` are refused
+by name. Application code should obtain credentials through the
+SDK/credential provider, never a raw metadata request. Private RFC-1918
+ranges are deliberately NOT flagged (legitimate in service meshes). Same
+`--no-scope-check` opt-out.
 
 E0723 is a new detector family — a **literal-content scan** (not effect
 or dataflow): every string literal is matched against high-confidence
-provider-credential shapes (AWS/GitHub/Google/Slack/Stripe/PEM). A match
-is a hardcoded secret (CWE-798) — committed to version control forever,
+provider-credential shapes (AWS/GitHub/Google/Slack/Stripe/OpenAI/
+Anthropic/Hugging Face/Groq/GitLab/SendGrid/npm/PyPI/PEM). A match is a
+hardcoded secret (CWE-798) — committed to version control forever,
 shipped in every build. The patterns are deliberately narrow so false
 positives are near zero (a demo password like `"hunter2"` does not match;
-a real `AKIA…` key does). Fix: load the secret at runtime from the
+a real `AKIA…` key does; a PEM header quoted in an error message without
+a base64 body does not). Fix: load the secret at runtime from the
 environment / a secret manager. Same `--no-scope-check` opt-out.
 
 E0724 introduces the taint-SOURCE marker `Untrusted<T>` — the sound,

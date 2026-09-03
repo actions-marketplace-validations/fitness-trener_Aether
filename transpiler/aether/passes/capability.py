@@ -55,6 +55,7 @@ from typing import Any, Dict, List, Set, Tuple, Optional
 
 from ..diagnostics import Diagnostic, Position
 from .ast_walk import walk, callee_name
+from .detector_specs import _fn_aliases
 
 
 # Effects that require no capability.
@@ -165,7 +166,12 @@ def check_capabilities(ast: Dict[str, Any]) -> List[Diagnostic]:
 
     declared = collect_declared_capabilities(ast)
 
-    # Build direct effects + call graph in a single pass.
+    # Build direct effects + call graph in a single pass. A call through
+    # a let-bound alias (`let sh = shellExec; sh(...)`) is an edge to the
+    # target — resolution only ADDS edges (BUGS.md BUG-015).
+    fn_names = frozenset(d["name"] for d in ast.get("decls", [])
+                         if d.get("kind") == "FunctionDecl")
+    alias_targets = fn_names | frozenset(_STDLIB_EFFECT_PATHS)
     direct_effects: Dict[str, Set[Tuple[str, ...]]] = {}
     call_graph: Dict[str, Set[str]] = {}
     for d in ast.get("decls", []):
@@ -173,11 +179,13 @@ def check_capabilities(ast: Dict[str, Any]) -> List[Diagnostic]:
             continue
         name = d["name"]
         direct_effects[name] = _direct_effect_paths(d)
+        al = _fn_aliases(d, alias_targets)
         callees: Set[str] = set()
         for call in walk(d.get("body", []), "Call"):
             n = callee_name(call)
             if n is not None:
                 callees.add(n)
+                callees |= al.get(n, set())
         call_graph[name] = callees
 
     diags: List[Diagnostic] = []

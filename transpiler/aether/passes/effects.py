@@ -34,6 +34,7 @@ Notes / limits (v1 scope):
 """
 
 from __future__ import annotations
+import ipaddress
 import re
 from typing import Any, Dict, List, Set, Tuple, Iterable, Optional
 
@@ -42,7 +43,9 @@ from .ast_walk import walk, callee_name
 from .detector_specs import (
     build, boundary_markers, _is_marker_type, _type_carries_marker,
     _marker_source_fns, _marker_param_mask, _marker_field_names, _expr_leaks_marked,
-    _fn_aliases, _aliased_mask, _marked_tainted_names,
+    _fn_aliases, _aliased_mask, _marked_taint,
+    _marked_records, _record_fns, _sink_targets, _walk_binds, _bind_target,
+    _BIND_KINDS,
 )
 
 
@@ -166,6 +169,75 @@ def _effect_covered(caller_effects: List[EffectEntry],
 # query wildcards (`https://api.x/charge/*`) and subdomain pins
 # (`https://*.corp.example/*`) are host-pinned and pass untouched.
 
+# --- the one URL-authority parser behind E0710 / E0721 / E0722 ---------
+# Each check used to slice the scope string its own way (`split(":")`,
+# `startswith("169.254.")`, `startswith("127.")`), and each slice was a
+# hole: `127.0.0.1@evil.com` read as loopback, `[::1]` read as host `[`,
+# `https://api.*` read as pinned, `2852039166` (169.254.169.254 in
+# decimal) read as an ordinary host. One helper, three consumers.
+
+def _scope_authority(arg: str) -> str:
+    """`scheme://AUTHORITY/path` -> AUTHORITY (scheme optional)."""
+    rest = arg.split("://", 1)[1] if "://" in arg else arg
+    return re.split(r"[/?#]", rest, maxsplit=1)[0]
+
+
+def _authority_host(authority: str) -> str:
+    """The host a request to this authority actually goes to: userinfo
+    (everything up to the LAST `@`) dropped, IPv6 brackets dropped, a
+    `:port` dropped, lower-cased."""
+    host = authority.rsplit("@", 1)[-1]
+    if host.startswith("["):
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:          # host:port (a bare IPv6 has more colons)
+        host = host.split(":", 1)[0]
+    return host.lower()
+
+
+def _ipv4_from_numeric(host: str) -> Optional[ipaddress.IPv4Address]:
+    """inet_aton's forgiving spellings, canonicalised: decimal
+    `2852039166`, hex `0xa9fea9fe`, octal `0251.0376.0251.0376`, short
+    `169.254.43518` (the last part fills the remaining bytes). None if
+    the text is not one of these."""
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    vals: List[int] = []
+    for p in parts:
+        try:
+            if p[:2].lower() == "0x":
+                v = int(p[2:], 16)
+            elif len(p) > 1 and p[0] == "0":
+                v = int(p, 8)
+            else:
+                v = int(p, 10)
+        except ValueError:
+            return None
+        if v < 0:
+            return None
+        vals.append(v)
+    *lead, last = vals
+    if any(v > 255 for v in lead):
+        return None
+    width = 8 * (4 - len(lead))
+    if last >= (1 << width):
+        return None
+    n = 0
+    for v in lead:
+        n = (n << 8) | v
+    return ipaddress.IPv4Address((n << width) | last)
+
+
+def _host_ip(host: str, numeric: bool):
+    """ipaddress object for a host literal, or None. `numeric` also
+    accepts the inet_aton spellings — used where an obfuscated spelling
+    must be FLAGGED (E0722), never where it would EXEMPT (E0721)."""
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return _ipv4_from_numeric(host) if numeric else None
+
+
 def _net_authority_wildcarded(arg: Optional[str]) -> Optional[str]:
     """If this net.fetch glob leaves the host/authority unpinned, return a
     short human reason; otherwise None (the scope is host-pinned)."""
@@ -186,6 +258,17 @@ def _net_authority_wildcarded(arg: Optional[str]) -> Optional[str]:
     # A leading '*' that is not a subdomain pin (`*.host`) spans the host.
     if authority.startswith("*") and not authority.startswith("*."):
         return "wildcard host prefix - admits arbitrary hosts"
+    if "*" in authority:
+        # The only wildcard a pinned authority may carry is ONE leading
+        # `*.` on the host, with a registrable domain behind it. `*.*`,
+        # `api.*`, `a*`, `api.example.com*`, `[*]` and a userinfo-masked
+        # `trusted@*` all match hosts the author never named.
+        host = _authority_host(authority)
+        pin = host.startswith("*.") and "*" not in host[2:]
+        if pin and "." not in host[2:]:
+            return "wildcard subdomain pin on a bare TLD - admits any host under it"
+        if not pin or authority.count("*") != 1:
+            return "wildcard inside the host/authority - admits arbitrary hosts"
     return None
 
 
@@ -243,7 +326,21 @@ def check_effect_scope(ast: Dict[str, Any]) -> List[Diagnostic]:
 # Loopback (localhost / 127.0.0.0/8 / ::1 / 0.0.0.0) is exempt — those
 # never leave the host, so plain http there is not a transmission risk.
 
-_LOOPBACK_HOSTS = ("localhost", "::1", "0.0.0.0")
+_LOOPBACK_HOSTS = ("localhost", "0.0.0.0")
+
+
+def _is_loopback_host(host: str) -> bool:
+    """`localhost`, `0.0.0.0`, or an address literal the `ipaddress`
+    module calls loopback (127.0.0.0/8, ::1, ::ffff:127.x). A name that
+    merely STARTS with `127.` (`127.0.0.1.evil.com`) is a public host;
+    an obfuscated spelling (`2130706433`) is not a sanctioned loopback."""
+    if host in _LOOPBACK_HOSTS:
+        return True
+    ip = _host_ip(host, numeric=False)
+    if ip is None:
+        return False
+    v4 = ip.ipv4_mapped if ip.version == 6 else None
+    return ip.is_loopback or (v4 is not None and v4.is_loopback)
 
 
 def _net_is_cleartext(arg: Optional[str]) -> Optional[str]:
@@ -254,9 +351,8 @@ def _net_is_cleartext(arg: Optional[str]) -> Optional[str]:
     scheme, rest = arg.split("://", 1)
     if scheme.lower() != "http":
         return None  # https, or a wildcard scheme (E0710's concern)
-    authority = re.split(r"[/?#]", rest, maxsplit=1)[0]
-    host = authority.split(":", 1)[0].lower()  # strip any :port
-    if host in _LOOPBACK_HOSTS or host.startswith("127."):
+    host = _authority_host(re.split(r"[/?#]", rest, maxsplit=1)[0])
+    if _is_loopback_host(host):
         return None
     return f"http:// scheme sends '{host}' traffic unencrypted"
 
@@ -309,16 +405,36 @@ def check_cleartext_transmission(ast: Dict[str, Any]) -> List[Diagnostic]:
 # as a declared reach. Private RFC-1918 ranges are deliberately NOT flagged
 # (legit in microservice meshes); link-local IMDS is the high-signal case.
 
+_LINK_LOCAL_V4 = ipaddress.ip_network("169.254.0.0/16")
+_IMDS_V6 = ipaddress.ip_address("fd00:ec2::254")          # AWS IMDS over IPv6
+_IMDS_HOSTS = frozenset({
+    "metadata.google.internal", "metadata",                 # GCP
+    "instance-data",                                        # AWS EC2 DNS alias
+    "100.100.100.200",                                      # Alibaba Cloud
+})
+
+
 def _net_is_link_local(arg: Optional[str]) -> Optional[str]:
-    """If this net.fetch glob pins a host in 169.254.0.0/16, return a
-    short reason; otherwise None."""
+    """If this net.fetch glob pins a host in 169.254.0.0/16 — in any
+    spelling — or a cloud metadata service name, return a short reason;
+    otherwise None."""
     if not arg:
         return None
-    rest = arg.split("://", 1)[1] if "://" in arg else arg
-    authority = re.split(r"[/?#]", rest, maxsplit=1)[0]
-    host = authority.split(":", 1)[0]
+    host = _authority_host(_scope_authority(arg))
+    # The original string test, kept as-is: nothing it flags may go
+    # quiet (`169.254.169.254.nip.io` stays caught by it).
     if host.startswith("169.254."):
         return f"link-local host {host!r} — the cloud metadata range (IMDS)"
+    ip = _host_ip(host, numeric=True)
+    if ip is not None:
+        v4 = ip.ipv4_mapped if ip.version == 6 else ip
+        if v4 is not None and v4 in _LINK_LOCAL_V4:
+            return (f"link-local host {host!r} (= {v4}) — the cloud "
+                    f"metadata range (IMDS)")
+        if ip == _IMDS_V6:
+            return f"IPv6 metadata host {host!r} — the AWS IMDS endpoint"
+    if host in _IMDS_HOSTS:
+        return f"cloud metadata host {host!r} — the instance metadata service (IMDS)"
     return None
 
 
@@ -475,12 +591,18 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
         src_fns = _marker_source_fns(ast, marker)
         pmask = _marker_param_mask(ast, marker)
         mfields = _marker_field_names(ast, marker)
+        carriers = _marked_records(ast, marker)
+        rec_fns = _record_fns(ast, carriers)
+        # Alias targets once per module (TC-04). Every user function is a
+        # target here: an alias of a plain-param callee is exactly the
+        # laundering shape (BUG-002).
+        targets = src_fns | frozenset(decls) | frozenset(pmask)
         for d in decls.values():
-            al = _fn_aliases(d, src_fns | frozenset(pmask))
+            al = _fn_aliases(d, targets)
             src_l = src_fns | frozenset(a for a, ts in al.items() if ts & src_fns)
             pmask_l = _aliased_mask(pmask, al)
-            tainted = _marked_tainted_names(d, marker, unwraps, src_l, pmask_l,
-                                            mfields)
+            tainted, rec_names = _marked_taint(d, marker, unwraps, src_l, pmask_l,
+                                               mfields, carriers, rec_fns)
             if not tainted and not src_l and not mfields:
                 continue
             fn = d["name"]
@@ -497,10 +619,10 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
                     for i, arg in enumerate(call.get("args") or []):
                         if i >= len(params):
                             break
-                        if _type_carries_marker(params[i].get("type"), marker):
+                        if _type_carries_marker(params[i].get("type"), marker, carriers):
                             continue  # marker declared — taint travels
                         if not _expr_leaks_marked(arg, tainted, unwraps,
-                                                  src_l, pmask_l, mfields):
+                                                  src_l, pmask_l, mfields, rec_names):
                             continue
                         pos = call.get("pos") or fpos
                         diags.append(Diagnostic(
@@ -548,16 +670,19 @@ def check_return_laundering(ast: Dict[str, Any]) -> List[Diagnostic]:
         src_fns = _marker_source_fns(ast, marker)
         pmask = _marker_param_mask(ast, marker)
         mfields = _marker_field_names(ast, marker)
+        carriers = _marked_records(ast, marker)
+        rec_fns = _record_fns(ast, carriers)
+        targets = src_fns | frozenset(pmask)   # once per module (TC-04)
         for d in ast.get("decls", []):
             if d.get("kind") != "FunctionDecl":
                 continue
-            if _type_carries_marker(d.get("return_type"), marker):
+            if _type_carries_marker(d.get("return_type"), marker, carriers):
                 continue  # honest signature — callers taint via seeding
-            al = _fn_aliases(d, src_fns | frozenset(pmask))
+            al = _fn_aliases(d, targets)
             src_l = src_fns | frozenset(a for a, ts in al.items() if ts & src_fns)
             pmask_l = _aliased_mask(pmask, al)
-            tainted = _marked_tainted_names(d, marker, unwraps, src_l, pmask_l,
-                                            mfields)
+            tainted, rec_names = _marked_taint(d, marker, unwraps, src_l, pmask_l,
+                                               mfields, carriers, rec_fns)
             if not tainted and not src_l and not mfields:
                 continue
             fn = d["name"]
@@ -568,7 +693,7 @@ def check_return_laundering(ast: Dict[str, Any]) -> List[Diagnostic]:
                 if val is None:
                     continue
                 if not _expr_leaks_marked(val, tainted, unwraps,
-                                          src_l, pmask_l, mfields):
+                                          src_l, pmask_l, mfields, rec_names):
                     continue
                 pos = ret.get("pos") or fpos
                 diags.append(Diagnostic(
@@ -1014,6 +1139,14 @@ def check_unsatisfiable_refinement(ast: Dict[str, Any]) -> List[Diagnostic]:
         if not pred:
             continue
         lo, hi = _refine_interval(pred)
+        base = d.get("base") or {}
+        if isinstance(base, dict) and base.get("name") == "Int":
+            # Over Int an open bound is a closed bound one step in:
+            # `self > 5 and self < 6` admits no integer.
+            if lo is not None and not lo[1] and isinstance(lo[0], int):
+                lo = (lo[0] + 1, True)
+            if hi is not None and not hi[1] and isinstance(hi[0], int):
+                hi = (hi[0] - 1, True)
         if not _interval_empty(lo, hi):
             continue
         pos = d.get("pos") or {"line": 0, "column": 0}
@@ -1161,11 +1294,8 @@ def _authorized_names(fn_decl: Dict[str, Any],
     # bindings — missing Assign here would let `tok = raw` keep a
     # previously-proven name authorized (silent demotion miss).
     body = fn_decl.get("body", [])
-    for n in walk(body, "Let", "Var", "Assign"):
-        if "value" in n:
-            tgt = n.get("name") or n.get("target")
-            if isinstance(tgt, str):
-                binds.setdefault(tgt, []).append(n["value"])
+    for tgt, value, _ in _walk_binds(body):
+        binds.setdefault(tgt, []).append(value)
     for n in walk(body, "Match", "MatchExpr"):
         for arm in n.get("arms", []) or []:
             names = _ok_pattern_bindings(arm.get("pattern"))
@@ -1383,10 +1513,12 @@ def check_authorization(ast: Dict[str, Any]) -> List[Diagnostic]:
                         f"declared return type",
                         {"reason": "return does not mint declared proof"},
                     ))
+        sink_al = _fn_aliases(d, frozenset(_MUTATION_SINKS))
         for call in walk(d.get("body", []), "Call"):
-            sink = callee_name(call)
-            if sink not in _MUTATION_SINKS:
+            hits = _sink_targets(callee_name(call), sink_al, _MUTATION_SINKS)
+            if not hits:
                 continue
+            sink = hits[0]   # an alias of the mutating sink IS the sink
             args = call.get("args") or []
             token = args[1] if len(args) > 1 else None
             if token is not None and \
@@ -1448,9 +1580,11 @@ def _stable_names(fn_decl: Dict[str, Any]) -> Set[str]:
     witness that the guard's id and the sink's id are the same value."""
     counts: Dict[str, int] = {}
 
-    for n in walk(fn_decl.get("body", []), "Let", "Assign"):
-        tgt = n.get("name") or n.get("target")
-        if isinstance(tgt, str):
+    # Let, Var AND Assign each bind — a `var` declaration that was not
+    # counted let `var id = a; ...; id = b` pass as bound once (BUG-013).
+    for n in walk(fn_decl.get("body", []), *_BIND_KINDS):
+        tgt = _bind_target(n)
+        if tgt is not None:
             counts[tgt] = counts.get(tgt, 0) + 1
     params = {p["name"] for p in fn_decl.get("params", [])}
     stable = {p for p in params if counts.get(p, 0) == 0}
@@ -1478,10 +1612,7 @@ def _resource_proof_ids(fn_decl: Dict[str, Any],
     names qualify — a rebindable proof name proves nothing."""
     out: Dict[str, Tuple[str, Any]] = {}
 
-    for n in walk(fn_decl.get("body", []), "Let", "Assign"):
-        if "name" not in n or "value" not in n:
-            continue
-        name, val = n["name"], n["value"]
+    for name, val, _ in _walk_binds(fn_decl.get("body", [])):
         if name in stable and isinstance(val, dict) \
                 and val.get("kind") == "Call" \
                 and callee_name(val) == _RES_AUTH_GUARD:
@@ -1525,8 +1656,9 @@ def check_resource_authorization(ast: Dict[str, Any]) -> List[Diagnostic]:
         fpos = d.get("pos") or {"line": 0, "column": 0}
         stable = _stable_names(d)
         proof_ids = _resource_proof_ids(d, stable)
+        sink_al = _fn_aliases(d, frozenset({_RESOURCE_SINK}))
         for call in walk(d.get("body", []), "Call"):
-            if callee_name(call) != _RESOURCE_SINK:
+            if not _sink_targets(callee_name(call), sink_al, {_RESOURCE_SINK}):
                 continue
             args = call.get("args") or []
             rid = args[1] if len(args) > 1 else None
@@ -1592,7 +1724,26 @@ _CREDENTIAL_PATTERNS = [
     (re.compile(r"AIza[0-9A-Za-z_\-]{35}"),               "Google API key"),
     (re.compile(r"xox[baprs]-[0-9A-Za-z\-]{10,}"),        "Slack token"),
     (re.compile(r"sk_live_[0-9A-Za-z]{20,}"),             "Stripe live secret key"),
-    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),   "private key (PEM)"),
+    # Provider prefixes with a length floor: each is a documented token
+    # format, none matched anything in 4,946 framework files or the
+    # in-tree corpus when added (slice-3 record). Specific `sk-` shapes
+    # come before the generic one so the label names the provider.
+    (re.compile(r"\bsk-proj-[A-Za-z0-9_\-]{40,}"),        "OpenAI project API key"),
+    (re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{40,}"),         "Anthropic API key"),
+    (re.compile(r"\bsk-[A-Za-z0-9]{48,}\b"),              "OpenAI API key"),
+    (re.compile(r"\bhf_[A-Za-z0-9]{30,}\b"),              "Hugging Face token"),
+    (re.compile(r"\bgsk_[A-Za-z0-9]{40,}\b"),             "Groq API key"),
+    (re.compile(r"\bya29\.[0-9A-Za-z_\-]{30,}"),          "Google OAuth access token"),
+    (re.compile(r"\bglpat-[0-9A-Za-z_\-]{20,}\b"),        "GitLab personal access token"),
+    (re.compile(r"\bSG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}\b"), "SendGrid API key"),
+    (re.compile(r"\bnpm_[A-Za-z0-9]{36}\b"),              "npm access token"),
+    (re.compile(r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_\-]{50,}"), "PyPI API token"),
+    (re.compile(r"https://hooks\.slack\.com/services/T[A-Z0-9]{8,}/B[A-Z0-9]{8,}/[A-Za-z0-9]{20,}"),
+     "Slack incoming-webhook URL"),
+    # The PEM header alone is prose ("expected -----BEGIN RSA PRIVATE
+    # KEY-----" in an error message); a key has a base64 body after it.
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:\s*[A-Za-z0-9+/=]){40,}"),
+     "private key (PEM)"),
 ]
 
 
@@ -1673,6 +1824,11 @@ def check_effects(ast: Dict[str, Any]) -> List[Diagnostic]:
     for name in ("Some", "None", "Ok", "Err"):
         union_cases.add(name)
 
+    # A call through an alias (`let sh = shellExec; sh("ls")`) is a call
+    # to the target — resolved flag-more, so an alias can only ADD
+    # obligations (BUGS.md BUG-015).
+    alias_targets = frozenset(user_effects) | frozenset(_STDLIB_EFFECTS)
+
     diags: List[Diagnostic] = []
     for d in ast.get("decls", []):
         if d.get("kind") != "FunctionDecl":
@@ -1680,47 +1836,48 @@ def check_effects(ast: Dict[str, Any]) -> List[Diagnostic]:
         caller_name = d["name"]
         caller_effects = _declared_effects(d)
         pos = d.get("pos") or {"line": 0, "column": 0}
+        al = _fn_aliases(d, alias_targets)
 
         for call in walk(d.get("body", []), "Call"):
-            callee = callee_name(call)
-            if callee is None or callee in union_cases:
+            name = callee_name(call)
+            if name is None or name in union_cases:
                 continue
-            if callee in user_effects:
-                callee_effects = user_effects[callee]
-            elif callee in _STDLIB_EFFECTS:
-                callee_effects = _STDLIB_EFFECTS[callee]
-            elif callee.endswith("?") or callee.endswith("!"):
-                callee_effects = _STDLIB_EFFECTS.get(callee, [])
-            else:
-                continue
+            direct = name in user_effects or name in _STDLIB_EFFECTS \
+                or name.endswith("?") or name.endswith("!")
+            for callee in ([name] if direct else sorted(al.get(name, set()))):
+                if callee in user_effects:
+                    callee_effects = user_effects[callee]
+                else:
+                    callee_effects = _STDLIB_EFFECTS.get(callee, [])
 
-            for callee_eff in callee_effects:
-                if _effect_covered(caller_effects, callee_eff):
-                    continue
-                missing_pretty = _format_effect(callee_eff)
-                caller_pretty = _format_effect_list(caller_effects)
-                diags.append(Diagnostic(
-                    code="E0801",
-                    category="effect",
-                    severity="error",
-                    message=(
-                        f"function {caller_name!r} (effects {caller_pretty}) "
-                        f"calls {callee!r} which has effect {missing_pretty} "
-                        f"not covered by the caller"
-                    ),
-                    position=Position(pos.get("line", 0), pos.get("column", 0)),
-                    suggestion=(
-                        f"add {missing_pretty} to {caller_name}'s effects "
-                        f"clause, or change the call site"
-                    ),
-                    confidence=1.0,
-                    extra={
-                        "caller": caller_name,
-                        "callee": callee,
-                        "caller_effects": [
-                            [list(p), a] for p, a in caller_effects
-                        ],
-                        "missing_effect": [list(callee_eff[0]), callee_eff[1]],
-                    },
-                ))
+                for callee_eff in callee_effects:
+                    if _effect_covered(caller_effects, callee_eff):
+                        continue
+                    missing_pretty = _format_effect(callee_eff)
+                    caller_pretty = _format_effect_list(caller_effects)
+                    via = "" if callee == name else f" (through alias {name!r})"
+                    diags.append(Diagnostic(
+                        code="E0801",
+                        category="effect",
+                        severity="error",
+                        message=(
+                            f"function {caller_name!r} (effects {caller_pretty}) "
+                            f"calls {callee!r}{via} which has effect {missing_pretty} "
+                            f"not covered by the caller"
+                        ),
+                        position=Position(pos.get("line", 0), pos.get("column", 0)),
+                        suggestion=(
+                            f"add {missing_pretty} to {caller_name}'s effects "
+                            f"clause, or change the call site"
+                        ),
+                        confidence=1.0,
+                        extra={
+                            "caller": caller_name,
+                            "callee": callee,
+                            "caller_effects": [
+                                [list(p), a] for p, a in caller_effects
+                            ],
+                            "missing_effect": [list(callee_eff[0]), callee_eff[1]],
+                        },
+                    ))
     return diags
