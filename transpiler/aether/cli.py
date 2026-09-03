@@ -402,6 +402,15 @@ def cmd_check_py(args) -> int:
         sys.stderr.write(f"aether: --min-confidence must be in [0,1], "
                          f"got {min_conf}\n")
         return 2
+    # A usage error on our own flag must read like one. Unvalidated,
+    # `--jobs 0` scanned serially with no message and `--jobs 999` died
+    # with a raw ValueError traceback and exit 1 — Windows caps
+    # ProcessPoolExecutor at 61 workers, which is a platform fact, not
+    # something the caller should have to know.
+    jobs_arg = getattr(args, "jobs", None)
+    if jobs_arg is not None and jobs_arg < 1:
+        sys.stderr.write(f"aether: --jobs must be >= 1, got {jobs_arg}\n")
+        return 2
     skipped_dirs: list = []
     paths = sorted({p for t in targets for p in _py_files(t, skipped_dirs)})
     skipped_dirs = sorted(set(skipped_dirs))
@@ -410,10 +419,14 @@ def cmd_check_py(args) -> int:
     # its path, because otherwise line numbers name nothing.
     show_paths = not (len(targets) == 1 and os.path.isfile(targets[0]))
 
-    jobs = getattr(args, "jobs", None)
+    jobs = jobs_arg
     if jobs is None:
         jobs = (os.cpu_count() or 1) if (
             len(paths) > _JOBS_THRESHOLD and (os.cpu_count() or 1) > 1) else 1
+    # Windows caps ProcessPoolExecutor at 61 workers. Asking for more is
+    # not worth an error: clamp and scan, rather than refusing a run over
+    # a number that only names how fast the caller wanted it.
+    jobs = min(jobs, 61)
     work = [(p, skip, strict) for p in paths]
     if jobs > 1 and len(paths) > 1:
         from concurrent.futures import ProcessPoolExecutor

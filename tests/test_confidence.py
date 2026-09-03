@@ -42,11 +42,41 @@ def _emitted_match_kinds() -> set:
     Read from the source, not from the declared tuple: the point of the
     check is to catch a NEW `return sink, "..."` that nobody added to the
     vocabulary or the table.
+
+    Walked as an AST, not matched as text: the kind is not always the
+    last thing on the `return` line (`compile`'s rides a conditional
+    expression across two lines), and a regex tuned to the shapes that
+    exist today is blind to exactly the new shape this test is for.
     """
-    src = open(FRONTEND, encoding="utf-8").read()
-    body = src.split("def _sink_match(", 1)[1].split("\ndef ", 1)[0]
-    kinds = set(re.findall(r'return\s+[^\n]*?,\s*"([a-z_]+)"', body))
-    kinds |= set(re.findall(r'"(builtin_compile|builtin)"', body))
+    import ast as _ast
+    tree = _ast.parse(open(FRONTEND, encoding="utf-8").read())
+    fn = next((n for n in _ast.walk(tree)
+               if isinstance(n, _ast.FunctionDef) and n.name == "_sink_match"),
+              None)
+    assert fn is not None, "_sink_match not found in the frontend"
+
+    def strings(node):
+        """String constants a node can EVALUATE to. A `Compare` is a test,
+        not a value — `"compile" if dotted == "compile" else "builtin"`
+        yields two kinds, not three."""
+        if isinstance(node, _ast.Constant) and isinstance(node.value, str):
+            return {node.value}
+        if isinstance(node, _ast.IfExp):
+            return strings(node.body) | strings(node.orelse)
+        if isinstance(node, _ast.Compare):
+            return set()
+        out = set()
+        for child in _ast.iter_child_nodes(node):
+            out |= strings(child)
+        return out
+
+    kinds = set()
+    for r in _ast.walk(fn):
+        # Every sink return is `(sink_name, match_kind)`; the kind is the
+        # second element, whatever expression produces it.
+        if isinstance(r, _ast.Return) and isinstance(r.value, _ast.Tuple) \
+                and len(r.value.elts) == 2:
+            kinds |= strings(r.value.elts[1])
     return kinds
 
 

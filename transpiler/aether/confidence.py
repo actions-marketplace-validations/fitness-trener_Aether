@@ -17,8 +17,13 @@ What this is NOT:
     whether the callee is what the rule thinks it is.
 
 The evidence is what the Python frontend already computes. `_sink_name`
-identifies a sink in several ways and they are not equally certain
-(measured, `bench/framework_scan/REPORT.md` section 8):
+identifies a sink in several ways and they are not equally certain. Only
+the ORDER of the two floor kinds below is measured
+(`bench/framework_scan/REPORT.md` §8 priced `method` and
+`builtin_compile` on 4,946 files); the 0.95/0.9 split above the floor is
+reasoning about how much of the callee the frontend actually resolved,
+not a measured false-positive rate. None of these numbers is a
+probability:
 
   * `qualified` / `guard` — the callee resolved through the file's
     imports to a known dotted path. The name is not a guess.

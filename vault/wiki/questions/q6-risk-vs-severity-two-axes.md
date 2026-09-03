@@ -75,11 +75,21 @@ so `--min-confidence 0.9` hides 93% of the corpus, almost all of it
 request handler or a test fixture, which is the same limitation this
 Residual originally named one level up. It says nothing about
 exploitability — a 0.6 finding is not "probably a false positive", it is
-"the analysis is less sure this callee is the sink it matched". And it
-reaches only the two spec-driven drivers: the hand-written detectors in
-`passes/effects.py` still construct at 1.0, so an E0710/E0721/E0722/E0723
-finding on Python carries an Aether-source finding's certainty it did not
-earn. That is the next residual.
+"the analysis is less sure this callee is the sink it matched".
+
+And it reaches only the two spec-driven drivers: the ~20 hand-written
+`Diagnostic` sites in `passes/effects.py` still construct at a literal
+1.0. On today's Python surface that costs nothing, and the reason is
+worth writing down rather than assuming: of those codes only **E0723**
+can fire on translated Python at all, and its evidence is a string
+literal read straight out of the source, so 1.0 is earned. E0710, E0721
+and E0722 read a DECLARED `net.fetch` effect annotation that Python has
+no equivalent for (the frontend emits `net.get`; survey candidate
+TC-09), and E0729/E0730 need marker types Python cannot spell — all five
+are dead on Python. The residual is therefore a *latent* one: the next
+hand-written detector that does fire on translated Python will claim an
+Aether-source finding's certainty unless it reads `call.get("match")`
+like the drivers do.
 
 ## Related
 - [[../clusters/violation-taxonomy]] — the class each rating rates
