@@ -1,5 +1,38 @@
 # Operation Log (append-only — newest on top)
 
+## [2026-09-03] Q1 corrected, Q6 residual closed | iterations 51–52
+- **A settled q1 Evidence row was FALSE, and had been for nine
+  iterations.** Iteration 42 recorded "`grammar.ebnf` has no function
+  types — nothing HOF-shaped remains in the language" and closed the
+  surface on it. Line 88 of the grammar defines function types and
+  `parser.py` emits them, and behind the wrong row sat two live false
+  accepts: a `Secret<String>` through a function-typed parameter reached
+  `print` unflagged, and an effectful function passed as a value ran
+  under two `pure` declarations. Both closed in iteration 51 (BUG-022);
+  the row is corrected in place, the overclaim kept visible rather than
+  overwritten, and the lesson recorded: **the "probe before you record
+  it" rule applies to CLOSING an item, not only to opening one.**
+- **The same iteration overclaimed again and the review caught it.** The
+  first fix said "closed, both axes"; a one-line alias defeated one axis
+  (BUG-025) and the other shipped an invented effect for any string whose
+  name matched a function (BUG-024). Both fixed in the same iteration.
+  q1 now carries the counterexamples beside the closures.
+- **Boundary-sanitizer coarseness closed at the call site** (BUG-023):
+  a per-parameter sink summary means an unwrapper clears a crossing only
+  when it is the right sanitizer for every sink the callee reaches.
+  Residuals stated in BOTH directions after the review pointed out the
+  first draft listed only the flattering one.
+- **q6's Residual is closed** (iteration 52): `Diagnostic.confidence` was
+  a constant 1.0 at every detector since the axis was introduced in
+  iteration 46. The Python frontend now reports HOW it matched a sink, so
+  a `.from_string` matched on a method name ranks below a `pickle.loads`
+  resolved through imports. It changed no detection — 676 findings on the
+  framework corpus before and after, identical multiset — and the page
+  says what the axis still does not do.
+- **Never-Do reaffirmed:** no effects syntax for function types was
+  invented to close the residual that a function type cannot carry one;
+  that is a language change and q1 says so.
+
 ## [2026-09-03] Q1 + taxonomy extended | iterations 49–50: the language side's binding walkers, E0731
 - **Iteration 49 (no detector):** four probe-confirmed false accepts on the
   Aether side, one root cause — the parser emits `Let`/`Var`/`Assign` and

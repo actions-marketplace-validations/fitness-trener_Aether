@@ -1914,6 +1914,144 @@ State carried forward: the full gate suite must stay green
 
 ---
 
+## Iteration 51 — the vault said the surface did not exist, and it did (four false accepts, no new detector)
+
+- **Target:** the last two P0 rows of the 2026-09-03 survey
+  (`audits/survey_2026-09-03_ranked.md`, AEDET-08 and AEDET-09), both
+  re-probed live on `3986d38` before any code moved.
+- **The honesty half, and it is the point of the iteration.** q1 carried
+  this as settled Evidence since iteration 42: *"`grammar.ebnf` has no
+  function types — nothing HOF-shaped remains in the language."*
+  `grammar/grammar.ebnf` line 88 is
+  `"function" "(" [ type_expr {"," type_expr} ] ")" "returns" type_expr`
+  and `parser.py:369` emits `FunctionType`. The row was a grammar claim
+  written without grepping the grammar, and it had been shielding two
+  live false accepts for nine iterations. **The lesson recorded in q1:
+  the iteration-41 rule "probe before you record it" applies to CLOSING
+  an item, not only to opening one. A closed row is a claim, and claims
+  expire.**
+- **Gap confirmed empirically first (exit 0 on `3986d38`):**
+  `apply(f: function(String) returns Unit, x: Secret<String>) do f(x) end`
+  called as `apply(print, pw)` — no E0712, no E0729, the password logged;
+  and `apply(logIt, s)` from a `pure` caller into a `pure` `apply` that
+  calls `f` — no E0801, the logging performed under two functions that
+  both declared they do none. Separately `render(sanitizeLog(u))` where
+  `render` feeds `htmlResponse` — exit 0, while the inline
+  `htmlResponse(sanitizeLog(u))` fires E0725 whose own hint reads
+  "sanitizeLog does NOT protect here".
+- **Improvement (BUG-022, BUG-023):** `check_marker_boundary` fires E0729
+  when a call's callee is a function-typed PARAMETER and an argument
+  leaks the marker — the callee is chosen by the caller's caller, so it
+  is strictly less visible than the plain-param crossing E0729 already
+  refused; there is deliberately NO sanctioned crossing there, because a
+  function type's argument types are never checked against what arrives.
+  `check_effects` counts a function passed as a VALUE as a callee whose
+  declared effects join the caller's obligation. And the boundary
+  sanitizer stopped being marker-wide: `param_sink_reach()` summarises
+  which marker-flow sinks each callee parameter reaches,
+  `marker_sink_sanitizers()` derives (marker, sink) → sanitizer from
+  `MARKER_FLOW_SPECS`, and a cleared crossing is accepted only when the
+  unwrapper that cleared it is right for every sink reached.
+- **The review found the slice had shipped two NEW false positives and
+  reopened one of its own fixes** (BUG-024, BUG-025), all three
+  probe-confirmed, all three fixed in the same iteration:
+  - E0801 resolved a bare Ident argument by GLOBAL name with no locality
+    check, so a plain `String` parameter named `logIt` handed to the pure
+    stdlib `concat` was reported as an escaping `log` effect — an
+    invented effect for a string, in every argument position of every
+    call. Fixed with a `local` set (parameters + `_walk_binds` targets)
+    and alias-only resolution for shadowed names; the same edit closed
+    the slice's own documented gap, so `let g = logIt; apply(g, s)` now
+    reports too.
+  - E0729 counted a parameter as reaching a sink it reached only through
+    that sink's own sanitizer, so `render(s) = htmlResponse(htmlEscape(s))`
+    was reported as feeding `htmlResponse` raw **and the hint told the
+    caller to escape a second time** — a diagnostic that corrupts output
+    if obeyed. Fixed by summarising reach with each sink's own sanitizers
+    as unwrappers.
+  - A one-line alias defeated the new function-typed-parameter rule:
+    `let g = f; g(x)` was exit 0 on both the base and the fix commit,
+    while the same program without the `let` fired. This is the alias
+    class q1 already records as CLOSED for named functions (BUG-002),
+    reopened at a new callee kind.
+- **Measured:** corpus survey before wiring found 9 function-value
+  argument sites (every one `effects pure`) and 0 function-typed
+  parameters, so both new rules fire 0× on existing code; a differential
+  over all 437 in-tree `.aeth` after the review fixes shows 0 diff. 11
+  new tests across `tests/test_effect_scope.py` and
+  `tests/test_static_effects.py`; playground examples 32 and 33.
+- **Ratchet:** unchanged (55 codes / 31 detectors) — no detector shipped,
+  four repaired.
+- **TYPE gaps surfaced for next iter:** a function type carries no
+  effects clause in the grammar, so a callee that declares a
+  function-typed parameter may still claim any effects it likes and only
+  the call site supplying the value is judged — closing that is a
+  LANGUAGE change (effect-polymorphic function types), and q1 says
+  explicitly not to invent an effects syntax to get around it. The sink
+  summary is one level and matches the parameter by direct Ident, so a
+  callee that rebinds the parameter or hands it to a third function
+  contributes no sinks and falls back to the old marker-wide rule; E0730
+  (return laundering) keeps the coarseness entirely, having no callee
+  parameter to summarise. Both are the accept direction — real remaining
+  misses, stated as such.
+- **Suite:** exit 0.
+
+---
+
+## Iteration 52 — the axis that had been declared unused since iteration 46 (no new detector)
+
+- **Target:** q6's Residual, open since iteration 46 and re-surfaced by
+  iteration 50's own gap line. `Diagnostic.confidence` is a field on
+  every diagnostic, serialized, read back by the SDK — and the constant
+  `1.0` at every detector. q6 said varying it "needs something the
+  detectors actually compute".
+- **Iteration 50 supplied exactly that, measured.** The Python frontend
+  names a sink in six different ways and they are not equally certain:
+  a dotted path resolved through the file's imports is not a guess, a
+  method name on an unresolved receiver is q5's sanctioned over-flag, and
+  `bench/framework_scan/REPORT.md` §8 had already priced the difference —
+  about a third of the new `from_string` hits are non-jinja methods, and
+  4 of 8 E0731 sites are linters calling `compile()` to check syntax and
+  never executing the result.
+- **Improvement:** `_sink_match` returns HOW it matched beside WHAT it
+  matched; `_call_expr` parks that on the Call node; the two spec-driven
+  drivers set `confidence=confidence_of(call.get("match"))` and put the
+  kind in `extra`. `transpiler/aether/confidence.py` holds the table,
+  modelled on `risk.py` and read only at output time. `tools/scan.py` and
+  `check-py` sort by `(-risk, -confidence, line, code)`, both grow
+  `--min-confidence`, SARIF carries it. An unknown match kind takes the
+  FLOOR, never 1.0 — a new frontend match kind must not claim certainty
+  by being new.
+- **It changed no detection, and that is the measurement that matters:**
+  676 findings on the 15-framework corpus before, 676 after, identical
+  multiset and identical per-distribution stats. The distribution is
+  0.95 ×44, 0.9 ×3, 0.6 ×629, so `--min-confidence 0.9` hides 93% of the
+  corpus — almost all of it `cursor.execute`-shaped SQL matched by name.
+  Those findings are correct by Aether's rule and stay in the default
+  output; the flag is a reading order, not a verdict.
+- **`--jobs` alongside:** 241 s → 69 s on the 1,024-file agno package,
+  8 workers, all four `--json` outputs byte-identical. A pool is used
+  only above 32 files on a multi-core machine, so single-file and
+  small-tree runs stay byte-identical to what they were.
+- **Review found four minors, all fixed:** `--jobs 0` scanned serially in
+  silence and `--jobs 999` died with a raw traceback (Windows caps the
+  pool at 61); the coverage test read the frontend's match kinds with a
+  regex blind to the one continuation-line return it most needed to see;
+  and two docstrings claimed more than they had earned — `confidence.py`
+  read as if all six ratings were measured when only the ordering of the
+  two floor kinds is, and q6 named E0710/E0721/E0722 as carrying unearned
+  certainty on Python when those three cannot fire on Python at all.
+- **Ratchet:** unchanged (55 codes / 31 detectors).
+- **TYPE gap surfaced for next iter:** the axis reaches only the two
+  spec-driven drivers. Of the ~20 hand-written `Diagnostic` sites in
+  `passes/effects.py`, only E0723 fires on translated Python today and
+  its evidence is a literal read from the source, so its 1.0 is earned —
+  the residual is latent, and the next hand-written detector that fires
+  on Python must read `call.get("match")` like the drivers do.
+- **Suite:** exit 0.
+
+---
+
 ## Next-iteration checklist (for the loop)
 
 1. Read the previous report's "TYPE gap for next iter".
