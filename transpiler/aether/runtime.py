@@ -317,6 +317,14 @@ def _ae_renderTemplate(template, data):
     # untrusted input cannot steer template syntax (SSTI / RCE).
     return template.replace("{}", str(data), 1)
 
+def _ae_evalCode(source):
+    # Models an interpreter over SOURCE TEXT (exec/eval/compile) — the
+    # code-injection sink (CWE-94/95). The reference runtime NEVER executes
+    # the source; it returns a marker, like _ae_parseXml. The point is the
+    # static E0731 refusal on a non-literal source: attacker-authored code
+    # has no sanitizer, only a fixed literal or an explicit trusted(...).
+    return "code:" + str(source)
+
 def _ae_sqlExec(stmt, auth):
     # Models a data-MUTATING database statement (UPDATE/DELETE/INSERT) —
     # carries the `db.exec` effect (capability `db`). The demo returns a

@@ -284,15 +284,23 @@ _PY_SKIP_DIRS = frozenset((
 ))
 
 
-def _py_files(target: str) -> list:
+def _py_files(target: str, skipped: list = None) -> list:
     """Every `.py` file under `target`, or `[target]` if it is a file.
 
     Sorted at every level so two runs over the same tree produce the same
-    output in the same order (tests/test_deterministic.py's rule)."""
+    output in the same order (tests/test_deterministic.py's rule). A
+    directory pruned by `_PY_SKIP_DIRS` is appended to `skipped` (its
+    path relative to `target`) — a `build/` or `env/` that holds the
+    user's own source used to vanish with no trace in any output."""
     if os.path.isfile(target):
         return [target]
     found = []
     for dirpath, dirnames, filenames in os.walk(target):
+        if skipped is not None:
+            for d in dirnames:
+                if d in _PY_SKIP_DIRS or d.endswith(".egg-info"):
+                    skipped.append(os.path.relpath(os.path.join(dirpath, d), target)
+                                   .replace(os.sep, "/"))
         dirnames[:] = sorted(d for d in dirnames
                              if d not in _PY_SKIP_DIRS
                              and not d.endswith(".egg-info"))
@@ -333,7 +341,9 @@ def cmd_check_py(args) -> int:
         sys.stderr.write("aether: --sarif and --json are two different "
                          "output formats; pick one\n")
         return 2
-    paths = sorted({p for t in targets for p in _py_files(t)})
+    skipped_dirs: list = []
+    paths = sorted({p for t in targets for p in _py_files(t, skipped_dirs)})
+    skipped_dirs = sorted(set(skipped_dirs))
     # One explicit file keeps the original single-file output verbatim; a
     # directory (or several targets) prefixes each file's findings with
     # its path, because otherwise line numbers name nothing.
@@ -345,7 +355,7 @@ def cmd_check_py(args) -> int:
             src = _read_py(p)
         except (OSError, UnicodeDecodeError, SyntaxError) as e:
             # `tokenize.open` raises SyntaxError for an unknown cookie.
-            unreadable.append((p, type(e).__name__))
+            unreadable.append((p, type(e).__name__, str(e)))
             continue
         try:
             ast, unprovable, meta = py_to_ir(src)
@@ -353,7 +363,7 @@ def cmd_check_py(args) -> int:
         except (SyntaxError, ValueError) as e:
             # py2 sources, templates and test fixtures are normal in a real
             # tree; they are counted, not fatal.
-            unreadable.append((p, type(e).__name__))
+            unreadable.append((p, type(e).__name__, str(e)))
             continue
         except RecursionError as e:
             # The frontend catches this per scope and reports an
@@ -388,19 +398,38 @@ def cmd_check_py(args) -> int:
         sys.stderr.write(f"aether: ANALYZER ERROR on {p}: {err}\n"
                          f"  this is a bug in Aether, not in your code — "
                          f"please report it (see BUGS.md)\n")
+    # A file the scanner could not read is a missed finding, not a clean
+    # file. It is reported on stderr in EVERY output mode — a `--sarif`
+    # or `--json` run used to swallow it (the text mode said it for one
+    # file only, and then failed the run for it while the other modes
+    # did not). The rule, applied uniformly: unparseable input never
+    # fails the run; an analyzer crash always does.
+    for p, why, detail in unreadable:
+        sys.stderr.write(f"aether: could not parse {p}: {why}: {detail}\n")
+    if skipped_dirs:
+        sys.stderr.write(f"aether: {len(skipped_dirs)} director"
+                         f"{'y' if len(skipped_dirs) == 1 else 'ies'} skipped "
+                         f"as vendored/build output: "
+                         + ", ".join(skipped_dirs) + "\n")
 
     if getattr(args, "sarif", False):
         from .risk import risk_of
         from .sarif import to_sarif
         # Relative to the working directory, which under CI is the
         # checkout root. Code Scanning silently drops a result whose
-        # artifactLocation is not relative to it.
+        # artifactLocation is not relative to it. Column, suggestion and
+        # `extra` ride along so the SARIF says what the JSON says.
         print(json.dumps(to_sarif(
             [{"path": p,
               "findings": [{"code": d.code, "message": d.message,
-                            "line": d.position.line, "risk": risk_of(d.code)}
+                            "line": d.position.line,
+                            "column": d.position.column,
+                            "risk": risk_of(d.code),
+                            "suggestion": d.suggestion, "extra": d.extra}
                            for d in ds]}
-             for p, ds, _u, _m in results], base=os.getcwd()), indent=2))
+             for p, ds, _u, _m in results], base=os.getcwd(),
+            unreadable=[(p, f"{why}: {detail}") for p, why, detail in unreadable]),
+            indent=2))
         return 2 if (n_find or crashed) else 0
 
     if args.json:
@@ -410,7 +439,9 @@ def cmd_check_py(args) -> int:
                               "unprovable": unp, "meta": meta}
                              for p, ds, unp, meta in results],
                    "unreadable": [{"path": p.replace(os.sep, "/"),
-                                   "reason": why} for p, why in unreadable],
+                                   "reason": why, "detail": detail}
+                                  for p, why, detail in unreadable],
+                   "skipped_dirs": skipped_dirs,
                    "errors": [{"path": p.replace(os.sep, "/"), "error": e}
                               for p, e in crashed]}, sys.stdout)
         sys.stdout.write("\n")
@@ -423,10 +454,6 @@ def cmd_check_py(args) -> int:
             sys.stderr.write(f"{p.replace(os.sep, '/')}\n")
         for d in ds:
             _emit_error(d, False)
-    if unreadable and not show_paths:
-        p, why = unreadable[0]
-        sys.stderr.write(f"aether: could not parse {p}: {why}\n")
-        return 2
 
     print()
     if show_paths:
@@ -436,7 +463,8 @@ def cmd_check_py(args) -> int:
                 by_code[d.code] = by_code.get(d.code, 0) + 1
         print(f"scanned {len(results)} file(s) · "
               f"{sum(1 for _, ds, _, _ in results if ds)} with findings · "
-              f"{len(unreadable)} unparseable · {len(crashed)} analyzer error(s)")
+              f"{len(unreadable)} unparseable · {len(crashed)} analyzer error(s)"
+              + (f" · {len(skipped_dirs)} dir(s) skipped" if skipped_dirs else ""))
         if by_code:
             print("findings by code: " + ", ".join(
                 f"{c}x{n}" for c, n in sorted(by_code.items())))

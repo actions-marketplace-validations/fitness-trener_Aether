@@ -1,0 +1,29 @@
+// expect: clean
+// Code injection — the fixed forms. There is no sanitizer for
+// attacker-authored code: the source an interpreter runs must be a FIXED
+// literal, or a value the program explicitly vouches for with
+// trusted(...) — a script bundled with the application, never a model's
+// output. `aether check` passes; `aether run` shows the reference runtime
+// returning a marker rather than executing anything.
+
+function runFixedTool() returns String
+  effects pure
+do
+  // The source is a constant; nothing an attacker says can change it.
+  return evalCode("print('hello')")
+end
+
+function runBundledScript(bundledScript: String) returns String
+  effects pure
+do
+  // Explicit, auditable trust boundary: the caller asserts this source
+  // shipped with the app. Visible in review by construction.
+  return evalCode(trusted(bundledScript))
+end
+
+function main() returns Unit
+  effects log
+do
+  print(runFixedTool())
+  print(runBundledScript("print('from the bundle')"))
+end

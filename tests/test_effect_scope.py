@@ -25,6 +25,7 @@ from aether.passes.effects import (                   # noqa: E402
     check_reflected_xss, check_header_injection, check_xxe,
     check_csv_injection, check_marker_boundary, check_return_laundering,
     check_effects, check_unsatisfiable_refinement, _net_authority_wildcarded,
+    check_code_injection,
 )
 from aether.passes.capability import check_capabilities  # noqa: E402
 
@@ -2621,6 +2622,127 @@ def test_int_open_bounds_rejected():
     print("E0207: adjacent open Int bounds rejected, Float and inhabited Int clean")
 
 
+# --- E0731 code injection (CWE-94/95) ------------------------------------
+# `evalCode(source)` runs source text. Like E0719 it is literal-only with
+# `trusted(...)` as the sole exit: there is no sanitizer for attacker-
+# authored code.
+
+def _code_codes(src: str):
+    ast = parse(src, "<code>")
+    return [d.code for d in check_code_injection(ast)]
+
+
+def _ec(expr: str) -> str:
+    return f"""
+function run(userInput: String) returns String
+  effects pure
+do
+  return evalCode({expr})
+end
+"""
+
+
+def test_code_concat_rejected():
+    assert _code_codes(_ec('"print(1); " + userInput')) == ["E0731"], \
+        "source built by concatenation must raise E0731"
+    print("E0731: concatenated source rejected")
+
+
+def test_code_param_rejected():
+    assert _code_codes(_ec("userInput")) == ["E0731"], \
+        "bare-parameter source must raise E0731"
+    print("E0731: parameter-as-source rejected")
+
+
+def test_code_call_rejected():
+    assert _code_codes(_ec("trim(userInput)")) == ["E0731"], \
+        "a computed source must raise E0731"
+    print("E0731: computed source rejected")
+
+
+def test_code_literal_clean():
+    assert _code_codes(_ec('"print(1)"')) == [], "a fixed literal source is safe"
+    print("E0731: literal source passes clean")
+
+
+def test_code_literal_binding_clean():
+    src = """
+function run() returns String
+  effects pure
+do
+  let s: String = "print(1)"
+  return evalCode(s)
+end
+"""
+    assert _code_codes(src) == [], "source bound to a literal is safe"
+    print("E0731: literal-bound source passes clean")
+
+
+def test_code_trusted_clean():
+    src = """
+function run(bundle: String) returns String
+  effects pure
+do
+  return evalCode(trusted(bundle))
+end
+"""
+    assert _code_codes(src) == [], "trusted(...) is the explicit trust boundary"
+    print("E0731: trusted(...) source passes clean")
+
+
+# --- BUG-020: a wrapper's PINNING argument is judged too ------------------
+
+def test_wrapper_pinning_argument_rejected():
+    sql = """
+function q(tmpl: String, v: String) returns String
+  effects db.query
+do
+  return sqlQuery(sqlBind(tmpl, v))
+end
+"""
+    assert [d.code for d in check_injection(parse(sql, "<p>"))] == ["E0713"], \
+        "sqlBind with a parameter template launders the query text"
+    sh = """
+function run(tmpl: String, v: String) returns String
+  effects exec.run
+do
+  return shellExec(shellArg(tmpl, v))
+end
+"""
+    assert [d.code for d in check_command_injection(parse(sh, "<p>"))] == ["E0714"]
+    rd = """
+function go(host: String, p: String) returns String
+  effects net.redirect
+do
+  return redirect(safeRedirect(host, p))
+end
+"""
+    assert [d.code for d in check_open_redirect(parse(rd, "<p>"))] == ["E0718"]
+    print("E0713/E0714/E0718: a wrapper's template/host must itself be pinned (BUG-020)")
+
+
+def test_wrapper_literal_pin_clean():
+    sql = """
+function q(v: String) returns String
+  effects db.query
+do
+  return sqlQuery(sqlBind("SELECT * FROM t WHERE id = ?", v))
+end
+"""
+    assert [d.code for d in check_injection(parse(sql, "<p>"))] == []
+    fs = """
+function w(base: String, name: String) returns Unit
+  effects fs.write
+do
+  let _r: Result<Unit, String> = writeFile(safeJoin(base, name), "x")
+end
+"""
+    # safeJoin's base is deliberately NOT pinned: a base directory handed
+    # in as a parameter is the idiom, and the untrusted half is `name`.
+    assert [d.code for d in check_fs_path_safety(parse(fs, "<p>"))] == []
+    print("E0713/E0711: literal template clean; safeJoin base stays unpinned")
+
+
 if __name__ == "__main__":
     test_authority_predicate()
     test_broad_rejected()
@@ -2787,4 +2909,12 @@ if __name__ == "__main__":
     test_pem_needs_a_body()
     test_hardcoded_secret_positioned()
     test_int_open_bounds_rejected()
-    print("E0710..E0730 ALL REACH-SCOPE TESTS PASS")
+    test_code_concat_rejected()
+    test_code_param_rejected()
+    test_code_call_rejected()
+    test_code_literal_clean()
+    test_code_literal_binding_clean()
+    test_code_trusted_clean()
+    test_wrapper_pinning_argument_rejected()
+    test_wrapper_literal_pin_clean()
+    print("E0710..E0731 ALL REACH-SCOPE TESTS PASS")

@@ -32,17 +32,17 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "transpiler"))
 sys.path.insert(0, ROOT)
 
-from aether.py_frontend import py_to_ir                      # noqa: E402
+from aether.py_frontend import (py_to_ir, PY_SKIP_STAGES,   # noqa: E402
+                                PY_STRICT_ONLY_CODES)
 from aether.passes import analyze_flat                      # noqa: E402
 
-# Mirrors transpiler/aether/cli.py: _PY_SKIP_STAGES (+ capability when not
-# --strict) and _PY_STRICT_ONLY_CODES. Kept in sync by
-# test_pypi_scan_row_set_matches_cli in tests/test_py_frontend_sinks.py.
-SKIP_DEFAULT = ("effects", "semantic", "capability")
-SKIP_STRICT = ("effects", "semantic")
-STRICT_ONLY = ("E0711",)
+# The CLI's row set, from the one definition the CLI itself imports —
+# not a copy. test_pypi_scan_row_set_matches_cli pins the identity.
+SKIP_DEFAULT = PY_SKIP_STAGES + ("capability",)
+SKIP_STRICT = PY_SKIP_STAGES
+STRICT_ONLY = PY_STRICT_ONLY_CODES
 SINK_CODES = ("E0711", "E0713", "E0714", "E0718", "E0719", "E0720",
-              "E0723", "E0727")
+              "E0723", "E0727", "E0731")
 
 
 def _iter_files(root: str, limit: int = 0):

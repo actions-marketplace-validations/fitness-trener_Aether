@@ -407,6 +407,17 @@ The constructors `Some`, `None`, `Ok`, `Err` are also always in scope.
       // to be a string literal — untrusted input belongs in `data`, never
       // in the template, or it becomes server-side template injection (RCE).
 
+## Code execution
+
+    function evalCode(source: String) returns String
+      effects pure
+      // Models an interpreter over SOURCE TEXT (exec/eval/compile) — the
+      // code-injection sink (CWE-94/95). E0731 requires `source` to be a
+      // string literal: attacker-authored code has no sanitizer, so the
+      // only safe forms are a fixed literal or an explicit trusted(...)
+      // assertion for a script bundled with the app. The reference
+      // runtime never executes the source; it returns a marker.
+
 ## Serialization
 
     function deserialize(data: String) returns String
@@ -439,10 +450,10 @@ The constructors `Some`, `None`, `Ok`, `Err` are also always in scope.
       // Explicit, auditable trust assertion (identity at runtime). Wrapping
       // a dynamic value in trusted(...) states "this source is vetted" — a
       // config bundle shipped with the app, a template from a trusted store.
-      // E0719 (template) and E0720 (deserialize) accept a trusted(...)
-      // argument where they otherwise demand a literal. It is the dual of
-      // reveal()/redact(): the escape hatch is narrow (only the two
-      // no-sanitizer sinks) and visible in review. Do NOT wrap
+      // E0719 (template), E0720 (deserialize) and E0731 (evalCode) accept
+      // a trusted(...) argument where they otherwise demand a literal. It
+      // is the dual of reveal()/redact(): the escape hatch is narrow (only
+      // the three no-sanitizer sinks) and visible in review. Do NOT wrap
       // attacker-controlled input in trusted() — that is the one misuse.
 
 ## Time

@@ -161,6 +161,7 @@ Bench-harness only. The CLI does not currently enforce timeouts;
 | **E0728** | an `Untrusted<...>`-marked value reaches a CSV cell (`csvCell`) without `csvEscape(...)` — spreadsheet formula injection (CWE-1236) | `function`, `sink` |
 | **E0729** | a `Secret<...>`/`PII<...>`/`Untrusted<...>`-marked value is passed to a user-function parameter not typed with that marker — the callee holds the value with the marker erased, blinding every downstream sink check (taint laundering). Sanctioned exits: the marker's unwrapper (`reveal`/`redact`/the per-sink sanitizers/`trusted`) at the call site, or a marker-typed parameter | `function`, `callee`, `param`, `marker` |
 | **E0730** | a function returns a `Secret<...>`/`PII<...>`/`Untrusted<...>`-carrying value while its declared return type does not carry the marker — every caller receives the value with the marker washed off (return laundering, the dual of E0729). Sanctioned exits: declare the marker-typed return, or unwrap (`reveal`/`redact`/the per-sink sanitizers/`trusted`) at the return site | `function`, `marker`, `declared_return` |
+| **E0731** | an `evalCode` source argument is not a fixed string literal (built by concatenation, from a parameter, or by another call) — an interpreter fed attacker-authored source is arbitrary code execution (code injection, CWE-94/95). On Python: `exec`/`eval`/`compile` on a non-literal | `function`, `sink`, `reason` |
 
 E0701 comes from the B.3 default-on capability pass. E0702/E0703/E0704
 come from the D.3 module-validation pass — also default-on, opt out
@@ -398,10 +399,25 @@ formula when opened in Excel / Google Sheets (`=WEBSERVICE(...)` exfil,
 DDE → code execution). `csvEscape(...)` neutralizes a leading trigger and
 is the sanctioned exit. Same `--no-scope-check` opt-out.
 
-Both E0719 and E0720 also accept an explicit `trusted(...)` argument —
+E0731 is the code-injection sibling of E0719 in the same reach-scope
+pass (CWE-94/95, the agent-framework "run the code the model wrote"
+shape: `exec(tool_code)`, `eval(expr)`, `compile(src, ...)`). `evalCode`'s
+argument — the source an interpreter will run — must be a fixed string
+literal (or a name bound only to literals). A source built by
+concatenation, taken from a parameter, or produced by any other call is
+refused: whatever authored it decides what runs, with the process's full
+privileges. Like SSTI there is no sanitizer — there is no way to escape
+attacker-authored code into something safe to run — so the sanctioned
+form is the fixed literal and `trusted(...)` is the auditable escape
+hatch for a source the program vouches for (a script bundled with the
+application). On Python, `exec`/`eval`/`compile` map to this sink;
+`ast.literal_eval` does not (literals only), and a local `def exec(...)`
+is not the builtin. Same `--no-scope-check` opt-out.
+
+E0719, E0720 and E0731 also accept an explicit `trusted(...)` argument —
 the auditable trust boundary (the dual of `reveal`/`redact`) for a vetted
 dynamic source (a config bundle, a template from a trusted store). It is
-deliberately narrow: only these two no-sanitizer sinks honor it, and it
+deliberately narrow: only these three no-sanitizer sinks honor it, and it
 only relaxes the check, so it is strictly non-breaking. Wrapping
 attacker-controlled input in `trusted()` is the one misuse — visible in
 review by construction.

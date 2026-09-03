@@ -6,7 +6,7 @@ written out thirteen times:
 
   * **marker-flow** (6 rows) — a value carrying a taint marker reaches a
     sink without passing through that marker's sanctioned exit.
-  * **literal-or-wrapper** (7 rows) — an argument at a sink must be a
+  * **literal-or-wrapper** (8 rows) — an argument at a sink must be a
     fixed literal or the result of a sanctioned wrapper call. Anything
     else is reported with a short *reason* that lands in the message.
 
@@ -500,6 +500,17 @@ class ArgRule:
     `default`; that is not an omission — E0719/E0720 deliberately give a
     non-wrapper call no phrasing of its own, and E0711/E0720 give
     concatenation none.
+
+    `pin` is the reason returned when a wrapper call's FIRST argument —
+    the template, base or host the wrapper pins everything else to —
+    does not itself satisfy the rule. `sqlBind(userTemplate, v)` binds
+    `v` into whatever `userTemplate` says; `safeJoin(userBase, p)` keeps
+    `p` under a directory the attacker chose; `safeRedirect(userHost, p)`
+    pins to the attacker's host. Every wrapper used to be accepted on its
+    NAME alone (BUGS.md BUG-020). None for a rule whose wrapper has no
+    pinning slot: `trusted(x)` takes the dynamic value itself. A Call the
+    Python frontend emitted (`py`) is exempt — `shlex.quote(x)` and a
+    SQLAlchemy expression arrive as wrapper calls with no template slot.
     """
     wrappers: Tuple[str, ...]
     not_a_node: str
@@ -508,6 +519,7 @@ class ArgRule:
     concat: Optional[str] = None
     literal_bans: Tuple[Tuple[str, str], ...] = ()
     fixpoint: bool = True
+    pin: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -604,7 +616,7 @@ MARKER_FLOW_SPECS: Tuple[MarkerFlowSpec, ...] = (
 )
 
 
-# --- literal-or-wrapper: 6 rules, 7 rows -------------------------------
+# --- literal-or-wrapper: 7 rules, 8 rows -------------------------------
 
 _PATH_RULE = ArgRule(
     wrappers=("safeJoin",),
@@ -612,6 +624,13 @@ _PATH_RULE = ArgRule(
     call="path is a computed call - route it through safeJoin()",
     default="path is a dynamic expression - route it through safeJoin()",
     literal_bans=(("..", "literal path contains '..' - escapes its directory"),),
+    # No `pin` here, deliberately: `safeJoin(base, rel)` strips '..' and
+    # absolute roots from `rel`, and a base directory handed in as a
+    # PARAMETER is the idiom (7 corpus sites; both zipslip demos'
+    # fixed.aeth). The base is program-chosen, not the untrusted half,
+    # so pinning it would flag the sanctioned exit itself. Recorded as a
+    # residual in q1 rather than enforced (BUGS.md BUG-020 covers the
+    # three wrappers whose first argument IS the untrusted-facing text).
     # E0711 resolves safe names in ONE pass, not to a fixpoint — the only
     # row that does. A fixpoint proves a superset of names safe, i.e.
     # reports a subset of traversals, so switching is a relax-direction
@@ -627,6 +646,7 @@ _SQL_RULE = ArgRule(
     call="query is a computed call - use sqlBind(template, value)",
     concat="query is built by string concatenation - use sqlBind(...)",
     default="query is a dynamic expression - use sqlBind(template, value)",
+    pin="sqlBind template is not a fixed literal - binding cannot parameterize the query text itself",
 )
 
 _SHELL_RULE = ArgRule(
@@ -635,6 +655,7 @@ _SHELL_RULE = ArgRule(
     call="command is a computed call - use shellArg(template, value)",
     concat="command is built by string concatenation - use shellArg(...)",
     default="command is a dynamic expression - use shellArg(template, value)",
+    pin="shellArg template is not a fixed literal - quoting cannot protect the command line itself",
 )
 
 _REDIRECT_RULE = ArgRule(
@@ -643,6 +664,7 @@ _REDIRECT_RULE = ArgRule(
     call="target is a computed call - use safeRedirect(host, path)",
     concat="target is built by concatenation - use safeRedirect(host, path)",
     default="target is a dynamic expression - use safeRedirect(host, path)",
+    pin="safeRedirect host is not a fixed literal - the pinned host is itself steerable",
 )
 
 _TEMPLATE_RULE = ArgRule(
@@ -650,6 +672,17 @@ _TEMPLATE_RULE = ArgRule(
     not_a_node="template is not a fixed literal",
     concat="template is built by string concatenation",
     default="template is a dynamic expression, not a fixed literal",
+)
+
+# The template rule's contract exactly — literal-only, `trusted(...)` the
+# sole wrapper, no sanitizer exists — worded for the thing an interpreter
+# runs. There is no way to escape attacker-authored code into something
+# safe to execute.
+_CODE_RULE = ArgRule(
+    wrappers=(TRUSTED,),
+    not_a_node="source is not a fixed literal",
+    concat="source is built by string concatenation",
+    default="source is a dynamic expression, not a fixed literal",
 )
 
 _DESERIALIZE_RULE = ArgRule(
@@ -727,6 +760,15 @@ LITERAL_OR_WRAPPER_SPECS: Tuple[LiteralOrWrapperSpec, ...] = (
                     "entity resolution (no file read, no SSRF, no billion-"
                     "laughs)"),
     ),
+    LiteralOrWrapperSpec(
+        name="check_code_injection", code="E0731", sinks=("evalCode",), rule=_CODE_RULE,
+        message=("function {fn!r} executes dynamic code via {sink!r} "
+                 "({reason}); an interpreter fed attacker-authored source "
+                 "is arbitrary code execution (code injection)"),
+        suggestion=("keep the source a fixed string literal and never build "
+                    "code from input; a script that genuinely ships with the "
+                    "application may be asserted with trusted(...)"),
+    ),
 )
 
 
@@ -768,6 +810,13 @@ def _arg_reason(node: Any, safe_names: Set[str], rule: ArgRule) -> Optional[str]
         return None
     if kind == "Call":
         if callee_name(node) in rule.wrappers:
+            if rule.pin is None or node.get("py"):
+                return None
+            # The wrapper pins everything to its first argument; that
+            # argument has to be pinned itself (BUG-020).
+            args = node.get("args") or []
+            if not args or _arg_reason(args[0], safe_names, rule) is not None:
+                return rule.pin
             return None
         return rule.call if rule.call is not None else rule.default
     if kind == "Ident" and node.get("name") in safe_names:

@@ -1078,6 +1078,107 @@ def test_let_count_is_unchanged_by_seeded_bindings():
     print("BUG-012: parameters seed an opaque Assign, not a Let")
 
 
+# --- E0731 and the slice-2 sink rows -------------------------------------
+
+def test_code_injection_sinks_fire():
+    for src in ("def f(code):\n    exec(code)\n",
+                "def f(expr):\n    return eval(expr)\n",
+                "def f(src):\n    return compile(src, '<s>', 'exec')\n",
+                "def f(code, ns):\n    exec(code, ns)\n",
+                "def f(x):\n    return eval(f'{x}+1')\n",
+                "def f(code):\n    exec(source=code)\n",
+                "async def f(code):\n    await run(exec(code))\n"):
+        assert "E0731" in _codes(src), src
+    for src in ("def f():\n    exec('print(1)')\n",
+                "import ast\ndef f(x):\n    return ast.literal_eval(x)\n",
+                "def exec(c):\n    return c\ndef f(code):\n    return exec(code)\n",
+                "def f(s, x):\n    return s.exec(x)\n"):
+        assert "E0731" not in _codes(src), src
+    once = "def f(src):\n    exec(compile(src, '<s>', 'exec'))\n"
+    assert _codes(once).count("E0731") == 1, _codes(once)
+    print("E0731: exec/eval/compile on a non-literal fire once; literal, literal_eval, shadow, method clean")
+
+
+def test_slice2_sink_rows_fire():
+    shapes = {
+        "torch.load": ("import torch\ndef f(p):\n    return torch.load(p)\n", "E0720"),
+        "torch.load weights_only": ("import torch\ndef f(p):\n    return torch.load(p, weights_only=True)\n", None),
+        "joblib": ("import joblib\ndef f(p):\n    return joblib.load(p)\n", "E0720"),
+        "cloudpickle": ("import cloudpickle\ndef f(b):\n    return cloudpickle.loads(b)\n", "E0720"),
+        "numpy allow_pickle": ("import numpy as np\ndef f(p):\n    return np.load(p, allow_pickle=True)\n", "E0720"),
+        "numpy default": ("import numpy as np\ndef f(p):\n    return np.load(p)\n", None),
+        "yaml load_all": ("import yaml\ndef f(s):\n    return list(yaml.load_all(s))\n", "E0720"),
+        "getoutput": ("import subprocess\ndef f(c):\n    return subprocess.getoutput('ls ' + c)\n", "E0714"),
+        "create_subprocess_shell": ("import asyncio\nasync def f(c):\n    return await asyncio.create_subprocess_shell('ls ' + c)\n", "E0714"),
+        "argv -c": ("import subprocess\ndef f(c):\n    subprocess.run(['bash', '-c', 'ls ' + c])\n", "E0714"),
+        "argv -c literal": ("import subprocess\ndef f():\n    subprocess.run(['bash', '-c', 'ls -l'])\n", None),
+        "argv plain": ("import subprocess\ndef f(c):\n    subprocess.run(['ls', '-l', c])\n", None),
+        "exec_command": ("def f(client, c):\n    return client.exec_command('ls ' + c)\n", "E0714"),
+        "from_string": ("def f(env, t):\n    return env.from_string(t).render()\n", "E0719"),
+        "mako": ("from mako.template import Template\ndef f(t):\n    return Template(t)\n", "E0719"),
+        "fetchrow": ("async def f(conn, x):\n    return await conn.fetchrow('SELECT ' + x)\n", "E0713"),
+        "read_sql": ("import pandas as pd\ndef f(con, q):\n    return pd.read_sql(q, con)\n", "E0713"),
+        "RedirectResponse": ("from starlette.responses import RedirectResponse\ndef f(u):\n    return RedirectResponse(u)\n", "E0718"),
+        "minidom.parse": ("from xml.dom import minidom\ndef f(fh):\n    return minidom.parse(fh)\n", "E0727"),
+    }
+    bad = []
+    for k, (s, code) in shapes.items():
+        got = [c for c in _codes(s) if c in SINK_CODES]
+        if code is not None and code not in got:
+            bad.append((k, "silent", got))
+        if code is None and got:
+            bad.append((k, "over-flag", got))
+    assert not bad, bad
+    from aether.py_frontend import mapping_table
+    m = mapping_table()
+    assert "torch.load" in m["sink_guards"] and "from_string" in m["sink_by_method"]
+    print(f"slice 2: {len(shapes)} sink-row shapes behave; tables auditable")
+
+
+def test_unreadable_and_skipped_are_visible_in_every_mode():
+    import json as _json
+    import subprocess as sp
+    import tempfile
+
+    def run(files, *global_flags, target=".", sub=()):
+        """`--json` is a GLOBAL option (before the subcommand); `--sarif`
+        belongs to `check-py` itself (after the target)."""
+        with tempfile.TemporaryDirectory() as d:
+            for rel, src in files.items():
+                p = os.path.join(d, *rel.split("/"))
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(src)
+            r = sp.run([sys.executable, "-B", "-m", "transpiler.aether.cli",
+                        *global_flags, "check-py",
+                        os.path.join(d, *target.split("/")), *sub],
+                       cwd=ROOT, capture_output=True, text=True)
+        return r.returncode, r.stdout, r.stderr
+
+    files = {"app/bad.py": "def f(:\n", "app/ok.py": _CMDI_SRC,
+             "build/gen.py": _CMDI_SRC}
+    rc, out, err = run(files, "--json")
+    js = _json.loads(out)
+    assert rc == 2 and js["unreadable"] and js["unreadable"][0]["detail"], js["unreadable"]
+    assert js["skipped_dirs"] == ["build"], js["skipped_dirs"]
+    assert "could not parse" in err and "skipped as vendored/build output" in err, err
+    rc, out, err = run(files, sub=("--sarif",))
+    doc = _json.loads(out)
+    notes = doc["runs"][0]["invocations"][0]["toolExecutionNotifications"]
+    assert len(notes) == 1 and "could not parse" in notes[0]["message"]["text"], notes
+    res = doc["runs"][0]["results"][0]
+    assert "startColumn" in res["locations"][0]["physicalLocation"]["region"]
+    assert res["properties"]["suggestion"], res
+    assert "could not parse" in err, err
+    rc, out, err = run(files)
+    assert rc == 2 and "could not parse" in err and "1 unparseable" in out \
+        and "1 dir(s) skipped" in out, (out, err)
+    # an unparseable file alone never fails the run, in any mode
+    rc, out, err = run({"only.py": "def f(:\n"}, target="only.py")
+    assert rc == 0 and "could not parse" in err, (rc, out, err)
+    print("cli: unreadable files and skipped dirs reported in json/sarif/text; exit codes agree")
+
+
 if __name__ == "__main__":
     test_body_is_no_longer_discarded()
     test_assign_becomes_let()
@@ -1159,4 +1260,7 @@ if __name__ == "__main__":
     test_deep_expression_loses_one_scope_not_the_file()
     test_keyword_only_sink_argument_is_judged()
     test_let_count_is_unchanged_by_seeded_bindings()
+    test_code_injection_sinks_fire()
+    test_slice2_sink_rows_fire()
+    test_unreadable_and_skipped_are_visible_in_every_mode()
     print("PY FRONTEND: ALL TESTS PASS")
