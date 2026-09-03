@@ -608,7 +608,7 @@ sentinel before `stmt = select(...)` binds nothing.
 `bench/py_frontend/corpus/totality_repro.py` carries twelve silent
 shapes and seven documented fixes, all labelled.
 
-### BUG-013  `var` bindings and `x = ...` re-assignments were invisible to every binding walker (false accepts)  [OPEN]
+### BUG-013  `var` bindings and `x = ...` re-assignments were invisible to every binding walker (false accepts)  [FIXED b30d7f1]
 test: tests/test_effect_scope.py
 
 
@@ -641,7 +641,7 @@ proofs that need "bound exactly once". Flag-more only. The survey's
 in-memory rewrite over 418 parseable `.aeth` changed 0 files; the gate
 confirms 0 corpus deltas.
 
-### BUG-014  `for` loop variables and match-EXPRESSION arm bindings did not carry taint (false accepts)  [OPEN]
+### BUG-014  `for` loop variables and match-EXPRESSION arm bindings did not carry taint (false accepts)  [FIXED b30d7f1]
 test: tests/test_effect_scope.py
 
 
@@ -654,7 +654,7 @@ was exit 0. Fix: the taint fixpoint treats a `For` target over a tainted
 iterable and every arm binding of a tainted match expression as tainted
 (every arm, every binding — conservative).
 
-### BUG-015  an alias of a STDLIB sink hid it from every detector and from E0801 (false accept)  [OPEN]
+### BUG-015  an alias of a STDLIB sink hid it from every detector and from E0801 (false accept)  [FIXED b30d7f1]
 test: tests/test_effect_scope.py
 
 
@@ -669,7 +669,7 @@ Fix: `_fn_aliases` targets extended with the stdlib sink names and
 sanitizer/unwrapper is still never honoured (flag-more only). E0716/E0717
 keep demanding their proofs through the alias.
 
-### BUG-016  a record carrying a marker field reached a sink whole, unflagged (false accept)  [OPEN]
+### BUG-016  a record carrying a marker field reached a sink whole, unflagged (false accept)  [FIXED b30d7f1]
 test: tests/test_effect_scope.py
 
 
