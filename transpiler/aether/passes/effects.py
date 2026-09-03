@@ -45,6 +45,7 @@ from .detector_specs import (
     _marker_source_fns, _marker_param_mask, _marker_field_names, _expr_leaks_marked,
     _fn_aliases, _aliased_mask, _marked_taint,
     _marked_records, _record_fns, _sink_targets, _walk_binds, _bind_target,
+    marker_sink_sanitizers, param_sink_reach,
     _BIND_KINDS,
 )
 
@@ -588,8 +589,12 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
     user-declared function parameter not typed with that marker."""
     decls = {d["name"]: d for d in ast.get("decls", [])
              if d.get("kind") == "FunctionDecl"}
+    reach = param_sink_reach(ast)          # BUG-023: which sink a param feeds
+    sink_san = marker_sink_sanitizers()    # marker -> sink -> its sanitizer
     diags: List[Diagnostic] = []
     for marker, unwraps in _BOUNDARY_MARKERS.items():
+        row_san = sink_san.get(marker, {})
+        sanitizers = frozenset(row_san.values())
         src_fns = _marker_source_fns(ast, marker)
         pmask = _marker_param_mask(ast, marker)
         mfields = _marker_field_names(ast, marker)
@@ -609,13 +614,69 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
                 continue
             fn = d["name"]
             fpos = d.get("pos") or {"line": 0, "column": 0}
+            # Parameters of THIS function declared with a function type
+            # (`grammar/grammar.ebnf` line 88). A call through one of
+            # these reaches a callee chosen by the caller's caller —
+            # invisible to every pass here (BUGS.md BUG-022).
+            ftparams = {p["name"] for p in d.get("params", [])
+                        if isinstance(p.get("type"), dict)
+                        and p["type"].get("kind") == "FunctionType"}
+            # An alias of one is the same callee (BUGS.md BUG-025):
+            # `let g = f  g(x)` reaches whatever the caller supplied,
+            # exactly as `f(x)` does. Matching the literal callee name
+            # only let one `let` reopen the laundering BUG-022 closed.
+            ft_al = _fn_aliases(d, frozenset(ftparams)) if ftparams else {}
+            leaks = lambda node, uw: _expr_leaks_marked(   # noqa: E731
+                node, tainted, uw, src_l, pmask_l, mfields, rec_names)
             for call in walk(d.get("body", []), "Call"):
                 cname = callee_name(call)
                 direct = decls.get(cname)
                 cands = [direct] if direct is not None else \
                     [decls[t] for t in sorted(al.get(cname, set())) if t in decls]
                 if not cands:
-                    continue  # stdlib / unknown: covered by sink passes
+                    ftn = cname if cname in ftparams else next(
+                        iter(sorted(ft_al.get(cname, set()))), None)
+                    if ftn is None:
+                        continue  # stdlib / unknown: covered by sink passes
+                    # No sanctioned crossing exists here on purpose: a
+                    # function TYPE's parameter types are not checked
+                    # against the function that actually arrives, so
+                    # declaring `function(Secret<String>) returns Unit`
+                    # would be an exit that proves nothing. Unwrap at the
+                    # call site instead.
+                    for arg in call.get("args") or []:
+                        if not leaks(arg, unwraps):
+                            continue
+                        pos = call.get("pos") or fpos
+                        diags.append(Diagnostic(
+                            code="E0729",
+                            category="capability",
+                            severity="error",
+                            message=(
+                                f"function {fn!r} passes a {marker}<...>-marked "
+                                f"value through function-typed parameter "
+                                f"{ftn!r}"
+                                + ("" if ftn == cname
+                                   else f" (through alias {cname!r})")
+                                + f"; the callee is not known at analysis "
+                                f"time, so the marker is erased and every sink "
+                                f"check goes blind (taint laundering)"
+                            ),
+                            position=Position(pos.get("line", 0),
+                                              pos.get("column", 0)),
+                            suggestion=(
+                                f"unwrap explicitly at the call site via one "
+                                f"of: " + ", ".join(sorted(unwraps)) + "(...); "
+                                f"a function-typed parameter is not a sanctioned "
+                                f"crossing, because nothing checks which function "
+                                f"arrives in it"
+                            ),
+                            confidence=1.0,
+                            extra={"function": fn, "callee": cname,
+                                   "param": ftn, "marker": marker,
+                                   "via": "function_type"},
+                        ))
+                    continue
                 for callee in cands:
                     params = callee.get("params", [])
                     for i, arg in enumerate(call.get("args") or []):
@@ -623,10 +684,50 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
                             break
                         if _type_carries_marker(params[i].get("type"), marker, carriers):
                             continue  # marker declared — taint travels
-                        if not _expr_leaks_marked(arg, tainted, unwraps,
-                                                  src_l, pmask_l, mfields, rec_names):
-                            continue
+                        why = ""
+                        extra_reason = {}
+                        if not leaks(arg, unwraps):
+                            # Cleared — but by WHICH unwrapper? A row
+                            # sanitizer is sink-specific, and
+                            # `boundary_markers()` unions them all
+                            # (BUGS.md BUG-023). Accept only when the one
+                            # that cleared it is right for every sink the
+                            # callee's parameter feeds.
+                            reached = reach.get(callee["name"], {}).get(i, frozenset())
+                            wrong = [s for s in sorted(reached) if s in row_san]
+                            if not wrong or not leaks(arg, frozenset()):
+                                continue
+                            mism = None
+                            for u in sorted(unwraps):
+                                if leaks(arg, {u}):
+                                    continue          # not what cleared it
+                                bad = [s for s in wrong if row_san[s] != u]
+                                if u not in sanitizers or not bad:
+                                    mism = None       # trusted(...) assertion,
+                                    break             # or the right sanitizer
+                                if mism is None:
+                                    mism = (u, bad[0], row_san[bad[0]])
+                            if mism is None:
+                                continue
+                            why = (f"; it was cleared with {mism[0]}(...), but "
+                                   f"inside {callee['name']!r} it reaches "
+                                   f"{mism[1]!r} unsanitized, whose sanitizer "
+                                   f"is {mism[2]}")
+                            extra_reason = {"cleared_with": mism[0],
+                                            "reaches_sink": mism[1],
+                                            "needs": mism[2]}
                         pos = call.get("pos") or fpos
+                        if why:
+                            fix = (f"apply {extra_reason['needs']}(...) instead - "
+                                   f"it is the sanitizer for "
+                                   f"{extra_reason['reaches_sink']!r} - or type "
+                                   f"the parameter as {marker}<...> so the marker "
+                                   f"travels and each sink is checked in place")
+                        else:
+                            fix = (f"type the parameter as {marker}<...> so the "
+                                   f"marker travels with the value, or unwrap "
+                                   f"explicitly at the call site via one of: "
+                                   + ", ".join(sorted(unwraps)) + "(...)")
                         diags.append(Diagnostic(
                             code="E0729",
                             category="capability",
@@ -637,20 +738,15 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
                                 f"{callee['name']!r}, which is not typed "
                                 f"{marker}<...>; inside the callee the marker is "
                                 f"erased and every sink check goes blind "
-                                f"(taint laundering)"
+                                f"(taint laundering)" + why
                             ),
                             position=Position(pos.get("line", 0),
                                               pos.get("column", 0)),
-                            suggestion=(
-                                f"type the parameter as {marker}<...> so the "
-                                f"marker travels with the value, or unwrap "
-                                f"explicitly at the call site via one of: "
-                                + ", ".join(sorted(unwraps)) + "(...)"
-                            ),
+                            suggestion=fix,
                             confidence=1.0,
                             extra={"function": fn, "callee": callee["name"],
                                    "param": params[i].get("name"),
-                                   "marker": marker},
+                                   "marker": marker, **extra_reason},
                         ))
     return diags
 
@@ -1844,6 +1940,11 @@ def check_effects(ast: Dict[str, Any]) -> List[Diagnostic]:
         caller_effects = _declared_effects(d)
         pos = d.get("pos") or {"line": 0, "column": 0}
         al = _fn_aliases(d, alias_targets)
+        # A bare Ident argument names a FUNCTION only when nothing local
+        # shadows it. A `String` PARAMETER called `logIt`, or
+        # `let notify = "hello"`, is a value — resolving it by global
+        # name invented an effect for a string (BUGS.md BUG-024).
+        local = {p.get("name") for p in d.get("params", [])}             | {n for n, _, _ in _walk_binds(d.get("body", []))}
 
         for call in walk(d.get("body", []), "Call"):
             name = callee_name(call)
@@ -1851,7 +1952,29 @@ def check_effects(ast: Dict[str, Any]) -> List[Diagnostic]:
                 continue
             direct = name in user_effects or name in _STDLIB_EFFECTS \
                 or name.endswith("?") or name.endswith("!")
-            for callee in ([name] if direct else sorted(al.get(name, set()))):
+            # A function passed as a VALUE runs under this call, so its
+            # effects are the caller's obligation just as a callee's are
+            # (BUGS.md BUG-022): `apply(logIt, s)` from a `pure` caller
+            # performs `log`. A pure function value adds nothing, so
+            # `map(double, xs)` stays clean.
+            passed: List[Tuple[str, str]] = []
+            for a in call.get("args") or []:
+                if not isinstance(a, dict) or a.get("kind") != "Ident":
+                    continue
+                nm = a.get("name")
+                if nm in union_cases:
+                    continue
+                if nm in local:
+                    # Shadowed: only an alias binding (`let g = logIt`)
+                    # still names a function, and `al` resolved it.
+                    passed += [(t, nm) for t in sorted(al.get(nm, set()))]
+                elif nm in user_effects or nm in _STDLIB_EFFECTS:
+                    passed.append((nm, nm))
+            targets: List[Tuple[str, Optional[str]]] = [
+                (c, None) for c in
+                ([name] if direct else sorted(al.get(name, set())))]
+            targets += passed
+            for callee, as_value in targets:
                 if callee in user_effects:
                     callee_effects = user_effects[callee]
                 else:
@@ -1862,15 +1985,23 @@ def check_effects(ast: Dict[str, Any]) -> List[Diagnostic]:
                         continue
                     missing_pretty = _format_effect(callee_eff)
                     caller_pretty = _format_effect_list(caller_effects)
-                    via = "" if callee == name else f" (through alias {name!r})"
+                    if as_value is not None:
+                        alias = ("" if as_value == callee
+                                 else f" (alias of {callee!r})")
+                        what = (f"passes {as_value!r}{alias} as a value to "
+                                f"{name!r}, whose effect {missing_pretty} is "
+                                f"not covered by the caller")
+                    else:
+                        via = "" if callee == name else f" (through alias {name!r})"
+                        what = (f"calls {callee!r}{via} which has effect "
+                                f"{missing_pretty} not covered by the caller")
                     diags.append(Diagnostic(
                         code="E0801",
                         category="effect",
                         severity="error",
                         message=(
                             f"function {caller_name!r} (effects {caller_pretty}) "
-                            f"calls {callee!r}{via} which has effect {missing_pretty} "
-                            f"not covered by the caller"
+                            + what
                         ),
                         position=Position(pos.get("line", 0), pos.get("column", 0)),
                         suggestion=(
@@ -1885,6 +2016,8 @@ def check_effects(ast: Dict[str, Any]) -> List[Diagnostic]:
                                 [list(p), a] for p, a in caller_effects
                             ],
                             "missing_effect": [list(callee_eff[0]), callee_eff[1]],
+                            **({"via": "function_value"}
+                               if as_value is not None else {}),
                         },
                     ))
     return diags

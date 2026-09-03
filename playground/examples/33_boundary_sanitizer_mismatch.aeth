@@ -1,0 +1,36 @@
+// expect: E0729
+// Example 33 — Wrong sanitizer at a boundary (iter 51, BUGS.md BUG-023).
+//
+// Aether's sanitizers are SINK-specific, and the diagnostics say so:
+// E0725's own hint ends "(sanitizeLog does NOT protect here)". Written
+// inline, `htmlResponse(sanitizeLog(u))` has always been refused.
+//
+// The boundary rule E0729 was coarser than the sink rules it protects.
+// `boundary_markers()` unions every Untrusted row's sanitizer into ONE
+// set — {sanitizeLog, htmlEscape, sanitizeHeader, csvEscape, trusted} —
+// and any member of it cleared the crossing, whatever the callee went on
+// to do with the value. So moving the sink one call away laundered it:
+// `render(sanitizeLog(u))` was exit 0 while `render` fed the same value
+// straight into `htmlResponse`.
+//
+// E0729 now summarises which sinks each callee parameter reaches and
+// demands the sanitizer THAT sink asks for. Stripping CR/LF does nothing
+// about `<script>`.
+//
+// The fix: `render(htmlEscape(u))`, or type the parameter
+// `s: Untrusted<String>` so the marker travels and E0725 judges the sink
+// in place.
+
+function render(s: String) returns String
+  effects pure
+do
+  return htmlResponse(s)
+end
+
+function handle(u: Untrusted<String>) returns String
+  effects pure
+do
+  // E0729: cleared with sanitizeLog(...), but render passes it to
+  // 'htmlResponse', whose sanitizer is htmlEscape.
+  return render(sanitizeLog(u))
+end

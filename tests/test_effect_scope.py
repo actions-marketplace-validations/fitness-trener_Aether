@@ -2743,6 +2743,209 @@ end
     print("E0713/E0711: literal template clean; safeJoin base stays unpinned")
 
 
+# --- Iter 51: BUG-022, function-typed parameters launder markers --------
+# `grammar/grammar.ebnf` line 88 DOES give the language function types.
+# A call through such a parameter has no decl to look up, so
+# check_marker_boundary's `if not cands: continue` let the marker
+# through and the sink passes never saw the real callee. There is no
+# sanctioned crossing here on purpose: a function TYPE's argument types
+# are not checked against the function that arrives.
+
+FN_TYPE_LAUNDER_SRC = """
+function apply(f: function(String) returns Unit, x: Secret<String>) returns Unit
+  effects log
+do
+  f(x)
+end
+
+function main(pw: Secret<String>) returns Unit
+  effects log
+do
+  apply(print, pw)
+end
+"""
+
+
+def test_function_typed_param_launder_rejected():
+    assert _mb_codes(FN_TYPE_LAUNDER_SRC) == ["E0729"], \
+        "a marker through a function-typed parameter must be refused"
+    d = check_marker_boundary(parse(FN_TYPE_LAUNDER_SRC, "<mb>"))[0]
+    assert d.extra.get("via") == "function_type"
+    assert "function-typed parameter" in d.message
+    print("E0729: marker through function-typed parameter rejected")
+
+
+def test_function_typed_param_unwrapped_clean():
+    src = """
+function apply(f: function(String) returns Unit, x: Secret<String>) returns Unit
+  effects log
+do
+  f(reveal(x))
+end
+
+function main(pw: Secret<String>) returns Unit
+  effects log
+do
+  apply(print, reveal(pw))
+end
+"""
+    assert _mb_codes(src) == [], \
+        "unwrapping at the call site is the sanctioned exit here"
+    print("E0729: unwrapped call through a function-typed param passes clean")
+
+
+def test_function_typed_param_untainted_clean():
+    src = """
+function apply(f: function(String) returns Unit, x: String) returns Unit
+  effects log
+do
+  f(x)
+end
+"""
+    assert _mb_codes(src) == [], "no marker in play, nothing to launder"
+    print("E0729: plain value through a function-typed param passes clean")
+
+
+# --- Iter 51: BUG-023, boundary sanitizer was marker-wide ---------------
+# boundary_markers() unions EVERY row's sanitizer per marker, so
+# sanitizeLog(...) cleared a crossing into a callee that feeds
+# htmlResponse - whose sanitizer is htmlEscape. The inline shape
+# htmlResponse(sanitizeLog(u)) has always fired E0725; only the crossing
+# was blind.
+
+WRONG_SANITIZER_SRC = """
+function render(s: String) returns String
+  effects pure
+do
+  return htmlResponse(s)
+end
+
+function handle(u: Untrusted<String>) returns String
+  effects pure
+do
+  return render(sanitizeLog(u))
+end
+"""
+
+
+def test_wrong_boundary_sanitizer_rejected():
+    assert _mb_codes(WRONG_SANITIZER_SRC) == ["E0729"], \
+        "a per-sink sanitizer must not clear a crossing into a different sink"
+    d = check_marker_boundary(parse(WRONG_SANITIZER_SRC, "<mb>"))[0]
+    assert d.extra.get("cleared_with") == "sanitizeLog"
+    assert d.extra.get("reaches_sink") == "htmlResponse"
+    assert d.extra.get("needs") == "htmlEscape"
+    assert "whose sanitizer is htmlEscape" in d.message
+    print("E0729: wrong-sink boundary sanitizer rejected")
+
+
+def test_right_boundary_sanitizer_clean():
+    src = WRONG_SANITIZER_SRC.replace("sanitizeLog(u)", "htmlEscape(u)")
+    assert _mb_codes(src) == [], \
+        "the sanitizer the reached sink demands must still clear the crossing"
+    print("E0729: matching boundary sanitizer passes clean")
+
+
+def test_boundary_sanitizer_no_sink_in_callee_clean():
+    src = """
+function shout(s: String) returns String
+  effects pure
+do
+  return s
+end
+
+function handle(u: Untrusted<String>) returns String
+  effects pure
+do
+  return shout(sanitizeLog(u))
+end
+"""
+    assert _mb_codes(src) == [], \
+        "a callee whose parameter reaches no modeled sink keeps the old rule"
+    print("E0729: sanitized crossing into a sink-free callee passes clean")
+
+
+def test_boundary_trusted_still_clears():
+    src = WRONG_SANITIZER_SRC.replace("sanitizeLog(u)", "trusted(u)")
+    assert _mb_codes(src) == [], \
+        "trusted(...) is an explicit assertion, not a per-sink sanitizer"
+    print("E0729: trusted(...) still clears the crossing")
+
+
+def test_function_typed_param_alias_rejected():
+    # Review of iter-51: `ftparams` matched the LITERAL callee name, so
+    # one `let` reopened the laundering BUG-022 had just closed.
+    src = FN_TYPE_LAUNDER_SRC.replace("  f(x)", "  let g = f\n  g(x)")
+    assert _mb_codes(src) == ["E0729"],         "an alias of a function-typed parameter is the same callee"
+    d = check_marker_boundary(parse(src, "<mb>"))[0]
+    assert d.extra.get("param") == "f" and d.extra.get("callee") == "g"
+    assert "through alias 'g'" in d.message
+    print("E0729: alias of a function-typed parameter rejected (BUG-025)")
+
+
+def test_boundary_callee_sanitizes_internally_clean():
+    # Review of iter-51: `param_sink_reach` summarised with NO unwrappers,
+    # so a callee that applies the sink's own sanitizer was reported as
+    # feeding it raw — and the hint said to sanitize a second time.
+    src = """
+function render(s: String) returns String
+  effects pure
+do
+  return htmlResponse(htmlEscape(s))
+end
+
+function handle(u: Untrusted<String>) returns String
+  effects pure
+do
+  return render(sanitizeLog(u))
+end
+"""
+    assert _mb_codes(src) == [],         "a parameter reaching a sink only through that sink's sanitizer "         "does not reach it raw"
+    print("E0729: callee that sanitizes internally passes clean (BUG-024)")
+
+
+def test_boundary_callee_wraps_without_sanitizing_still_rejected():
+    # The prune must not swallow the real case: any other wrapper leaks.
+    src = """
+function render(s: String) returns String
+  effects pure
+do
+  return htmlResponse(concat(s, "!"))
+end
+
+function handle(u: Untrusted<String>) returns String
+  effects pure
+do
+  return render(sanitizeLog(u))
+end
+"""
+    assert _mb_codes(src) == ["E0729"],         "concat(...) is nobody's sanitizer; the sink is still reached raw"
+    d = check_marker_boundary(parse(src, "<mb>"))[0]
+    assert d.extra.get("needs") == "htmlEscape"
+    print("E0729: a non-sanitizing wrapper still reaches the sink")
+
+
+def test_boundary_sanitizer_matches_writefile_sink():
+    # writeFile's CONTENTS slot only: the path argument is not the sink
+    # position, so a param used only as a path reaches nothing.
+    src = """
+function save(p: String, body: String) returns Unit
+  effects fs.write
+do
+  let _r: Result<Unit, String> = writeFile(p, body)
+end
+
+function handle(u: Untrusted<String>) returns Unit
+  effects fs.write
+do
+  save("/tmp/out", sanitizeLog(u))
+end
+"""
+    assert _mb_codes(src) == [], \
+        "writeFile is no Untrusted row's sink, so no sanitizer is demanded"
+    print("E0729: unmodeled (marker, sink) pair demands nothing")
+
+
 if __name__ == "__main__":
     test_authority_predicate()
     test_broad_rejected()
@@ -2917,4 +3120,15 @@ if __name__ == "__main__":
     test_code_trusted_clean()
     test_wrapper_pinning_argument_rejected()
     test_wrapper_literal_pin_clean()
+    test_function_typed_param_launder_rejected()
+    test_function_typed_param_unwrapped_clean()
+    test_function_typed_param_untainted_clean()
+    test_wrong_boundary_sanitizer_rejected()
+    test_right_boundary_sanitizer_clean()
+    test_boundary_sanitizer_no_sink_in_callee_clean()
+    test_boundary_trusted_still_clears()
+    test_function_typed_param_alias_rejected()
+    test_boundary_callee_sanitizes_internally_clean()
+    test_boundary_callee_wraps_without_sanitizing_still_rejected()
+    test_boundary_sanitizer_matches_writefile_sink()
     print("E0710..E0731 ALL REACH-SCOPE TESTS PASS")
