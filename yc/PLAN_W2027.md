@@ -181,10 +181,13 @@ human who is not you has replied.
 10. Target: 20 sent, 4 replies, 2 calls, 1 verbal.
 
 ### Sep 22 – Oct 5 · Iterate on what users hit
-11. The loop resumes on **user-reported** gaps only. Expected first ones:
-    statements assembled in helpers (`stmt = self._base_query()`, ~100
-    of the remaining 381 E0713), other query builders, `def`s under
-    `try:` not analysed. Each gets the BUG-NNN treatment.
+11. The loop resumes on **user-reported** gaps only. The gaps this
+    plan used to expect are spent or repriced: `def`s under `try:` are
+    analysed since BUG-012, and a source-level census cut the
+    helper-assembled statements from "~100" to 34
+    (`bench/framework_scan/e0713_census_2026-09-03.txt`), which does not
+    pay for the machinery. What remains is whatever a user actually
+    hits. Each gets the BUG-NNN treatment.
 12. Target: 1 written design partner, 3 verbal.
 
 ### Oct 6–12 · Application v9

@@ -111,6 +111,7 @@ Default-on, no annotations required:
 | `E0720` | Insecure deserialization | 502 |
 | `E0723` | Hardcoded credential | 798 |
 | `E0727` | XML external entity (XXE) | 611 |
+| `E0731` | Code injection — `exec`/`eval`/`compile` of dynamic source | 94, 95 |
 
 `--strict` adds `E0711` (dynamic filesystem paths) and the `E0701`
 capability inventory. Both are **held back by measurement, not taste**:
@@ -135,7 +136,8 @@ They run on Aether source, where the access-control rows live — see
 Further limits, stated plainly: the analysis is **intraprocedural and
 syntactic** — over-flag, never miss *within the modeled surface*, which is
 not a soundness proof. Sinks are matched by method name on receivers of
-unresolved type. Single file, no cross-module resolution, no control flow.
+unresolved type; those findings are rated 0.6 confidence, so they sort
+below the import-resolved findings of the same risk rating. Single file, no cross-module resolution, no control flow.
 Full list in [`bench/py_frontend/REPORT.md`](https://github.com/fitness-trener/Aether/blob/main/bench/py_frontend/REPORT.md) §4.
 
 ## Install
@@ -173,8 +175,17 @@ the findings you can actually fix:
     scanned 128 file(s) · 3 with findings · 1 unparseable · 0 analyzer error(s)
     findings by code: E0713x2, E0723x1
 
-Findings sort worst-first by the per-code risk rating, so the top of a long
-scan is the part worth reading.
+Findings sort worst-first by the per-code risk rating, then, within a
+rating, most-certain first: a callee resolved through the file's imports
+rates 0.95 confidence, a method matched only by its name on a receiver of
+unknown type 0.6. `--min-confidence 0.9` hides the 0.6 findings — 628 of
+676 on the 15-framework corpus. It is a filter, not a verdict on what it
+hides (those are what the rules flag, measured over-flags included), and
+it filters the exit code too: a run whose only findings are below the
+floor exits 0. On a multi-core machine, trees of more than 32 files are
+analysed in parallel; `--jobs N` overrides (1,024 files: 241 s serially,
+69 s on 8 workers, byte-identical output). Details in
+[`docs/SCANNING.md`](https://github.com/fitness-trener/Aether/blob/main/docs/SCANNING.md).
 
 ## CI and GitHub Code Scanning
 
@@ -195,7 +206,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: fitness-trener/Aether@v0.3.1
+      - uses: fitness-trener/Aether@v0.4.0
         with:
           path: 'src tests'      # default: .
           strict: 'false'        # adds E0711 + the E0701 inventory
@@ -254,7 +265,7 @@ Working with the language directly:
     aether run   demos/payment_workflow/aether/main.aeth
     aether fmt   demos/payment_workflow/aether/main.aeth
     aether fix-loop demos/payment_workflow/broken.aeth       # deterministic AST repair
-    aether fix-loop demos/payment_workflow/broken.aeth --live # LLM repair (needs ANTHROPIC_API_KEY)
+    aether fix-loop demos/payment_workflow/broken.aeth --live # LLM repair: source checkout + ANTHROPIC_API_KEY
 
 `--json` on any command emits structured output for an agent to consume;
 the Python SDK is `from aether import sdk`, the same spelling installed or

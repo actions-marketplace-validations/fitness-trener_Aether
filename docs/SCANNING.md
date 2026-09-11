@@ -97,18 +97,20 @@ probability of exploitability.
 | what matched | confidence |
 |---|---|
 | a dotted path resolved through the file's imports (`pickle.loads`), or a sink guard | 0.95 |
-| a bare builtin (`exec`, `eval`, `open`), or a literal `["bash", "-c", cmd]` argv | 0.9 |
-| `compile()` — it builds a code object and executes nothing | 0.6 |
+| a bare builtin (`exec`, `eval`, `open`), a literal `["bash", "-c", cmd]` argv, or `exec(compile(src))` | 0.9 |
+| `compile()` on its own — it builds a code object and runs nothing (`exec(compile(...))` rates as `exec`) | 0.6 |
 | a METHOD NAME on a receiver whose type was never resolved (`cur.execute`, `env.from_string`) | 0.6 |
 | an Aether-source finding — the sink is spelled in the source, nothing was guessed | 1.0 |
 
-`--min-confidence FLOAT` hides everything below the floor. It is a filter
-on the output; it changes nothing about what the detectors found. On the
-15-framework corpus (`bench/framework_scan/`), 676 findings split
-0.95 x44, 0.9 x3, 0.6 x629 — so `--min-confidence 0.9` hides 629 of 676
-(93%), almost all of them `cursor.execute`-shaped SQL matched by name.
-That is a reading order, not a verdict: those findings are correct by
-Aether's rule and stay in the default output.
+`--min-confidence FLOAT` hides everything below the floor. It changes
+nothing about what the detectors found, but it filters the exit code as
+well as the output: a run whose only findings are below the floor exits
+0. On the 15-framework corpus (`bench/framework_scan/`), 676 findings
+split 0.95 x44, 0.9 x4, 0.6 x628 — so `--min-confidence 0.9` hides 628 of
+676 (93%): 624 method-name matches, almost all `cursor.execute`-shaped
+SQL, and 4 `compile()` calls whose result is never run. Those findings
+are what the rules are designed to flag, measured over-flags included,
+and they stay in the default output.
 
 Exit code: `0` = clean, `2` = findings **or an analyzer crash**. A file
 that cannot be parsed (py2 sources, templates, fixtures) is counted on its
@@ -121,7 +123,8 @@ detector must go red rather than silent.
 
 Default-on rows on Python: **E0713** SQL injection, **E0714** command
 injection, **E0718** open redirect, **E0719** SSTI, **E0720** insecure
-deserialization, **E0723** hardcoded credential, **E0727** XXE.
+deserialization, **E0723** hardcoded credential, **E0727** XXE, **E0731**
+code injection (`exec`/`eval`/`compile` of dynamic source).
 
 **What does not run on Python**, printed by the CLI on every invocation
 rather than left to assumption: `E0801` effect composition and the
