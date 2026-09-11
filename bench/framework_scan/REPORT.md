@@ -1,10 +1,12 @@
-# `aether check-py` on 15 AI-agent frameworks
+# `aether check-py` on 15 AI-agent packages
 
 **Date:** 2026-09-01, re-measured 2026-09-02 after BUG-010 and BUG-011,
 and again 2026-09-03 after BUG-012 (§7) and after iterations 49–50 (§8 — the
 tables in §1–§5 are the 2026-09-02 numbers; §8 supersedes the totals).
 Re-scanned 2026-09-11 at 0.4.0: 676 findings, the same set §8 lists, 0
 analyzer errors; confidence 0.95 ×44, 0.9 ×4, 0.6 ×628.
+**Corrected 2026-09-11:** §5 and §6 called the one upstream XML note
+DoS-class; re-run at full size, current CPython refuses the payload (§5).
 **Question:** `bench/pypi_scan/` scanned whatever happened to be in
 site-packages. What does the tool do on the population it actually claims
 to be for — the frameworks that generate and execute AI-written Python?
@@ -24,7 +26,8 @@ both moved the count from **1,055 findings to 411**, four of which are
 sinks that were invisible before. The useful output of this run is two
 bugs in Aether, not a bug in LangChain. At 0.4.0 the same files give 676
 findings — the scanner seeing code it had been blind to (§7), plus a new
-code-injection rule (§8) — and still no vulnerability.
+code-injection rule (§8). None of the findings I have read is a
+vulnerability, and I have not read all 676.
 
 ---
 
@@ -138,7 +141,7 @@ were silent on 2026-09-01:**
 |---|---|---|
 | `E0727` | `langchain_community/document_loaders/docugami.py:153` | `etree.parse(io.BytesIO(content))` — lxml's default parser, `from lxml import etree` under `try:`. **Version-dependent:** lxml < 5 resolved external entities by default; lxml ≥ 5 does not, and libxml2 caps amplification (both verified here on 6.1.1). The package does not pin lxml. |
 | `E0727` | `langchain_community/document_loaders/docugami.py:277` | same, on `response.content` |
-| `E0727` | `smolagents/default_tools.py:443` | `ET.fromstring(response.text)` on a Bing RSS response — stdlib, so DoS-class rather than XXE |
+| `E0727` | `smolagents/default_tools.py:443` | `ET.fromstring(response.text)` on a Bing RSS response — stdlib expat resolves no external entities and, from 2.7.2, refuses entity-expansion payloads (§5): hardening, not XXE or DoS |
 | `E0720` | `agno/utils/pickle.py:26` | `pickle.load(...)` with a function-local `import pickle`; a persistence helper, true by shape |
 
 The two docugami sites looked like the strongest finding of the exercise
@@ -179,8 +182,19 @@ the product.
 |---|---:|---|
 | `E0714` shell in agent runtimes / coding tools | 13 | true by shape, by-design context |
 | `E0720` pickle | 9 | 8 behind an explicit opt-in the maintainers wrote; 1 newly visible (agno, above) |
-| `E0727` XML on remote content | 6 | **1 upstream note posted**, [agno#9920](https://github.com/agno-agi/agno/issues/9920): `agno/knowledge/reader/sitemap_reader.py:123` — attacker-choosable sitemap URL into stdlib `ElementTree`, which expanded a 10⁶ entity payload to 3,000,000 chars here in 0.19s where `defusedxml` refuses it. A second note, on the docugami lxml sites and relevant only to lxml < 5, was drafted and not posted |
+| `E0727` XML on remote content | 6 | **1 upstream note posted**, [agno#9920](https://github.com/agno-agi/agno/issues/9920): `agno/knowledge/reader/sitemap_reader.py:123` — attacker-choosable sitemap URL into stdlib `ElementTree`. A 10⁶ entity payload expanded to 3,000,000 chars here in 0.19s; the issue's own 10-level payload and a quadratic-blowup payload are refused by expat's amplification limit (CPython 3.11.15, expat 2.7.4). Hardening for an interpreter built against an older expat, not a DoS on current CPython — see the correction below. A second note, on the docugami lxml sites and relevant only to lxml < 5, was drafted and not posted |
 | `E0719` the framework's own Jinja templates | 2 | by design |
+
+**A correction made 2026-09-11.** This section and §6 called the agno
+note DoS-class, "with a verified repro". The repro verified a 10⁶
+expansion, which is under expat's limit. At the issue's own size (ten
+levels of ten), stdlib `ElementTree` refuses it with `limit on input
+amplification factor (from DTD and entities) breached`, and so do
+`minidom` and `sax`. The Python docs put the risk at expat versions
+lower than 2.7.2, which an interpreter can still use when it is built
+against a system expat
+([XML security](https://docs.python.org/3/library/xml.html#xml-security)).
+The issue filed on agno makes the same overstatement.
 
 **A correction to the 2026-09-01 version of this section**, which called
 two of the E0714 sites "correctness bugs worth filing." Read again at
@@ -201,10 +215,12 @@ Fragile style, not a defect. Neither is filed.
   backend user, and a false-accept class (BUG-011) underneath it that no
   amount of reading the over-flags would have found — it took clearing
   them to see what was missing.
-- **No security vulnerability in any of the 15 frameworks.** The expected
-  outcome for widely-reviewed code. The nearest thing is agno's sitemap
-  reader feeding an attacker-choosable URL to stdlib `ElementTree` — a
-  DoS-class hardening note with a verified repro, not a CVE.
+- **None of the 411 findings is a reportable vulnerability.** That is a
+  statement about the findings, not the frameworks: an intraprocedural
+  checker cannot show a package has none. The expected outcome for
+  widely-reviewed code. The nearest thing is agno's sitemap reader
+  feeding an attacker-choosable URL to stdlib `ElementTree` — a
+  hardening note, not a CVE, and not a DoS on current CPython (§5).
 
 The honest one-line summary: **on the corpus Aether is aimed at, its
 best-covered detector produced 97% noise, fixing the noise exposed a
