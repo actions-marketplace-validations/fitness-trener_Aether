@@ -1,6 +1,7 @@
 # Python sink detectors — measured results
 
-**Date:** 2026-07-26
+**Date:** 2026-07-26; §0–§3 re-measured 2026-09-11 at 0.4.0 (the dated
+history in §3b and §3c is left as written).
 **Question:** with no rewrite, no `.aeth` port and no type annotations, how
 many of Aether's security detectors fire correctly on ordinary Python — and
 at what noise cost?
@@ -19,7 +20,8 @@ This report leads with the weakest number, per the house rule
 **In scope — the sink family**, which needs no annotations: E0711 path
 traversal, E0713 SQL injection, E0714 command injection, E0718 open
 redirect, E0719 SSTI, E0720 insecure deserialization, E0723 hardcoded
-credential, E0727 XXE.
+credential, E0727 XXE, and since 0.4.0 E0731 code injection
+(`exec`/`eval`/`compile` of dynamic source).
 
 **Out of scope, by construction, not by omission:**
 
@@ -44,18 +46,21 @@ zero security findings.**
 
 ## 1. Detection vs ground truth
 
-Ground truth: `bench/py_frontend/LABELS.json`, 19 labelled functions across
-8 files, each label taken from the file's own header comment naming the CWE
+Ground truth: `bench/py_frontend/LABELS.json`, **122 labelled functions
+across 14 files** at 0.4.0 (72 labelled with a sink code, 50 labelled
+clean), each label taken from the file's own header comment naming the CWE
 and the documented fix. The `bench/realworld_*` repros were written earlier,
 for the Aether ports, so their labels were not chosen to flatter this
-frontend.
+frontend. The set grew as later fixes (BUG-004, BUG-010 to BUG-012) and
+E0731 added their repro files with labels.
 
-| | count |
-|---|---|
-| **false negatives** | **0** |
-| **false positives** | **0** |
-| true positives | 10 |
-| labelled-clean functions correctly silent | 9 |
+| | 0.4.0 (2026-09-11) | first run (2026-07-26) |
+|---|---|---|
+| **false negatives** | **0** | **0** |
+| **false positives** | **0** | **0** |
+| true positives | 72 | 10 |
+| labelled-clean functions correctly silent | 50 | 9 |
+| labelled functions / files | 122 / 14 | 19 / 8 |
 
 Every vulnerable function produced its expected code; every `*_safe`
 function produced nothing. The safe half matters as much as the vulnerable
@@ -80,6 +85,7 @@ pass and not written as vulnerabilities.
 | E0711 | 11 | 10 |
 | E0713 | 1 | 1 |
 | E0720 | 1 | 1 |
+| E0731 *(from 0.4.0)* | 1 | 1 |
 
 Read individually rather than counted:
 
@@ -87,6 +93,10 @@ Read individually rather than counted:
   CWE-502; the corpus author planted it as a soundness trap.
 - **E0713 in `orm_03_migrations.py`** executes SQL read from a file. Intended
   in a migration runner, genuinely suspicious in general. Provenance-unknown.
+- **E0731 in `17_template_render.py`** (from 0.4.0) is
+  `eval(expr, {"__builtins__": {}}, context)`, the "sandboxed" eval.
+  True by shape: emptying `__builtins__` does not stop attribute walking
+  from reaching them again.
 - **E0711 in `fa_04_upload.py` is a TRUE positive**, and a good one:
   ```python
   dest = "/data/uploads/" + file.filename   # attacker-controlled
@@ -105,12 +115,25 @@ different reason — on Python the module policy is empty by construction, so
 every I/O call yields one. That is an inventory, and `tools/py_surface.py`
 already reports it properly.
 
-Everything else ships default-on: **9 of 76 benign modules produce a
-default-set finding, and 2 of those are real bugs.**
+Everything else ships default-on. Measured with the default `aether
+check-py` at 0.4.0, **3 of 76 benign modules produce a default-set
+finding**: `trap_05_pickle.py` (a real bug, planted), `17_template_render.py`
+(the restricted-builtins `eval`, true by shape) and `orm_03_migrations.py`
+(SQL read from a file, provenance unknown). With `--strict` it is 11, and
+the 8 extra modules are all E0711. The first version of this report said
+9 of 76 here, which its own table did not support (two non-E0711
+findings); the 3 is measured with the CLI's default set.
 
 ---
 
 ## 3. Differential vs bandit
+
+**At 0.4.0** `run_bench.py` runs this comparison over all 14 labelled
+files, and Aether models 9 rows on Python (E0731 code injection joined in
+0.4.0; bandit reports B102/B307 on `code_injection_repro.py`, and
+`run_bench.py --json` has the per-line comparison). The table and the
+narrow claim below are the 2026-07-26 run over the first 8 files, kept as
+written.
 
 Same 8 labelled files. `python -m bandit -f json -q <file>`, bandit 1.9.4
 on CPython 3.11.15.

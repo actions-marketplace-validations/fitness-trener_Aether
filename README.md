@@ -3,9 +3,10 @@
 **A security checker for the Python your AI agent writes — including the
 classes pattern scanners structurally miss.**
 
-Point it at a Python file. It finds SQL injection, command injection, open
-redirect, SSTI, insecure deserialization, hardcoded credentials and XXE by
-reading dataflow and argument shape, not by matching patterns. No rewrite,
+Point it at a Python file. It finds SQL injection, command injection, code
+injection through `exec`/`eval`, open redirect, SSTI, insecure
+deserialization, hardcoded credentials and XXE by reading each argument's
+shape and where it came from, not just the name of the call. No rewrite,
 no annotations, no configuration.
 
     $ aether check-py bench/py_frontend/corpus/sqli_repro.py
