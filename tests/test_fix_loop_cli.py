@@ -122,11 +122,45 @@ def test_live_without_api_key_fails_clean():
     return failures
 
 
+def test_deterministic_path_needs_no_demos_dir():
+    """BUG-026: the deterministic engine is part of the package. Copy ONLY
+    `aether/` into a temp dir -- the shape of an installed wheel, with no
+    demos/ anywhere -- and run `aether fix-loop` from there. It used to
+    import its engine from demos/payment_workflow/, which no wheel ships,
+    so every installed copy failed with `No module named 'fix_loop'`."""
+    import shutil
+    import tempfile
+    fails = []
+    with tempfile.TemporaryDirectory() as d:
+        shutil.copytree(os.path.join(ROOT, "transpiler", "aether"),
+                        os.path.join(d, "aether"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        src = os.path.join(d, "broken.aeth")
+        shutil.copy(BROKEN, src)
+        fixed = os.path.join(d, "fixed.aeth")
+        env = os.environ.copy()
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["PYTHONPATH"] = d
+        env.pop("ANTHROPIC_API_KEY", None)
+        r = subprocess.run(_py() + ["-m", "aether.cli", "fix-loop", src,
+                                    "--out-source", fixed,
+                                    "--out-transcript", os.path.join(d, "t.json"),
+                                    "--quiet"],
+                           cwd=d, env=env, capture_output=True, text=True)
+        if r.returncode != 0:
+            fails.append(f"exit {r.returncode}: {r.stderr.strip()[-400:]}")
+        elif not os.path.isfile(fixed):
+            fails.append("exit 0 but no fixed source was written")
+    return fails
+
+
 def main() -> int:
     cases = [
         ("help documents both paths", test_help_documents_both_paths),
         ("default does not call anthropic", test_default_does_not_call_anthropic),
         ("live without API key fails clean", test_live_without_api_key_fails_clean),
+        ("deterministic path needs no demos/ (BUG-026)",
+         test_deterministic_path_needs_no_demos_dir),
     ]
     passed = 0
     failures = {}

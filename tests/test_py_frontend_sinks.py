@@ -858,6 +858,12 @@ def test_sink_in_every_statement_position_is_seen():
         "decorator": "def f(cur, uid):\n    @deco(%s)\n    def g():\n        pass\n",
         "match": "def f(cur, uid):\n    match %s:\n        case _:\n            pass\n",
         "walrus": "def f(cur, uid):\n    if (r := %s):\n        return r\n",
+        "del-target": "def f(cur, uid, d):\n    del d[%s]\n",
+        "augassign-target": "def f(cur, uid, d):\n    d[%s] += 1\n",
+        "for-target": "def f(cur, uid, d, xs):\n    for d[%s] in xs:\n        pass\n",
+        "with-target": "def f(cur, uid, d, cm):\n    with cm as d[%s]:\n        pass\n",
+        "match-guard": "def f(cur, uid):\n    match uid:\n        case _ if %s:\n            pass\n",
+        "except-type": "def f(cur, uid):\n    try:\n        pass\n    except %s:\n        pass\n",
     }
     silent = [k for k, s in shapes.items() if "E0713" not in _codes(s % _SQLI)]
     assert not silent, f"sink still invisible in: {silent}"
@@ -1225,6 +1231,29 @@ def test_unreadable_and_skipped_are_visible_in_every_mode():
     print("cli: unreadable files and skipped dirs reported in json/sarif/text; exit codes agree")
 
 
+def test_exec_of_compile_rates_as_exec():
+    def e0731(src):
+        ast_dict, _u, _m = py_to_ir(src)
+        return [d for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES) if d.code == "E0731"]
+    ds = e0731("def f(src):\n    exec(compile(src, '<s>', 'exec'))\n")
+    assert len(ds) == 1 and ds[0].extra.get("match") == "builtin", [d.extra for d in ds]
+    ds = e0731("def f(src):\n    return compile(src, '<s>', 'exec')\n")
+    assert [d.extra.get("match") for d in ds] == ["builtin_compile"], [d.extra for d in ds]
+    ds = e0731("def exec(c, g=None):\n    return c\n"
+               "def f(src):\n    exec(compile(src, '<s>', 'exec'))\n")
+    assert [d.extra.get("match") for d in ds] == ["builtin_compile"], [d.extra for d in ds]
+    print("BUG-030: exec(compile(src)) rates as exec; compile alone or under a local exec stays at the floor")
+
+
+def test_file_too_deep_for_python_is_unparseable_not_a_crash():
+    src = ("import os\ndef f(c):\n    os.system('ls ' + c)\n"
+           "def g(a):\n    return " + "+".join(["a"] * 20000) + "\n")
+    rc, out = _run_check_py_tree({"deep.py": src}, target="deep.py")
+    assert "ANALYZER ERROR" not in out, out[-600:]
+    assert rc == 0 or "E0714" in out, (rc, out[-600:])
+    print("BUG-029: a file too deep for Python's own parser is unparseable, not an analyzer crash")
+
+
 if __name__ == "__main__":
     test_body_is_no_longer_discarded()
     test_assign_becomes_let()
@@ -1310,4 +1339,6 @@ if __name__ == "__main__":
     test_slice2_sink_rows_fire()
     test_match_kind_reaches_extra_for_every_sink_match()
     test_unreadable_and_skipped_are_visible_in_every_mode()
+    test_exec_of_compile_rates_as_exec()
+    test_file_too_deep_for_python_is_unparseable_not_a_crash()
     print("PY FRONTEND: ALL TESTS PASS")

@@ -538,8 +538,8 @@ def _exprs_in(x: Any) -> Iterator[Any]:
     """Expression nodes directly held by `x` — descending through the
     helper nodes that are neither statements nor expressions
     (`arguments`, `keyword`, `withitem`, `match_case`, `comprehension`),
-    never into a statement or a pattern, and never into a binding
-    target field (those are names, not values)."""
+    never into a statement or a pattern. A binding target field
+    contributes only what the target EVALUATES (`_target_loads`)."""
     if isinstance(x, _pyast.expr):
         yield x
     elif isinstance(x, list):
@@ -549,6 +549,7 @@ def _exprs_in(x: Any) -> Iterator[Any]:
             and not (_PATTERN_BASE and isinstance(x, _PATTERN_BASE)):
         for field, child in _pyast.iter_fields(x):
             if field in _TARGET_FIELDS:
+                yield from _target_loads(child)
                 continue
             yield from _exprs_in(child)
 
@@ -556,13 +557,32 @@ def _exprs_in(x: Any) -> Iterator[Any]:
 def _stmt_expr_children(stmt: Any) -> Iterator[Any]:
     """The value expressions a statement evaluates: `for`'s iterable,
     `if`/`while`'s test, `assert`'s operands, `raise`'s exception,
-    `match`'s subject and guards, a nested `def`'s decorators and
-    defaults, `del`'s operands. Bodies are statements and are visited on
-    their own; targets are binding sites."""
+    `match`'s subject and guards, a handler's exception type, a nested
+    `def`'s decorators and defaults, and whatever a target evaluates
+    (`d` and `f(x)` in `del d[f(x)]`). Bodies are statements and are
+    visited on their own."""
     for field, child in _pyast.iter_fields(stmt):
         if field in _TARGET_FIELDS:
+            yield from _target_loads(child)
             continue
         yield from _exprs_in(child)
+
+
+def _target_loads(t: Any) -> Iterator[Any]:
+    """The expressions a binding TARGET evaluates. Only a bare name is
+    purely a binding site: `d[f(x)] += 1`, `del d[f(x)]`,
+    `for d[f(x)] in xs` and `with cm as d[f(x)]` all evaluate `d` and
+    `f(x)` first, and a sink there was silent because the whole target
+    field was skipped as "names, not values" (BUGS.md BUG-027)."""
+    if isinstance(t, list):
+        for e in t:
+            yield from _target_loads(e)
+    elif isinstance(t, (_pyast.Tuple, _pyast.List)):
+        yield from _target_loads(t.elts)
+    elif isinstance(t, _pyast.Starred):
+        yield from _target_loads(t.value)
+    elif isinstance(t, (_pyast.Subscript, _pyast.Attribute)):
+        yield from _expr_children(t)
 
 
 def _expr_children(node: Any) -> Iterator[Any]:
@@ -1208,9 +1228,11 @@ def _sink_match(call: _pyast.Call, imp: "_Imports",
                 and isinstance(call.args[0], _pyast.Call) \
                 and _sink_name(call.args[0], imp, safe_xml, resolver) == "evalCode":
             return None
-        # `compile` gets its own kind: it builds a code object and
-        # executes nothing, and 4 of the 8 measured corpus sites are
-        # linters checking syntax (bench/framework_scan/REPORT.md §8).
+        # `compile` gets its own kind: it builds a code object and runs
+        # nothing, and 4 of the 8 measured corpus sites call it without
+        # running the result — three syntax-checking linters and a
+        # round-trip test (bench/framework_scan/REPORT.md §8). Wrapped in
+        # exec/eval it is re-rated in `_call_expr` (BUG-030).
         return SINK_BY_BUILTIN[dotted], (
             "builtin_compile" if dotted == "compile" else "builtin")
     # Method on an unresolved receiver: over-flag by name (see doctrine note).
@@ -1305,6 +1327,16 @@ def _call_expr(node: _pyast.Call, imp: "_Imports",
         # a sink carries it — a wrapper or a `py:` spelling matched
         # nothing, so there is nothing to be more or less sure about.
         out["match"] = sink[1]
+    elif dotted in ("exec", "eval") and isinstance(node.func, _pyast.Name) \
+            and node.func.id not in getattr(resolver, "shadowed", ()) \
+            and out["args"] and out["args"][0].get("match") == "builtin_compile":
+        # `exec(compile(src, ...))`: `_sink_match` reports this line once,
+        # on the inner compile() that holds the source text. That source
+        # IS executed, so the finding is as certain as a bare `exec(src)`,
+        # not the floor rating of a compile() whose result nobody runs —
+        # which hid real execution behind `--min-confidence 0.9`
+        # (BUGS.md BUG-030).
+        out["args"][0]["match"] = "builtin"
     # Keyword values are carried too, so `f(k=cur.execute(q))` is found by
     # `walk`; `_arg_reason` reads only `args[i]`, so nothing here is ever
     # judged as the sink's own argument (BUG-012).
@@ -1508,9 +1540,8 @@ class _FnVisitor:
                     # name proves anything, but the value is still a
                     # statement the rules must see. The index/base of the
                     # target can hold calls too.
-                    for sub in _exprs_in(t):
-                        for c in _expr_children(sub):
-                            self.stmts.append(self._e(c))
+                    for c in _target_loads(t):
+                        self.stmts.append(self._e(c))
             if not carried:
                 self.stmts.append(val)
             return
@@ -1519,6 +1550,8 @@ class _FnVisitor:
             # statement of its own (`out += subprocess.check_output(c)`).
             self._walrus_lets(stmt.value)
             self.stmts.append(self._e(stmt.value))
+            for c in _target_loads(stmt.target):      # `d[f(x)] += 1` (BUG-027)
+                self.stmts.append(self._e(c))
             return
         if isinstance(stmt, (_pyast.With, _pyast.AsyncWith)):
             # `with open(path) as f:` is THE idiomatic Python file access.
@@ -1536,6 +1569,8 @@ class _FnVisitor:
                                        "pos": _pos(stmt, self.fn_line)})
                 else:
                     self.stmts.append(val)
+                    for c in _target_loads(tgt):      # `as d[f(x)]` (BUG-027)
+                        self.stmts.append(self._e(c))
             return
         if isinstance(stmt, _pyast.Return):
             if stmt.value is not None:
@@ -1663,7 +1698,16 @@ def py_to_ir(source: str) -> Tuple[Dict[str, Any], Dict[str, List[Dict[str, Any]
 
     Single sound mode only. (The former `strict`/pragmatic split was removed in
     P0.2: pragmatic mode was unsound.)"""
-    tree = _pyast.parse(source)
+    try:
+        tree = _pyast.parse(source)
+    except (RecursionError, MemoryError) as e:
+        # CPython's own parser gave up on the nesting depth. Such a file
+        # cannot be compiled or imported either, so it is unparseable
+        # input, not a bug in Aether: 0.3.1 counted it that way, and
+        # letting it reach the analyzer-crash path failed the whole run
+        # with a message blaming Aether (BUGS.md BUG-029).
+        raise SyntaxError(f"too deeply nested for Python's own parser "
+                          f"({type(e).__name__})") from e
 
     imports = _Imports()
     func_nodes: List[Tuple[str, Any]] = []   # (qualname, node)
@@ -1761,9 +1805,13 @@ def py_to_ir(source: str) -> Tuple[Dict[str, Any], Dict[str, List[Dict[str, Any]
                 if isinstance(sub, _pyast.Call):
                     v.visit_call(sub)
             v.seed_bindings(node)
+            # Statements only. A handler's exception type and a case's
+            # guard are expression children of their Try / Match
+            # statement and are translated there; visiting the handler
+            # and the case as well reported a sink in either one twice
+            # (BUGS.md BUG-028).
             for sub in _pyast.walk(node):
-                if isinstance(sub, (_pyast.stmt, _pyast.excepthandler)) \
-                        or type(sub).__name__ == "match_case":
+                if isinstance(sub, _pyast.stmt):
                     v.visit_stmt(sub)
             if v.scope.too_deep:
                 v._add_unprovable("too_deep", qual,

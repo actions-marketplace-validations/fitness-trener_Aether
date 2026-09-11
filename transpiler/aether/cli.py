@@ -699,8 +699,8 @@ def cmd_test(args) -> int:
 # `aether fix-loop <file>` dispatches to one of two paths:
 #
 #   default (deterministic)
-#     Calls the deterministic reference implementation at
-#     `demos/payment_workflow/fix_loop.py`. Handles E0801 (effect not
+#     Calls the deterministic reference implementation in the package,
+#     `aether/fix_loop.py`. Handles E0801 (effect not
 #     covered) and E0701 (capability not declared) — the codes whose
 #     `extra` dict is sufficient for a mechanical AST rewrite. Used in
 #     CI; produces an identical transcript on every invocation. NOT
@@ -708,7 +708,8 @@ def cmd_test(args) -> int:
 #
 #   --live
 #     Calls Anthropic via the live LLM path used by
-#     `demos/payment_workflow/llm_fix_demo.py`. Handles arbitrary
+#     `demos/payment_workflow/llm_fix_demo.py` — source checkout only,
+#     since demos/ is not in the wheel. Handles arbitrary
 #     errors including logic errors that the deterministic path cannot
 #     repair (E0301, E0302, E0304, E0305). Requires
 #     ANTHROPIC_API_KEY. If the env var is missing, fails with a clear
@@ -719,19 +720,9 @@ def cmd_test(args) -> int:
 
 def cmd_fix_loop(args) -> int:
     """Dispatch to deterministic (default) or --live LLM path."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    repo_root = os.path.dirname(os.path.dirname(here))
-    demo_dir = os.path.join(repo_root, "demos", "payment_workflow")
-
     if not os.path.isfile(args.file):
         sys.stderr.write(f"file not found: {args.file}\n")
         return 2
-
-    # Make the demo modules importable.
-    if demo_dir not in sys.path:
-        sys.path.insert(0, demo_dir)
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
 
     if args.live:
         # Live LLM path — calls Anthropic. Requires ANTHROPIC_API_KEY.
@@ -744,21 +735,30 @@ def cmd_fix_loop(args) -> int:
                 "  deterministic path (E0801 + E0701 only).\n"
             )
             return 2
+        # The live path drives the demo in demos/payment_workflow/, which
+        # the wheel does not ship: it runs from a source checkout only.
+        here = os.path.dirname(os.path.abspath(__file__))
+        repo_root = os.path.dirname(os.path.dirname(here))
+        for d in (os.path.join(repo_root, "demos", "payment_workflow"), repo_root):
+            if d not in sys.path:
+                sys.path.insert(0, d)
         try:
             from llm_fix_demo import _do_live   # type: ignore
         except ImportError as e:
-            sys.stderr.write(f"aether fix-loop --live: import failed: {e}\n")
+            sys.stderr.write(
+                f"aether fix-loop --live: import failed: {e}\n"
+                "  --live drives demos/payment_workflow/llm_fix_demo.py and\n"
+                "  runs from a source checkout only. The deterministic path\n"
+                "  (without --live) works in an installed copy.\n")
             return 2
         transcript = args.out_transcript or args.file.replace(
             ".aeth", ".live.transcript.json")
         return _do_live(args.file, transcript, label=f"cli ({args.file})")
 
-    # Deterministic path (default).
-    try:
-        from fix_loop import main as deterministic_main  # type: ignore
-    except ImportError as e:
-        sys.stderr.write(f"aether fix-loop: deterministic path import failed: {e}\n")
-        return 2
+    # Deterministic path (default) — part of the package, so it works in
+    # a pip-installed copy. It used to be imported from demos/, which no
+    # wheel has ever shipped (BUGS.md BUG-026).
+    from .fix_loop import main as deterministic_main
     argv = [args.file]
     if args.out_source:
         argv += ["--out-source", args.out_source]

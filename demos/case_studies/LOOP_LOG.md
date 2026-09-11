@@ -2011,8 +2011,9 @@ State carried forward: the full gate suite must stay green
   method name on an unresolved receiver is q5's sanctioned over-flag, and
   `bench/framework_scan/REPORT.md` §8 had already priced the difference —
   about a third of the new `from_string` hits are non-jinja methods, and
-  4 of 8 E0731 sites are linters calling `compile()` to check syntax and
-  never executing the result.
+  4 of 8 E0731 sites call `compile()` and never execute the result —
+  three syntax-checking linters and a round-trip test (corrected
+  2026-09-11; this block first said all four were linters).
 - **Improvement:** `_sink_match` returns HOW it matched beside WHAT it
   matched; `_call_expr` parks that on the Call node; the two spec-driven
   drivers set `confidence=confidence_of(call.get("match"))` and put the

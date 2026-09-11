@@ -32,8 +32,10 @@ probability:
   * `argv` — a literal `["bash", "-c", cmd]` argv. The program and the
     flag are constants in the source.
   * `builtin_compile` — `compile()` produces a code object and executes
-    nothing. Section 8 read all 8 corpus sites: 4 are linters compiling
-    to check syntax and never exec the result.
+    nothing. Section 8 read all 8 corpus E0731 sites: 4 call `compile()`
+    without running the result — three syntax-checking linters and a
+    round-trip test. `exec(compile(src))` is reported once and rated
+    `builtin`: that source IS executed.
   * `method` — matched on the METHOD NAME with the receiver's type
     unresolved. This is q5's sanctioned over-flag, and section 8 priced
     it: of 24 new `from_string` hits about 8 are non-jinja
@@ -69,7 +71,8 @@ CONFIDENCE = {
     # Literal program and literal flag in the argv list.
     "argv": 0.9,
     # `compile()` builds a code object; whether it is ever executed is
-    # outside the call. 4 of 8 measured sites are syntax checkers.
+    # outside the call. 4 of 8 measured sites never run it (three
+    # linters, one round-trip test); `exec(compile(...))` rates `builtin`.
     "builtin_compile": FLOOR,
     # Method name only, receiver type unresolved (q5's over-flag).
     "method": FLOOR,

@@ -167,7 +167,7 @@ def test_compile_ranks_below_exec():
     assert by_line[3].confidence == confidence_of("builtin_compile")
     assert by_line[3].confidence < by_line[2].confidence, (
         "compile() builds a code object and executes nothing — 4 of the 8 "
-        "measured corpus sites are linters checking syntax")
+        "measured corpus sites never run the result")
     print("confidence: compile() ranks below exec()")
 
 

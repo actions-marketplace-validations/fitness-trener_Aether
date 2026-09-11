@@ -1,5 +1,21 @@
 # Operation Log (append-only — newest on top)
 
+## [2026-09-11] Q7 corrected | the totality claim had a counterexample (BUG-027, BUG-028)
+- **q7 said the Python frontend was total over statement positions; it
+  was not.** The 0.4.0 pre-release audit probed the claim: a sink inside
+  a subscript or attribute assignment target — `del`, `+=`, `for` and
+  `with` targets — was silent (BUG-027), and a case guard or an `except`
+  type was reported twice (BUG-028). Both fixed; q7 carries the
+  correction row beside the original claim, and the exactly-once
+  position test grows from 26 to 32.
+- **The same audit, outside the vault:** `aether fix-loop` had been broken
+  in every installed copy since 0.3.0 (BUG-026); a file too deep for
+  CPython's own parser was reported as an Aether crash (BUG-029);
+  `exec(compile(src))` was rated at the floor although it executes the
+  source (BUG-030).
+- **Lesson carried** (q1's, now on q7 as well): a completeness claim is
+  checked by writing the shapes, not by re-reading the argument for it.
+
 ## [2026-09-03] Q1 corrected, Q6 residual closed | iterations 51–52
 - **A settled q1 Evidence row was FALSE, and had been for nine
   iterations.** Iteration 42 recorded "`grammar.ebnf` has no function

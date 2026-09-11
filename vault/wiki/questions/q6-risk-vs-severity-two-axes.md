@@ -52,7 +52,7 @@ node as `match`, and the two `detector_specs.py` drivers set
 |---|---|---|
 | `qualified` / `guard` | 0.95 | resolved through the file's imports to a known dotted path |
 | `builtin` / `argv` | 0.9 | a bare builtin, or a literal `["bash","-c",cmd]` |
-| `builtin_compile` | 0.6 | `compile()` builds a code object and runs nothing — 4 of 8 corpus sites are linters checking syntax |
+| `builtin_compile` | 0.6 | `compile()` builds a code object and runs nothing — 4 of 8 corpus sites never run the result (three syntax-checking linters, one round-trip test). `exec(compile(...))` is re-rated `builtin` (BUG-030) |
 | `method` | 0.6 | method NAME only, receiver unresolved — [[q5-sink-matching-vs-purity-matching]]'s sanctioned over-flag |
 | *(absent)* | 1.0 | an Aether-source finding: the sink is spelled in the source, nothing was guessed |
 
@@ -66,7 +66,7 @@ before, 676 after, identical multiset (`bench/framework_scan/run_scan.py
 axis is read at OUTPUT time, exactly like `risk.py`: `tools/scan.py` and
 `check-py` sort by `(-risk, -confidence, line, code)`, both grow
 `--min-confidence FLOAT`, SARIF carries it under
-`properties.confidence`. The distribution: 0.95 ×44, 0.9 ×3, 0.6 ×629 —
+`properties.confidence`. The distribution: 0.95 ×44, 0.9 ×4, 0.6 ×628 (iteration 52 measured ×3 / ×629; BUG-030 then re-rated crewai's `exec(compile(...))` from 0.6 to 0.9) —
 so `--min-confidence 0.9` hides 93% of the corpus, almost all of it
 `cursor.execute`-shaped SQL matched by name.
 

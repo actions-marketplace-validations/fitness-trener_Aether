@@ -994,3 +994,116 @@ Fix. `check_marker_boundary` resolves the callee through
 underlying parameter with `extra.param` naming it and the message adding
 "(through alias 'g')". The alias map is built separately from the marker
 alias map so nothing else in the pass changes behaviour.
+
+
+### BUG-026  `aether fix-loop` was broken in every installed copy since 0.3.0  [OPEN]
+test: tests/test_fix_loop_cli.py
+
+
+Found 2026-09-11 by the pre-release check for 0.4.0, which runs every probe
+through the pip-installed `aether` console script from outside the
+checkout. Verbatim, exit 2:
+
+    aether fix-loop: deterministic path import failed: No module named 'fix_loop'
+
+The same file through `python -B -m transpiler.aether.cli fix-loop` exited
+0. `cmd_fix_loop` found its engine by walking up from `__file__` to
+`<repo>/demos/payment_workflow/` and importing `fix_loop` from there. No
+wheel has ever shipped `demos/` — the package is scoped to
+`transpiler/aether*` since BUG-009 — so in site-packages the walk lands in
+`venv/Lib`. `git show v0.3.0:transpiler/aether/cli.py` has the same code:
+broken in both released versions, while `aether --help` listed the
+subcommand and the README documented it. Same class as BUG-006..009: it
+works from the checkout, and is invisible to every test that runs in it.
+
+Fix: the deterministic engine is library code (the stdlib plus
+`aether.sdk`, `parser` and `pretty`), so it moved into the package as
+`aether/fix_loop.py`; `demos/payment_workflow/fix_loop.py` stays as the
+demo's by-path entry point. `--live` drives a 275-line Anthropic demo and
+stays source-checkout-only, and now says so instead of reporting an import
+failure. `tests/test_fix_loop_cli.py` runs the CLI from a temp dir holding
+only a copy of `aether/` — an installed wheel's shape — and `gate.yml`'s
+installed-wheel job runs `aether fix-loop`.
+
+### BUG-027  a sink inside an assignment target's subscript or attribute was SILENT (false accept)  [OPEN]
+test: tests/test_py_frontend_sinks.py
+
+
+Found 2026-09-11 by the 0.4.0 release-notes audit, which tested the
+claim that BUG-012 made the frontend total over syntax. Exit 0:
+
+```python
+del d[os.system("ls " + x)]
+d[os.system("ls " + x)] += 1
+for d[os.system("ls " + x)] in xs: ...
+with cm as d[os.system("ls " + x)]: ...
+```
+
+while `d[os.system("ls " + x)] = 1` fired. BUG-012 treated a binding
+target field as "names, not values" and skipped it whole; only a plain
+`Assign` target's sub-expressions were translated. But only a bare name is
+purely a binding site: a subscript or attribute target evaluates its base
+and index first. BUG-012's entry and q7 claimed totality over positions;
+this is the counterexample, found by a probe of the claim rather than by a
+reader of it.
+
+Fix: `_target_loads(t)` yields what a target evaluates — nothing for a
+name, the base and index of a subscript, the base of an attribute,
+recursively through tuples, lists and starred — and every consumer of a
+target field (`_exprs_in`, `_stmt_expr_children`, and the `Assign`,
+`AugAssign` and `With` branches) takes the loads instead of skipping.
+`test_sink_in_every_statement_position_is_seen` pins all four positions,
+each seen exactly once.
+
+### BUG-028  a sink in a match-case guard or an `except` type was reported twice  [OPEN]
+test: tests/test_py_frontend_sinks.py
+
+
+Found 2026-09-11 by the same audit: `case _ if os.system("ls " + x):`
+emitted the same E0714 twice (same line, column and `extra`), and
+`except <sink>:` had the identical shape. `py_to_ir` visited `match_case`
+and `excepthandler` nodes as statements of their own, while the parent
+`Match` / `Try` statement already reached the guard and the exception type
+as its expression children, so each was translated twice. It inflates
+counts; it never hides a finding. Introduced by BUG-012's rework, which
+added the separate visits; 0.3.1 translated neither position at all.
+Never released.
+
+Fix: the walk visits statements only; guards and handler types are
+translated once, through their parent. Both positions are in the
+exactly-once test.
+
+### BUG-029  a file too deep for CPython's own parser was reported as an Aether crash, exit 2  [OPEN]
+test: tests/test_py_frontend_sinks.py
+
+
+Found 2026-09-11 by the same audit. `ast.parse` itself raises
+`RecursionError: maximum recursion depth exceeded during ast construction`
+on a 3,000-term `a + a + ...` chain under CPython 3.11 and 3.13 (probed
+both). Such a file was reported as `ANALYZER ERROR ... this is a bug in
+Aether` and failed the run with exit 2. 0.3.1 caught `RecursionError`
+beside `SyntaxError` and counted the file unparseable; the BUG-012 rework
+narrowed that clause so a `RecursionError` from Aether's own translator
+would go red rather than silent, and the parser's `RecursionError` fell in
+with it. Never released. CPython cannot compile or import such a file
+either, so it is unparseable input, not a bug in Aether.
+
+Fix: `py_to_ir` converts a `RecursionError` or `MemoryError` raised by
+`ast.parse` itself into a `SyntaxError`; one raised by the translator still
+reaches the analyzer-crash path. The test puts a 20,000-term chain beside a
+real sink and requires that no ANALYZER ERROR appears.
+
+### BUG-030  `exec(compile(src))` was rated as a compile that runs nothing  [OPEN]
+test: tests/test_py_frontend_sinks.py
+
+
+Found 2026-09-11 by the same audit. `exec(compile(src, "<s>", "exec"))` is
+collapsed to one E0731 finding on the inner `compile()`, and iteration 52
+rated that kind `builtin_compile`, 0.6 — the rating for a `compile()` whose
+result nobody runs. This source IS executed, so `--min-confidence 0.9` hid
+real execution; crewai's `flow/runtime/_actions.py:309` is that shape.
+Introduced by iteration 52, never released.
+
+Fix: `_call_expr` re-rates the inner compile to `builtin` when a builtin,
+unshadowed `exec`/`eval` wraps it. A `compile()` on its own, or one under a
+local `def exec`, stays at the floor.
