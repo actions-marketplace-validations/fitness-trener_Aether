@@ -179,7 +179,7 @@ the product.
 |---|---:|---|
 | `E0714` shell in agent runtimes / coding tools | 13 | true by shape, by-design context |
 | `E0720` pickle | 9 | 8 behind an explicit opt-in the maintainers wrote; 1 newly visible (agno, above) |
-| `E0727` XML on remote content | 6 | **2 upstream notes drafted** (`outreach/upstream/`): `agno/knowledge/reader/sitemap_reader.py:123` — attacker-choosable sitemap URL into stdlib `ElementTree`, which expanded a 10⁶ entity payload to 3,000,000 chars here in 0.19s where `defusedxml` refuses it; and the docugami lxml sites, scoped to lxml < 5 |
+| `E0727` XML on remote content | 6 | **1 upstream note posted**, [agno#9920](https://github.com/agno-agi/agno/issues/9920): `agno/knowledge/reader/sitemap_reader.py:123` — attacker-choosable sitemap URL into stdlib `ElementTree`, which expanded a 10⁶ entity payload to 3,000,000 chars here in 0.19s where `defusedxml` refuses it. A second note, on the docugami lxml sites and relevant only to lxml < 5, was drafted and not posted |
 | `E0719` the framework's own Jinja templates | 2 | by design |
 
 **A correction to the 2026-09-01 version of this section**, which called

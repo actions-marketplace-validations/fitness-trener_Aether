@@ -252,14 +252,6 @@ for:
 - **`E0717` cross-tenant access / IDOR** (CWE-639) — an authorization proof
   that is not bound to the *same resource id* the sink mutates.
 
-Nine named companies' own public CVEs and incidents are ported and refused
-at check time in [`outreach/CUSTOMER_EVIDENCE.md`](https://github.com/fitness-trener/Aether/blob/main/outreach/CUSTOMER_EVIDENCE.md)
-— Copilot, Cursor, Lovable, Replit, Vercel, Atlassian, Ivanti, GitLab,
-crawl4ai. **Five of the nine are access-control cases** (missing
-authorization, IDOR), which need the `Authorized<T>` marker and so run on
-Aether source only. These are retrospective ports of public incidents, not
-live scans of anyone's systems, and the file says so first.
-
 Current surface: **55 diagnostic codes across 31 gated detectors**, held by
 a monotonic ratchet (`tests/ratchet_baseline.json`) that turns the build red
 if a detector is ever removed or weakened. Security family `E0710`–`E0731`;

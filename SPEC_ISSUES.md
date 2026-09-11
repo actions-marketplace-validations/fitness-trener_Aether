@@ -7,7 +7,7 @@ and resolve them in a single revision pass.
 This log was audited against the actual implementation on 2026-05-03 after an
 independent review. Resolved entries reflect the post-audit state.
 
-**See also**: `yc/v2_ROADMAP.md` — the strategic, feature-level scope ledger
+**See also**: the v2 roadmap (kept outside the public repo) — the strategic, feature-level scope ledger
 for v0.4+. The roadmap document explains the *categories* of deferred work
 (SMT, native compilation, async, package manager, LSP polish, multi-file
 resolution for SDK + LSP, dotted/aliased imports, symbol-level export
