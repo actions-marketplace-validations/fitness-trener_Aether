@@ -1,7 +1,7 @@
 # Aether
 
-**A security checker for the Python your AI agent writes — including the
-classes pattern scanners structurally miss.**
+**A security checker for Python, aimed at the code AI agents write and
+run.**
 
 Point it at a Python file. It finds SQL injection, command injection, code
 injection through `exec`/`eval`, open redirect, SSTI, insecure
@@ -26,7 +26,7 @@ from a fresh clone.
 
 ---
 
-## Why it finds things other scanners don't
+## How the checks work
 
 Aether's detectors are designed against a **typed intermediate
 representation** with explicit security markers — `Authorized<T>`,
@@ -69,8 +69,8 @@ provider key *shapes* (`AKIA…`, `ghp_…`, PEM blocks).
 
 This is not a general "better than bandit" claim, and the repo says so at
 length in [`bench/py_frontend/REPORT.md`](https://github.com/fitness-trener/Aether/blob/main/bench/py_frontend/REPORT.md) §3:
-bandit ships ~70 plugins across crypto, Django, TLS and more; Aether models
-8 rows on Python. **On breadth bandit wins outright.** The narrow claim is
+bandit 1.9.4 ships 75 checks across crypto, Django, TLS and more; Aether
+models 9 rows on Python. **On breadth bandit wins outright.** The narrow claim is
 the one above, and it is checkable in two commands.
 
 ## Measured on 1.19M lines nobody wrote for us
@@ -85,8 +85,13 @@ got some that weren't.
 | Python files / SLOC | 5,588 / **1,192,484** |
 | parse failures | **0** |
 | analyzer crashes | **0** |
-| findings outside test dirs | 39 (**0.033 per KLOC**) |
+| findings outside test dirs | 39 (**0.033 per KLOC**); 48 after the five recall fixes below |
 | agreement with bandit, comparable categories | **86.8%** (125 agreed / 19 candidate misses) |
+
+Measured 2026-07-26, before 0.4.0, on whatever was installed in that
+interpreter's `site-packages`. A later run on a changed install gave
+different totals, and the report says so, so read these as that day's
+numbers.
 
 **No vulnerability was discovered in that corpus**, and roughly 56% of the
 39 findings trace to one documented over-flag rule. Both facts are stated
@@ -250,8 +255,9 @@ for:
 Nine named companies' own public CVEs and incidents are ported and refused
 at check time in [`outreach/CUSTOMER_EVIDENCE.md`](https://github.com/fitness-trener/Aether/blob/main/outreach/CUSTOMER_EVIDENCE.md)
 — Copilot, Cursor, Lovable, Replit, Vercel, Atlassian, Ivanti, GitLab,
-crawl4ai. **Five of the nine are access-control cases that mainstream SAST
-does not cover.** These are retrospective ports of public incidents, not
+crawl4ai. **Five of the nine are access-control cases** (missing
+authorization, IDOR), which need the `Authorized<T>` marker and so run on
+Aether source only. These are retrospective ports of public incidents, not
 live scans of anyone's systems, and the file says so first.
 
 Current surface: **55 diagnostic codes across 31 gated detectors**, held by

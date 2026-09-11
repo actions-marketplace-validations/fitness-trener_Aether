@@ -1,7 +1,10 @@
 # Aether upstream bug list
 
-Bugs found by agents using Aether in other projects on this PC.
-Entries appended automatically per prompt/upstream-bug-report.md.
+Aether's bug log. Most entries were found in this repo, by the improvement
+loop, the benchmark scans and the pre-release checks; some are appended by
+agents using Aether in other projects on this PC
+(prompt/upstream-bug-report.md). BUG-017 to BUG-019 were reserved for a
+parallel work slice on 2026-09-03 and never assigned.
 
 ## Fix protocol
 Run fix sessions from this repo with the most capable Claude model

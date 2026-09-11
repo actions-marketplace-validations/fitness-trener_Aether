@@ -3,6 +3,8 @@
 **Date:** 2026-09-01, re-measured 2026-09-02 after BUG-010 and BUG-011,
 and again 2026-09-03 after BUG-012 (§7) and after iterations 49–50 (§8 — the
 tables in §1–§5 are the 2026-09-02 numbers; §8 supersedes the totals).
+Re-scanned 2026-09-11 at 0.4.0: 676 findings, the same set §8 lists, 0
+analyzer errors; confidence 0.95 ×44, 0.9 ×4, 0.6 ×628.
 **Question:** `bench/pypi_scan/` scanned whatever happened to be in
 site-packages. What does the tool do on the population it actually claims
 to be for — the frameworks that generate and execute AI-written Python?
@@ -14,12 +16,15 @@ imported or executed.
 
 **Headline, stated first and unflatteringly.** The first run found no
 vulnerability worth reporting to anyone, and found that 97% of its own
-output was one false-positive class. Fixing that class exposed a
+output came from one rule (E0713), most of it one false-positive class:
+SQLAlchemy expressions read as dynamic SQL. Fixing that class exposed a
 **false-negative class underneath it** — imports under `try:` had never
 been registered, so a guarded `yaml.load(x)` was silent — and repairing
 both moved the count from **1,055 findings to 411**, four of which are
 sinks that were invisible before. The useful output of this run is two
-bugs in Aether, not a bug in LangChain.
+bugs in Aether, not a bug in LangChain. At 0.4.0 the same files give 676
+findings — the scanner seeing code it had been blind to (§7), plus a new
+code-injection rule (§8) — and still no vulnerability.
 
 ---
 
