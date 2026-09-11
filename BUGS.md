@@ -996,7 +996,7 @@ underlying parameter with `extra.param` naming it and the message adding
 alias map so nothing else in the pass changes behaviour.
 
 
-### BUG-026  `aether fix-loop` was broken in every installed copy since 0.3.0  [OPEN]
+### BUG-026  `aether fix-loop` was broken in every installed copy since 0.3.0  [FIXED 8fb3c59]
 test: tests/test_fix_loop_cli.py
 
 
@@ -1025,7 +1025,7 @@ failure. `tests/test_fix_loop_cli.py` runs the CLI from a temp dir holding
 only a copy of `aether/` — an installed wheel's shape — and `gate.yml`'s
 installed-wheel job runs `aether fix-loop`.
 
-### BUG-027  a sink inside an assignment target's subscript or attribute was SILENT (false accept)  [OPEN]
+### BUG-027  a sink inside an assignment target's subscript or attribute was SILENT (false accept)  [FIXED 8fb3c59]
 test: tests/test_py_frontend_sinks.py
 
 
@@ -1055,7 +1055,7 @@ target field (`_exprs_in`, `_stmt_expr_children`, and the `Assign`,
 `test_sink_in_every_statement_position_is_seen` pins all four positions,
 each seen exactly once.
 
-### BUG-028  a sink in a match-case guard or an `except` type was reported twice  [OPEN]
+### BUG-028  a sink in a match-case guard or an `except` type was reported twice  [FIXED 8fb3c59]
 test: tests/test_py_frontend_sinks.py
 
 
@@ -1073,7 +1073,7 @@ Fix: the walk visits statements only; guards and handler types are
 translated once, through their parent. Both positions are in the
 exactly-once test.
 
-### BUG-029  a file too deep for CPython's own parser was reported as an Aether crash, exit 2  [OPEN]
+### BUG-029  a file too deep for CPython's own parser was reported as an Aether crash, exit 2  [FIXED 8fb3c59]
 test: tests/test_py_frontend_sinks.py
 
 
@@ -1093,7 +1093,7 @@ Fix: `py_to_ir` converts a `RecursionError` or `MemoryError` raised by
 reaches the analyzer-crash path. The test puts a 20,000-term chain beside a
 real sink and requires that no ANALYZER ERROR appears.
 
-### BUG-030  `exec(compile(src))` was rated as a compile that runs nothing  [OPEN]
+### BUG-030  `exec(compile(src))` was rated as a compile that runs nothing  [FIXED 8fb3c59]
 test: tests/test_py_frontend_sinks.py
 
 
