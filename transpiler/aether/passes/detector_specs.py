@@ -524,14 +524,39 @@ class ArgRule:
 
 
 @dataclass(frozen=True)
+class CalleeText:
+    """The wording a literal-or-wrapper row uses when the Python frontend
+    named the sink by a callee under `prefix` — one dotted prefix or a
+    tuple of them (`str.startswith` takes either) — and, when `leaf` is
+    set, only for that last component (`parse` vs `parseString`: the
+    file form of an XML parser opens its source argument, the string
+    form does not). `Call.callee` is the spelling `_callee_spelling`
+    resolved: a dotted import path on a `qualified`/`guard`/`argv`
+    match, the builtin name on `builtin`/`builtin_compile`, the
+    attribute path as written (possibly chained, `self.db.cursor.execute`)
+    on a `method` match. Text only: which calls are the sink, and what
+    argument they refuse, is decided by the row and never here."""
+    prefix: "str | Tuple[str, ...]"
+    message: str
+    suggestion: str
+    leaf: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class LiteralOrWrapperSpec:
     """*This argument must be a fixed literal or a sanctioned wrapper call.*
 
-    `message` is formatted with `fn`, `sink` and the `reason` the rule
-    produced. `safe_rule` is the rule that decides which NAMES count as
-    safe when they reach the sink; it defaults to `rule` and differs only
-    for E0720/E0727, which judge their argument by the deserialize rule
-    but resolve literal-bound names by the template rule.
+    `message` and `suggestion` are formatted with `fn`, `sink`, the
+    `reason` the rule produced and, on a Python-frontend finding, the
+    resolved `callee` (`xml.etree.ElementTree.fromstring`), its
+    `callee_tail` (`ElementTree.fromstring`, the last two components) and
+    its `callee_leaf` (`fromstring`).
+    `safe_rule` is the rule that decides which NAMES count as safe when
+    they reach the sink; it defaults to `rule` and differs only for
+    E0720/E0727, which judge their argument by the deserialize rule but
+    resolve literal-bound names by the template rule. `callee_text` is
+    consulted in order and the first prefix match wins; an Aether-source
+    finding has no callee and always gets the row's own text.
     """
     name: str
     code: str
@@ -541,6 +566,16 @@ class LiteralOrWrapperSpec:
     suggestion: str
     arg_index: int = 0
     safe_rule: Optional[ArgRule] = None
+    callee_text: Tuple[CalleeText, ...] = ()
+
+    def text_for(self, callee: Optional[str]) -> Tuple[str, str]:
+        """`(message, suggestion)` templates for a finding on `callee`."""
+        leaf = (callee or "").rsplit(".", 1)[-1]
+        for row in self.callee_text:
+            if callee and callee.startswith(row.prefix) \
+                    and row.leaf in (None, leaf):
+                return row.message, row.suggestion
+        return self.message, self.suggestion
 
 
 # `trusted(x)` is the explicit-trust boundary: an auditable assertion
@@ -692,6 +727,68 @@ _DESERIALIZE_RULE = ArgRule(
     default="argument is untrusted / dynamic data",
 )
 
+# E0727's Python text, shared by its stdlib rows. The facts are the Python
+# docs' (`library/xml.html`, "XML security", and the 3.11 page's table
+# footnotes), measured 2026-09-11 on CPython 3.11.15 / Expat 2.7.4:
+# demos/case_studies/LOOP_LOG.md iteration 53. The DoS clause is hedged
+# the way the docs hedge it, per issue; "large tokens" (CVE-2023-52425)
+# is a re-parse cost, not an entity attack, so it is not called one.
+_EXPAT_DOS = ("an older Expat (Python may use the system copy) may be open "
+              "to denial of service: the Python docs put the fixes at 2.4.1 "
+              "(billion laughs, quadratic blowup), 2.6.0 (large tokens) and "
+              "2.7.2 (disproportional memory use)")
+_EXPAT_DIRECT_MSG = ("function {fn!r} parses untrusted XML via {callee} "
+                     "({reason}); this parser never expands external entities, "
+                     "so there is no XXE file read or SSRF through entities on "
+                     "any Expat, but " + _EXPAT_DOS)
+_SAX_MSG = ("function {fn!r} parses untrusted XML via {callee} ({reason}); "
+            "{callee_leaf} builds its own parser with external entities off "
+            "(since Python 3.7.1) and takes no parser argument, so there is "
+            "no XXE through entities, but " + _EXPAT_DOS)
+_DOM_MSG = ("function {fn!r} parses untrusted XML via {callee} ({reason}); "
+            "external entities are off by default (since Python 3.7.1), but "
+            "a parser= argument built with xml.sax.make_parser() and "
+            "setFeature(feature_external_ges, True) resolves them, reading "
+            "local files and reaching internal URLs (XXE), and " + _EXPAT_DOS)
+# A parse() spelling opens its SOURCE argument itself (measured: a str is
+# open()ed as a local path; xml.sax.parse and lxml.etree.parse also fetch a
+# URL). E0727 judges entity resolution; no row judges that open — q1's
+# recorded miss.
+_SRC_PATH = ("; the source string of {callee} is itself opened as a local "
+             "path, which no row judges")
+_SRC_PATH_OR_URL = ("; the source string of {callee} is itself opened as a "
+                    "local file or, when no such file exists, fetched with "
+                    "urllib.request.urlopen(), which no row judges")
+# `pyexpat.EXPAT_VERSION` is the string "expat_2.7.4"; the tuple is what a
+# startup check can compare. defusedxml substitutes its defused parser only
+# when `parser` is None — a caller's parser is passed straight through
+# (measured: the secret came back through defusedxml.minidom.parseString
+# with a feature_external_ges parser), hence "no parser= argument".
+_DEFUSED_FIX = ("parse with defusedxml.{callee_tail} and no parser= argument "
+                "(it defuses only the parser it builds itself), which then "
+                "refuses entity declarations outright; otherwise check "
+                "pyexpat.version_info >= (2, 7, 2) at startup")
+_DEFUSED_FIX_SRC = _DEFUSED_FIX + "; never pass an untrusted path as the source"
+_DEFUSED_FIX_SRC_URL = _DEFUSED_FIX + ("; never pass an untrusted path or URL as "
+                                       "the source (defusedxml.sax.parse opens it "
+                                       "the same way)")
+# The lxml binding `_safe_xml_parser_names` recognises: resolve_entities
+# False, and no_network / load_dtd / dtd_validation absent or at their safe
+# value (an external DTD is fetched under load_dtd=True, no_network=False —
+# measured). tests/test_py_frontend_sinks.py pins this exact string in the
+# hint AND checks it as a clean fix shape, so they cannot drift.
+_LXML_SAFE_PARSER = ("lxml.etree.XMLParser(resolve_entities=False, "
+                     "no_network=True, load_dtd=False)")
+_LXML_MSG = ("function {fn!r} parses untrusted XML via {callee} ({reason}); "
+             "lxml read local files through external entities by default "
+             "before 5.0 (December 2023) and still does under "
+             "resolve_entities=True (a URL only when no_network=False is set "
+             "as well), so a crafted <!ENTITY SYSTEM ...> reads local files "
+             "(XXE)")
+_LXML_FIX = ("bind parser = " + _LXML_SAFE_PARSER + " in this function and "
+             "pass it as the parser argument, positionally or as parser=; "
+             "that binding clears this finding")
+
 LITERAL_OR_WRAPPER_SPECS: Tuple[LiteralOrWrapperSpec, ...] = (
     LiteralOrWrapperSpec(
         name="check_fs_path_safety", code="E0711", sinks=("writeFile", "readFile"), rule=_PATH_RULE,
@@ -754,12 +851,111 @@ LITERAL_OR_WRAPPER_SPECS: Tuple[LiteralOrWrapperSpec, ...] = (
     LiteralOrWrapperSpec(
         name="check_xxe", code="E0727", sinks=("parseXml",), rule=_DESERIALIZE_RULE,
         safe_rule=_TEMPLATE_RULE,
+        # The Aether stdlib `parseXml` MODELS an entity-resolving parser
+        # (`runtime.py`), so on an `.aeth` source this text is exact.
         message=("function {fn!r} parses untrusted XML via "
                  "{sink!r} ({reason}); an entity-resolving "
                  "parser reads local files and reaches internal URLs (XXE)"),
         suggestion=("parse with parseXmlSafe(data), which disables external "
                     "entity resolution (no file read, no SSRF, no billion-"
                     "laughs)"),
+        # The Python callees the frontend maps to `parseXml` are not one
+        # hazard, and `parseXmlSafe` does not exist for a Python user.
+        # Every fact below was measured 2026-09-11 (CPython 3.11.15,
+        # Expat 2.7.4, lxml 6.1.1 / libxml2 2.11.9, a local HTTP server
+        # for the URL claims) and is recorded in
+        # demos/case_studies/LOOP_LOG.md iteration 53. Rows are tried in
+        # order; the first prefix (and leaf) match wins, so each family's
+        # `parse` row precedes its general row.
+        callee_text=(
+            # lxml: external entities read local files by default before
+            # 5.0.0 (2023-12-29, its changelog: "lxml no longer expands
+            # external entities (XXE) by default") and on every version
+            # under `resolve_entities=True`. A URL is fetched only when
+            # `no_network=False` is set as well — `no_network=True` is the
+            # default (XMLParser docstring), and `resolve_entities=True`
+            # alone made 0 requests. lxml.etree.parse(source) opens or
+            # fetches its SOURCE with any parser, the hardened one
+            # included (measured) — outside this row. The frontend clears
+            # a hardened parser bound in the same function, passed
+            # positionally or as `parser=` (`_safe_xml_parser_names`,
+            # `_sink_match`).
+            CalleeText(
+                prefix="lxml.", leaf="parse",
+                message=_LXML_MSG + ("; the source string of {callee} is itself a "
+                                     "filename or URL lxml opens with any parser, "
+                                     "which no row judges"),
+                suggestion=_LXML_FIX + "; never pass an untrusted path or URL as the source",
+            ),
+            CalleeText(prefix="lxml.", message=_LXML_MSG, suggestion=_LXML_FIX),
+            # xml.sax.parse / parseString build a fresh make_parser() in
+            # their own body, with general external entities off since
+            # Python 3.7.1 (the xml.sax docs' "Changed in version 3.7.1"
+            # note), and take no parser argument — so the feature cannot
+            # be on through these callees. xml.sax.parse's SOURCE is a
+            # system identifier: an existing file is opened, anything
+            # else is urlopen()ed (the xml.sax docs; measured: 1 request).
+            # A parser OBJECT with setFeature(feature_external_ges, True)
+            # reads the file and fetches the URL (measured), but its own
+            # `.parse` is a receiver-bound method, not a mapped sink:
+            # q1's recorded miss, the next TYPE gap.
+            CalleeText(prefix="xml.sax.", leaf="parse",
+                       message=_SAX_MSG + _SRC_PATH_OR_URL, suggestion=_DEFUSED_FIX_SRC_URL),
+            CalleeText(prefix="xml.sax.", message=_SAX_MSG, suggestion=_DEFUSED_FIX),
+            # minidom and pulldom take a `parser=` SAX parser. One built
+            # with xml.sax.make_parser() and setFeature(feature_external_ges,
+            # True) reads the file AND fetches the URL through both
+            # (measured). Off by default (since 3.7.1); the frontend does
+            # not track setFeature, so both states get this finding. The
+            # parse() forms open a str source as a local path.
+            CalleeText(prefix=("xml.dom.minidom.", "xml.dom.pulldom."), leaf="parse",
+                       message=_DOM_MSG + _SRC_PATH, suggestion=_DEFUSED_FIX_SRC),
+            CalleeText(prefix=("xml.dom.minidom.", "xml.dom.pulldom."),
+                       message=_DOM_MSG, suggestion=_DEFUSED_FIX),
+            # cElementTree is ElementTree's parser under a deprecated
+            # name, and defusedxml.cElementTree is deprecated too: the
+            # hint names defusedxml.ElementTree.
+            CalleeText(
+                prefix="xml.etree.cElementTree.", leaf="parse",
+                message=_EXPAT_DIRECT_MSG + _SRC_PATH,
+                suggestion=_DEFUSED_FIX_SRC.replace("defusedxml.{callee_tail}",
+                                                    "defusedxml.ElementTree.{callee_leaf}"),
+            ),
+            CalleeText(
+                prefix="xml.etree.cElementTree.",
+                message=_EXPAT_DIRECT_MSG,
+                suggestion=_DEFUSED_FIX.replace("defusedxml.{callee_tail}",
+                                                "defusedxml.ElementTree.{callee_leaf}"),
+            ),
+            # ElementTree and expatbuilder: straight on Expat, which "does
+            # not access local files or create network connections"
+            # (Python docs, "XML security"). ElementTree raises ParseError
+            # on an external entity, expatbuilder drops it (measured; the
+            # 3.11 table's footnotes 2-3 for ElementTree/minidom). Not
+            # version-dependent; only the DoS clause is. Their parse()
+            # forms open() a str source as a local path (a URL raises
+            # OSError; measured).
+            CalleeText(prefix="xml.", leaf="parse",
+                       message=_EXPAT_DIRECT_MSG + _SRC_PATH, suggestion=_DEFUSED_FIX_SRC),
+            CalleeText(prefix="xml.", message=_EXPAT_DIRECT_MSG, suggestion=_DEFUSED_FIX),
+            # defusedxml with a caller's parser (SINK_GUARDS rows keyed on
+            # `parser=`): defusedxml substitutes its defused parser only
+            # when `parser` is None, and passes any other straight through
+            # — measured: the secret came back through
+            # defusedxml.minidom.parseString(xxe, parser=<feature_external_ges>).
+            CalleeText(
+                prefix="defusedxml.",
+                message=("function {fn!r} parses untrusted XML via {callee} with a "
+                         "parser= argument ({reason}); defusedxml defuses only the "
+                         "parser it builds itself and passes a caller's parser "
+                         "straight through, so one built with xml.sax.make_parser() "
+                         "and setFeature(feature_external_ges, True) reads local "
+                         "files and reaches internal URLs (XXE)"),
+                suggestion=("drop the parser= argument (or pass parser=None) so "
+                            "defusedxml builds its own parser, which refuses entity "
+                            "declarations outright"),
+            ),
+        ),
     ),
     LiteralOrWrapperSpec(
         name="check_code_injection", code="E0731", sinks=("evalCode",), rule=_CODE_RULE,
@@ -973,17 +1169,26 @@ def literal_or_wrapper(spec: LiteralOrWrapperSpec) -> Callable[[Dict[str, Any]],
                 # How the Python frontend named this call a sink — absent
                 # on an Aether-source finding, where nothing was guessed.
                 match = call.get("match")
+                # WHICH Python callee it resolved to; picks the row's
+                # wording (`callee_text`) and nothing else.
+                callee = call.get("callee")
+                message, suggestion = spec.text_for(callee)
+                parts = (callee or "").split(".")
+                words = {"fn": fn, "reason": reason, "callee": callee,
+                         "callee_tail": ".".join(parts[-2:]),
+                         "callee_leaf": parts[-1]}
                 for sink in targets:
                     diags.append(Diagnostic(
                         code=spec.code,
                         category="capability",
                         severity="error",
-                        message=spec.message.format(fn=fn, sink=sink, reason=reason),
+                        message=message.format(sink=sink, **words),
                         position=Position(pos.get("line", 0), pos.get("column", 0)),
-                        suggestion=spec.suggestion,
+                        suggestion=suggestion.format(sink=sink, **words),
                         confidence=confidence_of(match),
                         extra=({"function": fn, "sink": sink, "reason": reason}
-                               | ({"match": match} if match else {})),
+                               | ({"match": match} if match else {})
+                               | ({"callee": callee} if callee else {})),
                     ))
         return diags
 

@@ -1,5 +1,32 @@
 # Operation Log (append-only — newest on top)
 
+## [2026-09-11] Q1 residual added | iteration 53: E0727's Python text is per callee
+- **The text was the Aether parser's, not the Python parser's.** Every
+  stdlib `xml.*` callee `check-py` maps to `parseXml` printed "reads local
+  files and reaches internal URLs" and a hint naming `parseXmlSafe`, an
+  Aether function. Probed on Expat 2.7.4: by default no stdlib parser
+  fetches a SYSTEM entity, and ElementTree/expatbuilder never do; the
+  live stdlib XXE is a SAX parser with `feature_external_ges` set,
+  reachable through minidom/pulldom `parser=` (measured: file read and an
+  `http://` fetch) and through the parser object's own `.parse`, which is
+  not a mapped sink — a MISS, recorded on q1 as the next TYPE gap, beside
+  a second one: every `parse()` spelling opens its source string as a
+  path or URL and no row judges it. lxml reads the file by default only
+  below 5.0.0, a URL only with `no_network=False`. The DoS clause is
+  hedged at the Python docs' thresholds (2.4.1 / 2.6.0 / 2.7.2). q1
+  carries the residual and the misses; the taxonomy row carries the
+  per-callee summary.
+- **Lesson carried, three times in one iteration:** a sink's message is a
+  claim about the RUNTIME the user has, and the Python frontend maps many
+  runtimes to one Aether sink — write the shape and run it on each before
+  the text says what it does. Two review rounds, each with a local HTTP
+  server, found what re-reading the docs had not: an lxml URL fetch that
+  `no_network=True` blocks; a `feature_external_ges` that `xml.sax.parse`
+  cannot set; and "not a file read" on `parse()` spellings that open
+  their source string. The hint's own fix shape was probed too: defusedxml
+  handed a caller's parser passes it through, so that shape is now a
+  sink instead of a silent miss.
+
 ## [2026-09-11] Q7 corrected | the totality claim had a counterexample (BUG-027, BUG-028)
 - **q7 said the Python frontend was total over statement positions; it
   was not.** The 0.4.0 pre-release audit probed the claim: a sink inside

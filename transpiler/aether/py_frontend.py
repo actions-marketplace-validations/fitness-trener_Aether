@@ -286,6 +286,19 @@ for _fn in ("subprocess.run", "subprocess.call", "subprocess.check_call",
     SINK_GUARDS[_fn] = Guard("shellExec", keyword="shell", arg_index=8,
                              safe_values=("False",), absent_is_sink=False)
 
+for _fn in ("defusedxml.minidom.parse", "defusedxml.minidom.parseString",
+            "defusedxml.pulldom.parse", "defusedxml.pulldom.parseString",
+            "defusedxml.ElementTree.parse"):
+    # defusedxml defuses only the parser it builds itself: `parser=`
+    # absent or None is the defused path, and a caller's parser is passed
+    # straight through — one built with make_parser() and
+    # feature_external_ges read the file through defusedxml.minidom
+    # (measured, LOOP_LOG iteration 53). `parser` is the second
+    # positional of every one of these. E0727's hint names defusedxml,
+    # so the shape the hint would otherwise steer into must not be silent.
+    SINK_GUARDS[_fn] = Guard("parseXml", keyword="parser", arg_index=1,
+                             safe_values=("None",), absent_is_sink=False)
+
 # Method name on a receiver of unresolved type -> sink (over-flag direction).
 SINK_BY_METHOD: Dict[str, str] = {
     "execute": "sqlQuery", "executemany": "sqlQuery",
@@ -1116,7 +1129,17 @@ def _guard_verdict(call: _pyast.Call, guard: "Guard", imp: "_Imports",
 
 
 # XML parser constructors whose keyword arguments carry the XXE guard.
-_XML_PARSER_CTORS = {"lxml.etree.XMLParser", "xml.sax.make_parser"}
+# lxml only: `xml.sax.make_parser` was listed here until iteration 53, but
+# it has no `resolve_entities` keyword (TypeError at runtime), so the only
+# stdlib shape that cleared E0727 was one that cannot execute.
+_XML_PARSER_CTORS = {"lxml.etree.XMLParser"}
+# The keyword each hardening option must carry to count as OFF. Only
+# `resolve_entities` is required; the others, when present, must be at
+# their safe value — `XMLParser(resolve_entities=False, load_dtd=True,
+# no_network=False)` still fetches an external DTD (measured, iteration
+# 53), so it is not the sanctioned exit.
+_XML_PARSER_SAFE_KWS = {"resolve_entities": False, "no_network": True,
+                        "load_dtd": False, "dtd_validation": False}
 
 
 def _safe_xml_parser_names(fn_node: Any, imp: "_Imports") -> Set[str]:
@@ -1149,11 +1172,12 @@ def _safe_xml_parser_names(fn_node: Any, imp: "_Imports") -> Set[str]:
         # after the safe constructor still disarmed the sink (BUG-012).
         off = False
         if isinstance(value, _pyast.Call) \
-                and _callee_spelling(value.func, imp) in _XML_PARSER_CTORS:
-            off = any(kw.arg == "resolve_entities"
-                      and isinstance(kw.value, _pyast.Constant)
-                      and kw.value.value is False
-                      for kw in value.keywords or [])
+                and _callee_spelling(value.func, imp) in _XML_PARSER_CTORS \
+                and not any(kw.arg is None for kw in value.keywords or []):
+            kws = {kw.arg: kw.value for kw in value.keywords or []}
+            off = "resolve_entities" in kws and all(
+                isinstance(kws[k], _pyast.Constant) and kws[k].value is want
+                for k, want in _XML_PARSER_SAFE_KWS.items() if k in kws)
         bound.setdefault(name, []).append(off)
     return {n for n, flags in bound.items() if flags and all(flags)}
 
@@ -1208,9 +1232,22 @@ def _sink_match(call: _pyast.Call, imp: "_Imports",
         return None
     sink = SINK_BY_QUALIFIED.get(dotted)
     if sink == "parseXml":
+        safe = safe_xml or set()
+        # A parser bound with entity resolution OFF disarms the sink,
+        # passed positionally (`fromstring(raw, parser)`) or, as lxml's
+        # own docs spell it, as `parser=parser`. Same value, other slot;
+        # the keyword form fired until iteration 53 while E0727's hint
+        # promised the binding would clear it. The `parser` keyword only:
+        # a hardened parser under another keyword (`base_url=parser`) is
+        # not the parser the call uses, and a `**kwargs` splat is not a
+        # named parser — neither clears.
         for a in call.args[1:]:
-            if isinstance(a, _pyast.Name) and a.id in (safe_xml or set()):
+            if isinstance(a, _pyast.Name) and a.id in safe:
                 return None      # entity resolution explicitly disabled
+        for kw in call.keywords or []:
+            if kw.arg == "parser" and isinstance(kw.value, _pyast.Name) \
+                    and kw.value.id in safe:
+                return None
         return sink, "qualified"
     if sink is not None:
         return sink, "qualified"
@@ -1327,6 +1364,18 @@ def _call_expr(node: _pyast.Call, imp: "_Imports",
         # a sink carries it — a wrapper or a `py:` spelling matched
         # nothing, so there is nothing to be more or less sure about.
         out["match"] = sink[1]
+        if dotted:
+            # WHICH Python callee it was: the spelling `_callee_spelling`
+            # resolved — a dotted import path on a `qualified`/`guard`/
+            # `argv` match, the builtin name on `builtin`, the attribute
+            # path as written (possibly chained) on a `method` match. The Aether
+            # name is one sink for every spelling that maps to it, and
+            # for E0727 the spellings are not one hazard: ElementTree
+            # never expands an external entity, `lxml.etree` before 5.0
+            # did by default. The spec row picks its wording by this
+            # (`LiteralOrWrapperSpec.callee_text`) and puts it in
+            # `extra.callee`; detection never reads it.
+            out["callee"] = dotted
     elif dotted in ("exec", "eval") and isinstance(node.func, _pyast.Name) \
             and node.func.id not in getattr(resolver, "shadowed", ()) \
             and out["args"] and out["args"][0].get("match") == "builtin_compile":

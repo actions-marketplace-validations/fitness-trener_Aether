@@ -1290,6 +1290,25 @@ end
     print("E0727: parseXmlSafe passes clean")
 
 
+def test_aether_xxe_text_is_the_modeled_parser():
+    """On an `.aeth` source `parseXml` IS the entity-resolving parser
+    `runtime.py` models, so the text says so and the fix is
+    `parseXmlSafe`. The per-callee Python wording (iteration 53) must not
+    leak here: an Aether-source finding carries no `callee`."""
+    src = """
+function loadDoc(raw: String) returns String
+  effects pure
+do
+  return parseXml(raw)
+end
+"""
+    (d,) = check_xxe(parse(src, "<xxe>"))
+    assert "entity-resolving parser reads local files" in d.message, d.message
+    assert "parseXmlSafe(data)" in d.suggestion, d.suggestion
+    assert "callee" not in d.extra and d.confidence == 1.0, (d.extra, d.confidence)
+    print("E0727: Aether-source text names the modeled parser and parseXmlSafe")
+
+
 # --- E0728 CSV / formula injection (CWE-1236) ---------------------------
 
 def _csv_codes(src: str):
@@ -3033,6 +3052,7 @@ if __name__ == "__main__":
     test_sanitize_header_clean()
     test_untrusted_xml_rejected()
     test_parse_xml_safe_clean()
+    test_aether_xxe_text_is_the_modeled_parser()
     test_untrusted_csv_rejected()
     test_csv_escape_clean()
     test_detectors_compose_additively()

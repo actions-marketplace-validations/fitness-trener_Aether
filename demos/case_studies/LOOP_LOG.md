@@ -2053,6 +2053,208 @@ State carried forward: the full gate suite must stay green
 
 ---
 
+## Iteration 53 — E0727's Python text described the Aether parser, not the Python one (no new detector)
+
+- **Target:** the residual `bench/framework_scan/REPORT.md` §3 left
+  (commit 8a3b919, 2026-09-02, the BUG-011 round) — "a version-dependent
+  sink is a residual no static rule resolves" — read from the user's
+  side. `check-py` maps twelve stdlib `xml.*` callees (ElementTree,
+  cElementTree, minidom, pulldom, expatbuilder, sax: parse plus
+  parseString/fromstring each) and three `lxml.etree` callees to
+  `parseXml`, and every one printed the row's Aether text: "an
+  entity-resolving parser reads local files and reaches internal URLs
+  (XXE)" with the hint "parse with parseXmlSafe(data)". `parseXmlSafe` is
+  an Aether stdlib function; a Python user cannot call it.
+- **Probe-confirmed first (2026-09-11, CPython 3.11.15,
+  `pyexpat.EXPAT_VERSION` = expat_2.7.4, lxml 6.1.1 / libxml2 2.11.9;
+  the URL claims measured against a local HTTP server, most of them only
+  after review asked):**
+  - stdlib `ElementTree` / `minidom` / `xml.sax` / `pulldom` /
+    `expatbuilder` on `<!ENTITY x SYSTEM "file:///…">` by default: no
+    file read — ElementTree raises `undefined entity`, the others drop the
+    reference. Same for an `http://` SYSTEM entity: no request. The Python
+    docs say so: "By default, Expat itself does not access local files or
+    create network connections" (`library/xml.html`, "XML security"); the
+    3.11 page's table footnotes: ElementTree "doesn't expand external
+    entities and raises a ParseError", minidom "returns the unexpanded
+    entity verbatim", sax/pulldom "Since Python 3.7.1, external general
+    entities are no longer processed by default".
+  - the same on entity expansion: a 6-level (10^6) billion-laughs payload
+    parses; 7 levels (10^7), 8 levels and a 50 kB × 2,000 quadratic
+    payload are refused with `limit on input amplification factor (from
+    DTD and entities) breached`. The docs hedge, and the thresholds are
+    per issue: the current page says Expat "lower than 2.7.2 may be
+    vulnerable to the 'billion laughs', 'quadratic blowup' and 'large
+    tokens' vulnerabilities, or to disproportional use of dynamic memory"
+    and "Python bundles a copy of Expat, and whether Python uses the
+    bundled or a system-wide Expat, depends on how the Python interpreter
+    has been configured in your environment … Check
+    `pyexpat.EXPAT_VERSION`"; the 3.11 table's footnotes put billion
+    laughs / quadratic blowup at 2.4.1 and large tokens (CVE-2023-52425, a
+    re-parse cost, not an entity attack) at 2.6.0, "still listed as
+    vulnerable due to potential reliance on system-provided libraries".
+  - the live stdlib XXE is a SAX parser with
+    `setFeature(feature_external_ges, True)`: it reads the file AND fetches
+    the `http://` entity (1 request on the local server). It is reachable
+    through `minidom.parse/parseString(…, parser=p)` and
+    `pulldom.parse/parseString(…, parser=p)` (both measured: file and URL)
+    and through the parser object's own `p.parse(...)`. It is NOT
+    reachable through `xml.sax.parse` / `xml.sax.parseString`: their
+    source builds a fresh `make_parser()` and exposes no parser argument.
+  - a `parse()` spelling opens its SOURCE argument itself, whatever the
+    parser: `ET.parse(path)`, `cElementTree.parse(path)`,
+    `expatbuilder.parse(path)`, `minidom.parse(path)`, `pulldom.parse(path)`
+    open a str as a local file (a URL raises `OSError`);
+    `xml.sax.parse(source)` opens an existing file or `urlopen()`s anything
+    else (the `xml.sax` docs; measured: 1 request), and so does
+    `defusedxml.sax.parse`; `lxml.etree.parse(url)` fetches it with the
+    default parser AND with the hardened one the hint names (measured: 1
+    request each). E0727 judges entity resolution; no row judges that
+    open (E0711's Python mapping covers `open`, not XML sources).
+  - lxml 6.1.1 default parser: `Entity 'x' not defined`, no read;
+    `XMLParser(resolve_entities=True)`: the file IS read, but the
+    `http://` entity is NOT fetched (0 requests) — `no_network=True` is the
+    default (the XMLParser docstring), and only `resolve_entities=True,
+    no_network=False` fetched it (1 request); `resolve_entities=False`:
+    clean, but `XMLParser(resolve_entities=False, load_dtd=True,
+    no_network=False)` fetched an external DTD (`<!DOCTYPE r SYSTEM
+    "http://…">`, 1 request) — the hardened binding needs all three
+    keywords. libxml2 2.11 refuses every expansion payload (`Maximum entity
+    amplification factor exceeded`). The lxml 5.0.0 changelog
+    (2023-12-29): "lxml no longer expands external entities (XXE) by
+    default … The new default is resolve_entities='internal'."
+  - `defusedxml` 0.7.1 refuses both the SYSTEM entity and the expansion
+    payload (`EntitiesForbidden`) — but only with the parser it builds
+    itself: `defusedxml.minidom.parseString(xxe, parser=ges)` returned the
+    secret and `defusedxml.pulldom.parse(…, parser=ges)` fetched the URL
+    (its source: `if parser is None: parser = make_parser()`). Its
+    `cElementTree` module is deprecated in favour of `ElementTree`. bandit
+    1.9.4 flags the stdlib calls (B313–B319, MEDIUM: "Replace … with its
+    defusedxml equivalent") and has no lxml check any more (B320 is
+    removed in that version).
+- **Improvement — text per callee, and the four detection changes the
+  probes forced:** `_call_expr` parks the callee spelling on a sink Call
+  (`callee`: the spelling `_callee_spelling` resolved — a dotted import
+  path on a `qualified`/`guard`/`argv` match, the builtin name on
+  `builtin`, the attribute path as written, possibly chained, on a
+  `method` match); `LiteralOrWrapperSpec` grows `callee_text` —
+  prefix-ordered `CalleeText` rows, a prefix or a tuple of them, with an
+  optional `leaf` so `parse` and `parseString` can differ — and
+  `text_for(callee)` picks the wording; the driver formats `message` AND
+  `suggestion` with `callee`, `callee_tail` (last two components) and
+  `callee_leaf` (last one) and puts `callee` in `extra`. E0727 carries
+  eleven rows: `lxml.` ×2 (file read by default before 5.0 and under
+  `resolve_entities=True`, a URL only with `no_network=False`; fix = the
+  three-keyword parser binding), `xml.sax.` ×2 (own parser, no parser
+  argument: no XXE through entities), `xml.dom.minidom.` +
+  `xml.dom.pulldom.` ×2 (a `parser=` with `feature_external_ges` reads
+  files and fetches URLs), `xml.etree.cElementTree.` ×2 (the hint names
+  `defusedxml.ElementTree`, the non-deprecated module), `xml.` ×2 for
+  ElementTree/expatbuilder (never expand external entities, any Expat),
+  and `defusedxml.` for the guard rows below. Each family's `parse` row
+  adds that the source string is itself opened as a path (or, for
+  `xml.sax.parse` and `lxml.etree.parse`, fetched as a URL) and that no
+  row judges it. Every stdlib row ends with the docs' hedged,
+  per-threshold DoS clause and a hint naming the `defusedxml` equivalent
+  "and no parser= argument" or a `pyexpat.version_info >= (2, 7, 2)` check
+  (`EXPAT_VERSION` is a string; comparing it is wrong). An `.aeth` source
+  has no callee and keeps the row's own text, which is exact there:
+  `_ae_parseXml` models an entity-resolving parser.
+  Detection: (1) RELAX — the hardened lxml parser bound in the same
+  function now clears the sink when passed as `parser=parser`, lxml's
+  documented spelling, as it already did positionally; the `parser`
+  keyword only (`base_url=parser` does not clear), never a `**kwargs`
+  splat. The first draft's hint promised "that binding clears this
+  finding" while the keyword form still fired (review, reproduced).
+  (2) STRENGTHEN — `_safe_xml_parser_names` requires `resolve_entities=
+  False` and, when present, `no_network=True`, `load_dtd=False`,
+  `dtd_validation=False`, and refuses a `**kwargs` splat in the
+  constructor: the DTD-retrieval shape above no longer clears. (3)
+  STRENGTHEN — `xml.sax.make_parser` leaves `_XML_PARSER_CTORS`: it has no
+  `resolve_entities` keyword (TypeError), so the only stdlib shape that
+  cleared E0727 was one that cannot run. (4) STRENGTHEN — new `SINK_GUARDS`
+  rows keyed on `parser=` for `defusedxml.minidom.parse/parseString`,
+  `defusedxml.pulldom.parse/parseString` and `defusedxml.ElementTree.parse`
+  (absent or `None`: not a sink; anything else: the sink, match kind
+  `guard`), because the hint names defusedxml and the shape it would
+  otherwise steer into was silent.
+- **Why wording and not confidence:** `confidence.py` rates how sure the
+  analysis is that the call IS the sink it matched — `ET.fromstring`
+  resolved through the imports is a 0.95 `qualified` match and stays one.
+  What is uncertain on a stdlib callee is the RUNTIME (which Expat, which
+  parser object), which no static rule resolves and which the message now
+  states. Lowering the rating would also move iteration 52's measured
+  corpus distribution (0.95 ×44 / 0.9 ×3 / 0.6 ×629) for a reason that is
+  not identification certainty.
+- **Kept flagged on purpose:** every stdlib row still fires (bandit
+  B313–B319 do too): a system Expat below the docs' thresholds is a real
+  DoS, minidom/pulldom become a real XXE with one `parser=`, and every
+  `parse()` spelling opens its source. Over-flag, never miss within the
+  modeled surface.
+- **Two review rounds, by measurement, rewrote this text twice.** Round
+  one: "reaches internal URLs" for lxml under `resolve_entities=True`
+  alone (`no_network=True` blocks it); "xml.sax resolves them once
+  feature_external_ges is set" on callees that cannot set it; the definite
+  "is open to … below 2.7.2" against the docs' "may be" and per-issue
+  thresholds; "large tokens" filed under entity expansion; the deprecated
+  `defusedxml.cElementTree` in a hint; a string comparison of
+  `EXPAT_VERSION`; "bandit B313–B320"; "ten" stdlib callees; the REPORT §3
+  provenance; a fix-shape test with no positive control. Round two: "not
+  a file read or SSRF" on the `parse()` spellings, whose source string IS
+  opened or fetched; "refuses entity declarations outright" for a
+  defusedxml call that keeps the caller's parser; the keyword clearing
+  keyed on the value instead of the `parser` slot; the sanctioned exit
+  clearing a parser that still retrieves an external DTD; the dead
+  `make_parser` constructor entry; a docs sentence attributed to a page
+  that does not carry it; a paraphrase in quotation marks on the q1 row;
+  a double-escaped wikilink pipe; and `callee` described as "a bare method
+  name" when it is the attribute path as written.
+- **Measured non-breaking:** `check-py --json` over the in-tree Python
+  corpus (`bench tests tools playground demos`: 208 files, 110 findings)
+  before and after: identical multiset of (path, code, confidence,
+  severity, extra minus `callee`) — the only position deltas are the
+  E0723 fixtures that sit below the edited test text in the two test
+  files; text differs on E0727 only; `extra.callee` is now present on
+  every literal-or-wrapper Python finding
+  (E0713/E0714/E0718/E0719/E0720/E0727/E0731). None of the four detection
+  changes touches an in-tree shape. Every fix shape the hints name checks
+  clean beside eight positive controls (an unhardened, parameter-supplied
+  or wrong-keyword `parser=`, a `**kwargs` splat, a DTD-retrieving
+  binding, the dead `make_parser` shape, defusedxml with a caller's
+  parser).
+- **Ratchet:** unchanged (55 codes / 31 detectors).
+- **Residuals (pushed to q1):** (a) a version-dependent sink — the
+  analyzer cannot see the runtime Expat or lxml; the text names the
+  boundary and the check, it cannot make it. (b) the `parser=` SAX parser
+  on minidom/pulldom is not inspected: `setFeature` is untracked, so the
+  default (safe) and the feature-on (XXE) states get the same finding —
+  over-flag. (c) `defusedxml.defuse_stdlib()` is untracked — over-flag.
+  (d) the source argument of a `parse()` spelling — a path, or for
+  `xml.sax.parse` / `defusedxml.sax.parse` / `lxml.etree.parse` a path or
+  URL — is opened by the library and judged by no row: the text names it,
+  E0727 does not fire for it, and a literal-free `ET.parse(path)` with a
+  hardened lxml parser is clean. A MISS (accept direction). (e)
+  `callee_text` reaches only the literal-or-wrapper driver.
+- **TYPE gap surfaced for next iter — a MISS, not text:**
+  `p = xml.sax.make_parser(); p.setFeature(feature_external_ges, True);
+  p.parse(raw)` is the stdlib XXE this iteration measured, and it reports
+  NOTHING: `p.parse` is a receiver-bound method, in neither
+  `SINK_BY_QUALIFIED` nor `SINK_BY_METHOD` (a bare `parse` method row
+  would over-flag every `.parse`). The shape is the guard-bound-elsewhere
+  class `_safe_xml_parser_names` already handles for lxml, in the
+  opposite direction: resolve `p` to its `make_parser()` binding and treat
+  `p.parse` as the sax sink. Probe prevalence on the framework corpus
+  before building it. Second in line, same class: residual (d) — the
+  `parse()` source string is a path/URL sink no row owns (E0711's Python
+  mapping stops at `open`). Third: the same per-callee audit one row over
+  — E0720's hint says `schemaDecode(schema, data)` to a `pickle.loads` /
+  `yaml.load` user, and E0719's says nothing Python-specific to a
+  `render_template_string` user; `callee_text` is the mechanism, each
+  row needs its own probe-confirmed facts first.
+- **Suite:** exit 0.
+
+---
+
 ## Next-iteration checklist (for the loop)
 
 1. Read the previous report's "TYPE gap for next iter".
