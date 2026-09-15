@@ -1153,5 +1153,9 @@ keeps an exact "never" (`_EXPATBUILDER_MSG`): its second positional is
 requests. The `xml.` fallback rows become explicit `xml.etree.ElementTree.`
 and `xml.dom.expatbuilder.` rows, and the test requires every one of the 20
 callees mapped to `parseXml` to match a Python row. The lxml file-read
-clause is conditional; the minidom/pulldom text drops the date. Detection,
-confidence and the DoS clause are unchanged.
+clause is conditional; the minidom/pulldom text drops the date. The stdlib
+hint says "no parser argument, parser= or positional", and its fallback
+("otherwise pass no parser argument and check pyexpat.version_info >= (2, 7,
+2)") keeps that condition: the version check covers only the DoS clause, and
+on Expat 2.7.4 a positional lxml or `feature_external_ges` parser still read
+the file. Detection, confidence and the DoS clause are unchanged.

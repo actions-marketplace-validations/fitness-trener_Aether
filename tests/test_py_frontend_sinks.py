@@ -356,7 +356,8 @@ def test_xxe_python_text_names_the_callee_and_a_python_fix():
         assert "cElementTree" not in d.suggestion, d.suggestion
         assert "parseXmlSafe" not in d.suggestion, d.suggestion
         # defusedxml defuses only the parser it builds: the hint says so.
-        assert "no parser= argument" in d.suggestion, d.suggestion
+        assert "no parser argument, parser= or positional" in d.suggestion \
+            and "otherwise pass no parser argument and check" in d.suggestion, d.suggestion
         # The DoS clause is hedged and per issue, as the Python docs put
         # it; "large tokens" is not an entity-expansion attack.
         assert "may be open to" in d.message and "2.4.1" in d.message \
@@ -504,9 +505,13 @@ def test_xxe_elementtree_text_is_scoped_to_calls_without_a_parser():
         assert "called without a parser argument" in m \
             and "a parser passed in (parser= or positionally) is used as given" in m, m
         assert "XMLParser(resolve_entities=True) reads local files" in m \
+            and "fetches URLs with no_network=False" in m \
             and "setFeature(feature_external_ges, True) reads local files and fetches URLs" in m, m
         assert "may be open to" in m and "2.7.2" in m, m
-        assert "no parser= argument" in s and "cElementTree" not in s, s
+        # The version check alone does not cover a passed parser.
+        assert "no parser argument, parser= or positional" in s \
+            and "otherwise pass no parser argument and check" in s \
+            and "cElementTree" not in s, s
     # cElementTree's parse row: the source-path clause and the
     # defusedxml.ElementTree.parse hint.
     assert "is itself opened as a local path" in ds["d"].message, ds["d"].message

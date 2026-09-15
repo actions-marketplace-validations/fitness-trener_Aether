@@ -786,10 +786,14 @@ _SRC_PATH_OR_URL = ("; the source string of {callee} is itself opened as a "
 # startup check can compare. defusedxml substitutes its defused parser only
 # when `parser` is None — a caller's parser is passed straight through
 # (measured: the secret came back through defusedxml.minidom.parseString
-# with a feature_external_ges parser), hence "no parser= argument".
-_DEFUSED_FIX = ("parse with defusedxml.{callee_tail} and no parser= argument "
-                "(it defuses only the parser it builds itself), which then "
-                "refuses entity declarations outright; otherwise check "
+# with a feature_external_ges parser), hence "no parser argument" in either
+# slot. The version check covers only the DoS clause, so the alternative
+# keeps the no-parser condition too (a caller's parser is the XXE on
+# ElementTree/minidom/pulldom whatever the Expat).
+_DEFUSED_FIX = ("parse with defusedxml.{callee_tail} and no parser argument, "
+                "parser= or positional (it defuses only the parser it builds "
+                "itself), which then refuses entity declarations outright; "
+                "otherwise pass no parser argument and check "
                 "pyexpat.version_info >= (2, 7, 2) at startup")
 _DEFUSED_FIX_SRC = _DEFUSED_FIX + "; never pass an untrusted path as the source"
 _DEFUSED_FIX_SRC_URL = _DEFUSED_FIX + ("; never pass an untrusted path or URL as "
