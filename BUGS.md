@@ -1111,7 +1111,7 @@ Fix: `_call_expr` re-rates the inner compile to `builtin` when a builtin,
 unshadowed `exec`/`eval` wraps it. A `compile()` on its own, or one under a
 local `def exec`, stays at the floor.
 
-### BUG-031  E0727 told ElementTree users a caller's parser "never" expands external entities (false reassurance)  [OPEN]
+### BUG-031  E0727 told ElementTree users a caller's parser "never" expands external entities (false reassurance)  [FIXED fbec07c]
 test: tests/test_py_frontend_sinks.py
 (`::test_xxe_elementtree_text_is_scoped_to_calls_without_a_parser`; the
 detection shapes the same audit found untested are in
