@@ -737,16 +737,39 @@ _EXPAT_DOS = ("an older Expat (Python may use the system copy) may be open "
               "to denial of service: the Python docs put the fixes at 2.4.1 "
               "(billion laughs, quadratic blowup), 2.6.0 (large tokens) and "
               "2.7.2 (disproportional memory use)")
-_EXPAT_DIRECT_MSG = ("function {fn!r} parses untrusted XML via {callee} "
-                     "({reason}); this parser never expands external entities, "
-                     "so there is no XXE file read or SSRF through entities on "
-                     "any Expat, but " + _EXPAT_DOS)
+# ElementTree's parse/fromstring take a `parser` (second positional or
+# `parser=`) and use it as given; only the default XMLParser they build is
+# Expat with entities unexpanded. Measured 2026-09-15 (LOOP_LOG iteration
+# 53, correction): an lxml XMLParser(resolve_entities=True) returned a local
+# file's contents through ET.fromstring/XML/parse, keyword and positional
+# (with no_network=False, 1 HTTP request through parse and fromstring), and
+# a make_parser() with feature_external_ges delivered a file's contents to
+# its handler through parse and fromstring and made 1 HTTP request through
+# parse.
+_ET_MSG = ("function {fn!r} parses untrusted XML via {callee} ({reason}); "
+           "called without a parser argument, {callee_leaf} never expands "
+           "external entities, so there is no XXE file read or SSRF through "
+           "entities on any Expat; a parser passed in (parser= or "
+           "positionally) is used as given: an lxml XMLParser("
+           "resolve_entities=True) reads local files (and fetches URLs with "
+           "no_network=False), and an xml.sax.make_parser() with "
+           "setFeature(feature_external_ges, True) reads local files and "
+           "fetches URLs (XXE); and " + _EXPAT_DOS)
+# expatbuilder.parse(file, namespaces=True) / parseString(string,
+# namespaces=True) take no parser: the second positional is `namespaces`,
+# `parser=` is a TypeError, and an external entity is dropped with 0
+# requests (measured 2026-09-15).
+_EXPATBUILDER_MSG = ("function {fn!r} parses untrusted XML via {callee} "
+                     "({reason}); {callee_leaf} takes no parser argument and "
+                     "never expands external entities, so there is no XXE "
+                     "file read or SSRF through entities on any Expat, but "
+                     + _EXPAT_DOS)
 _SAX_MSG = ("function {fn!r} parses untrusted XML via {callee} ({reason}); "
             "{callee_leaf} builds its own parser with external entities off "
             "(since Python 3.7.1) and takes no parser argument, so there is "
             "no XXE through entities, but " + _EXPAT_DOS)
 _DOM_MSG = ("function {fn!r} parses untrusted XML via {callee} ({reason}); "
-            "external entities are off by default (since Python 3.7.1), but "
+            "external entities are off by default, but "
             "a parser= argument built with xml.sax.make_parser() and "
             "setFeature(feature_external_ges, True) resolves them, reading "
             "local files and reaching internal URLs (XXE), and " + _EXPAT_DOS)
@@ -780,11 +803,13 @@ _DEFUSED_FIX_SRC_URL = _DEFUSED_FIX + ("; never pass an untrusted path or URL as
 _LXML_SAFE_PARSER = ("lxml.etree.XMLParser(resolve_entities=False, "
                      "no_network=True, load_dtd=False)")
 _LXML_MSG = ("function {fn!r} parses untrusted XML via {callee} ({reason}); "
-             "lxml read local files through external entities by default "
-             "before 5.0 (December 2023) and still does under "
-             "resolve_entities=True (a URL only when no_network=False is set "
-             "as well), so a crafted <!ENTITY SYSTEM ...> reads local files "
-             "(XXE)")
+             "a crafted <!ENTITY SYSTEM ...> reads local files (XXE) when lxml "
+             "is older than 5.0 (December 2023), whose default parser "
+             "resolved external entities, or when the parser sets "
+             "resolve_entities=True on any version (a URL only when "
+             "no_network=False is set as well); from 5.0 the default parser "
+             "does not expand it (lxml 6.1.1: the entity is left undefined "
+             "and nothing is read)")
 _LXML_FIX = ("bind parser = " + _LXML_SAFE_PARSER + " in this function and "
              "pass it as the parser argument, positionally or as parser=; "
              "that binding clears this finding")
@@ -905,39 +930,55 @@ LITERAL_OR_WRAPPER_SPECS: Tuple[LiteralOrWrapperSpec, ...] = (
             # minidom and pulldom take a `parser=` SAX parser. One built
             # with xml.sax.make_parser() and setFeature(feature_external_ges,
             # True) reads the file AND fetches the URL through both
-            # (measured). Off by default (since 3.7.1); the frontend does
-            # not track setFeature, so both states get this finding. The
-            # parse() forms open a str source as a local path.
+            # (measured). Without a parser they are off: minidom then goes
+            # through expatbuilder, which never expands them, and pulldom
+            # builds a make_parser(), whose feature_external_ges default is
+            # off since Python 3.7.1 (Aether requires 3.10+, so the version
+            # is not in the text). The frontend does not track setFeature,
+            # so both states get this finding. The parse() forms open a
+            # str source as a local path.
             CalleeText(prefix=("xml.dom.minidom.", "xml.dom.pulldom."), leaf="parse",
                        message=_DOM_MSG + _SRC_PATH, suggestion=_DEFUSED_FIX_SRC),
             CalleeText(prefix=("xml.dom.minidom.", "xml.dom.pulldom."),
                        message=_DOM_MSG, suggestion=_DEFUSED_FIX),
-            # cElementTree is ElementTree's parser under a deprecated
-            # name, and defusedxml.cElementTree is deprecated too: the
-            # hint names defusedxml.ElementTree.
+            # ElementTree and cElementTree: with no parser argument, straight
+            # on Expat, which "does not access local files or create network
+            # connections" (Python docs, "XML security"); ElementTree raises
+            # ParseError on an external entity (measured; the 3.11 table's
+            # footnote for ElementTree). But parse(source, parser=None) and
+            # fromstring(text, parser=None) use a caller's parser, keyword
+            # or positional, as given: an lxml XMLParser(resolve_entities=
+            # True) or a feature_external_ges SAX parser reads the file
+            # through them (measured 2026-09-15, _ET_MSG). cElementTree is
+            # still importable on 3.11 as `from xml.etree.ElementTree import
+            # *` (the same function objects, measured), and
+            # defusedxml.cElementTree is deprecated: its hint names
+            # defusedxml.ElementTree. The parse() forms open() a str source
+            # as a local path (a URL raises OSError; measured).
             CalleeText(
                 prefix="xml.etree.cElementTree.", leaf="parse",
-                message=_EXPAT_DIRECT_MSG + _SRC_PATH,
+                message=_ET_MSG + _SRC_PATH,
                 suggestion=_DEFUSED_FIX_SRC.replace("defusedxml.{callee_tail}",
                                                     "defusedxml.ElementTree.{callee_leaf}"),
             ),
             CalleeText(
                 prefix="xml.etree.cElementTree.",
-                message=_EXPAT_DIRECT_MSG,
+                message=_ET_MSG,
                 suggestion=_DEFUSED_FIX.replace("defusedxml.{callee_tail}",
                                                 "defusedxml.ElementTree.{callee_leaf}"),
             ),
-            # ElementTree and expatbuilder: straight on Expat, which "does
-            # not access local files or create network connections"
-            # (Python docs, "XML security"). ElementTree raises ParseError
-            # on an external entity, expatbuilder drops it (measured; the
-            # 3.11 table's footnotes 2-3 for ElementTree/minidom). Not
-            # version-dependent; only the DoS clause is. Their parse()
-            # forms open() a str source as a local path (a URL raises
-            # OSError; measured).
-            CalleeText(prefix="xml.", leaf="parse",
-                       message=_EXPAT_DIRECT_MSG + _SRC_PATH, suggestion=_DEFUSED_FIX_SRC),
-            CalleeText(prefix="xml.", message=_EXPAT_DIRECT_MSG, suggestion=_DEFUSED_FIX),
+            CalleeText(prefix="xml.etree.ElementTree.", leaf="parse",
+                       message=_ET_MSG + _SRC_PATH, suggestion=_DEFUSED_FIX_SRC),
+            CalleeText(prefix="xml.etree.ElementTree.", message=_ET_MSG,
+                       suggestion=_DEFUSED_FIX),
+            # expatbuilder takes no parser (its second positional is
+            # `namespaces`), so "never" is exact for it: it drops an
+            # external entity (measured). Not version-dependent; only the
+            # DoS clause is. Its parse() opens a str source as a local path.
+            CalleeText(prefix="xml.dom.expatbuilder.", leaf="parse",
+                       message=_EXPATBUILDER_MSG + _SRC_PATH, suggestion=_DEFUSED_FIX_SRC),
+            CalleeText(prefix="xml.dom.expatbuilder.", message=_EXPATBUILDER_MSG,
+                       suggestion=_DEFUSED_FIX),
             # defusedxml with a caller's parser (SINK_GUARDS rows keyed on
             # `parser=`): defusedxml substitutes its defused parser only
             # when `parser` is None, and passes any other straight through

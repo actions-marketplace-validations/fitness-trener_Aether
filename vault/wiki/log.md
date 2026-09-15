@@ -1,5 +1,24 @@
 # Operation Log (append-only — newest on top)
 
+## [2026-09-15] Q1 corrected | E0727's ElementTree "never" held only without a parser (BUG-031)
+- **The iteration-53 entry below says ElementTree/expatbuilder never fetch
+  a SYSTEM entity; for ElementTree that is true only of a call with no
+  parser.** `ET.parse`/`ET.fromstring` (and cElementTree, still the same
+  functions on 3.11) use a caller's parser as given, `parser=` or
+  positional. Measured 2026-09-15 on the same stack as iteration 53: an
+  lxml `XMLParser(resolve_entities=True)` returned a local file's contents
+  through them (and fetched a URL with `no_network=False`), and a
+  `make_parser()` with `feature_external_ges` read the file and fetched
+  the URL. E0727 fired on those calls; only the text said "never".
+  expatbuilder takes no parser, so "never" stays exact there. q1's row 68
+  and the taxonomy's E0727 row now scope the claim; the entry below is
+  left as written.
+- **Lesson carried:** iteration 53's own lesson — probe each runtime the
+  frontend maps before the text says what it does — was applied to the
+  default call and not to the call's other arguments. A negative claim
+  ("never") about a function needs its whole signature probed, not its
+  one-argument spelling.
+
 ## [2026-09-11] Q1 residual added | iteration 53: E0727's Python text is per callee
 - **The text was the Aether parser's, not the Python parser's.** Every
   stdlib `xml.*` callee `check-py` maps to `parseXml` printed "reads local

@@ -307,7 +307,9 @@ def test_xxe_python_text_names_the_callee_and_a_python_fix():
     """E0727's text on a Python finding names the resolved callee and a
     fix that exists in Python — `parseXmlSafe` is an Aether function.
     Measured 2026-09-11 (LOOP_LOG iteration 53): by default no stdlib
-    parser fetches an external entity, ElementTree/expatbuilder never do,
+    parser fetches an external entity, ElementTree never does without a
+    parser argument (a caller's parser is used as given: BUG-031, measured
+    2026-09-15), expatbuilder takes no parser and never does,
     xml.sax.parse/parseString cannot, minidom/pulldom do through a
     `parser=` built with `feature_external_ges`; a parse() spelling opens
     its source string as a path (xml.sax.parse and lxml.etree.parse also
@@ -361,10 +363,16 @@ def test_xxe_python_text_names_the_callee_and_a_python_fix():
             and "2.6.0" in d.message and "2.7.2" in d.message, d.message
         assert "entity-expansion" not in d.message, d.message
         assert "pyexpat.version_info >= (2, 7, 2)" in d.suggestion, d.suggestion
-    # ElementTree, cElementTree, expatbuilder: never an XXE read, any Expat.
+    # ElementTree, cElementTree, expatbuilder: never an XXE read, any Expat
+    # -- for ElementTree/cElementTree only without a parser argument.
     for fn in ("a", "f", "g", "h"):
         assert "never expands external entities" in ds[fn].message \
             and "on any Expat" in ds[fn].message, ds[fn].message
+    for fn in ("a", "f", "h"):
+        assert "called without a parser argument" in ds[fn].message \
+            and "is used as given" in ds[fn].message, ds[fn].message
+    assert "takes no parser argument and never expands" in ds["g"].message \
+        and "used as given" not in ds["g"].message, ds["g"].message
     # xml.sax.parse/parseString build their own parser: the feature is
     # unreachable through them; the negation is scoped to entities.
     for fn in ("c", "i"):
@@ -453,6 +461,130 @@ def test_xxe_python_fix_shapes_are_clean():
     assert "passes a caller's parser straight through" in ds["s"].message, ds["s"].message
     assert "drop the parser= argument" in ds["s"].suggestion, ds["s"].suggestion
     print("sinks: every E0727 hint's fix shape is clean; parser= clears like the positional slot")
+
+
+def test_xxe_elementtree_text_is_scoped_to_calls_without_a_parser():
+    """BUG-031. ElementTree/cElementTree parse(source, parser=None) and
+    fromstring(text, parser=None) use a caller's parser as given, keyword
+    or positional. Measured 2026-09-15 (CPython 3.11.15, Expat 2.7.4, lxml
+    6.1.1, a local HTTP server): an lxml XMLParser(resolve_entities=True)
+    returned a local file's contents through ET.fromstring/XML/parse (a
+    URL request with no_network=False too), and a make_parser() with
+    feature_external_ges delivered a file's contents to its handler and
+    fetched a URL. The text said "never" unconditionally; it now scopes
+    that to the no-parser call. expatbuilder takes no parser (its second
+    positional is `namespaces`), so "never" stays exact there. Also: the
+    lxml file read is conditional (lxml 6.1.1's default parser read
+    nothing), and minidom/pulldom's text does not borrow the xml.sax
+    3.7.1 date. Detection is unchanged: every shape fires as qualified."""
+    src = ("import xml.etree.ElementTree as ET\n"
+           "import xml.etree.cElementTree as CET\n"
+           "from xml.dom import minidom, pulldom, expatbuilder\n"
+           "from lxml import etree\n"
+           "def a(raw, p):\n    return ET.fromstring(raw, parser=p)\n"
+           "def b(raw, p):\n    return ET.parse(raw, p)\n"
+           "def c(raw, p):\n    return CET.fromstring(raw, parser=p)\n"
+           "def d(raw):\n    return CET.parse(raw)\n"
+           "def e(raw):\n    return expatbuilder.parse(raw)\n"
+           "def f(raw):\n    return etree.XML(raw)\n"
+           "def g(raw):\n    return minidom.parseString(raw)\n"
+           "def h(raw):\n    return pulldom.parse(raw)\n")
+    ast_dict, _, _ = py_to_ir(src)
+    ds = {d.extra["function"]: d
+          for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES) if d.code == "E0727"}
+    assert sorted(ds) == list("abcdefgh"), sorted(ds)
+    assert all(d.extra["match"] == "qualified" for d in ds.values()), \
+        {k: d.extra for k, d in ds.items()}
+    for fn, callee in [("a", "xml.etree.ElementTree.fromstring"),
+                       ("b", "xml.etree.ElementTree.parse"),
+                       ("c", "xml.etree.cElementTree.fromstring"),
+                       ("d", "xml.etree.cElementTree.parse")]:
+        m, s = ds[fn].message, ds[fn].suggestion
+        assert ds[fn].extra["callee"] == callee, ds[fn].extra
+        assert "called without a parser argument" in m \
+            and "a parser passed in (parser= or positionally) is used as given" in m, m
+        assert "XMLParser(resolve_entities=True) reads local files" in m \
+            and "setFeature(feature_external_ges, True) reads local files and fetches URLs" in m, m
+        assert "may be open to" in m and "2.7.2" in m, m
+        assert "no parser= argument" in s and "cElementTree" not in s, s
+    # cElementTree's parse row: the source-path clause and the
+    # defusedxml.ElementTree.parse hint.
+    assert "is itself opened as a local path" in ds["d"].message, ds["d"].message
+    assert "defusedxml.ElementTree.parse" in ds["d"].suggestion \
+        and "never pass an untrusted path" in ds["d"].suggestion, ds["d"].suggestion
+    assert "source string" not in ds["c"].message, ds["c"].message
+    # expatbuilder takes no parser: the unconditional "never" is exact.
+    assert "takes no parser argument and never expands external entities" in ds["e"].message \
+        and "used as given" not in ds["e"].message \
+        and "opened as a local path" in ds["e"].message, ds["e"].message
+    # lxml: the file read is conditional, not a default of every version.
+    m = ds["f"].message
+    assert "when lxml is older than 5.0" in m \
+        and "or when the parser sets resolve_entities=True" in m \
+        and "from 5.0 the default parser does not expand it" in m, m
+    assert "so a crafted" not in m, m
+    # minidom/pulldom: the 3.7.1 date is xml.sax's feature default.
+    for fn in ("g", "h"):
+        assert "3.7.1" not in ds[fn].message \
+            and "external entities are off by default, but" in ds[fn].message, ds[fn].message
+    # Every callee the frontend maps to parseXml has Python text: none
+    # falls through to the Aether row's parseXmlSafe wording.
+    from aether.py_frontend import SINK_BY_QUALIFIED, SINK_GUARDS
+    from aether.passes.detector_specs import LITERAL_OR_WRAPPER_SPECS
+    spec = next(r for r in LITERAL_OR_WRAPPER_SPECS if r.code == "E0727")
+    mapped = [k for k, v in SINK_BY_QUALIFIED.items() if v == "parseXml"] \
+        + [k for k, g in SINK_GUARDS.items() if g.sink_name == "parseXml"]
+    assert len(mapped) >= 20, sorted(mapped)
+    fallthrough = [k for k in mapped
+                   if spec.text_for(k) == (spec.message, spec.suggestion)]
+    assert not fallthrough, fallthrough
+    print("BUG-031: E0727's ElementTree text says never only without a parser argument")
+
+
+def test_xxe_guard_and_parser_binding_shapes():
+    """Detection shapes the E0727 audit found untested, each run through
+    check-py first: every defusedxml SINK_GUARDS row handed a caller's
+    parser fires as `guard` (keyword and positional slot), a positional
+    None is the defused path, and three lxml XMLParser bindings do NOT
+    clear the sink: a `**kwargs` splat into the constructor, a
+    dtd_validation=True binding, and a no_network value that is not a
+    constant."""
+    src = ("import defusedxml.minidom as dm\n"
+           "import defusedxml.pulldom as dp\n"
+           "import defusedxml.ElementTree as DET\n"
+           "from lxml import etree\n"
+           "def a(raw, p):\n    return dm.parse(raw, parser=p)\n"
+           "def b(raw, p):\n    return dp.parse(raw, parser=p)\n"
+           "def c(raw, p):\n    return dp.parseString(raw, parser=p)\n"
+           "def d(raw, p):\n    return DET.parse(raw, parser=p)\n"
+           "def e(raw, p):\n    return dm.parseString(raw, p)\n"
+           "def f(raw):\n    return dm.parseString(raw, None)\n"
+           "def s(raw, **kw):\n"
+           "    parser = etree.XMLParser(resolve_entities=False, **kw)\n"
+           "    return etree.fromstring(raw, parser=parser)\n"
+           "def t(raw):\n"
+           "    parser = etree.XMLParser(resolve_entities=False, dtd_validation=True)\n"
+           "    return etree.fromstring(raw, parser)\n"
+           "def u(raw, flag):\n"
+           "    parser = etree.XMLParser(resolve_entities=False, no_network=flag)\n"
+           "    return etree.fromstring(raw, parser)\n")
+    ast_dict, _, _ = py_to_ir(src)
+    ds = {d.extra["function"]: d
+          for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES) if d.code == "E0727"}
+    assert sorted(ds) == ["a", "b", "c", "d", "e", "s", "t", "u"], sorted(ds)
+    for fn, callee in [("a", "defusedxml.minidom.parse"),
+                       ("b", "defusedxml.pulldom.parse"),
+                       ("c", "defusedxml.pulldom.parseString"),
+                       ("d", "defusedxml.ElementTree.parse"),
+                       ("e", "defusedxml.minidom.parseString")]:
+        assert ds[fn].extra["match"] == "guard" \
+            and ds[fn].extra["callee"] == callee, ds[fn].extra
+        assert "passes a caller's parser straight through" in ds[fn].message, ds[fn].message
+    for fn in ("s", "t", "u"):
+        assert ds[fn].extra["match"] == "qualified" \
+            and ds[fn].extra["callee"] == "lxml.etree.fromstring", ds[fn].extra
+    print("sinks: defusedxml with a caller's parser fires in either slot; "
+          "splat, dtd_validation and non-constant no_network bindings do not clear lxml")
 
 
 # --- guard-bound-elsewhere: an unresolved guard means SINK ---------------
@@ -1433,6 +1565,8 @@ if __name__ == "__main__":
     test_xxe_default_parser_still_fires()
     test_xxe_python_text_names_the_callee_and_a_python_fix()
     test_xxe_python_fix_shapes_are_clean()
+    test_xxe_elementtree_text_is_scoped_to_calls_without_a_parser()
+    test_xxe_guard_and_parser_binding_shapes()
     test_repro_corpus_flags_the_bug()
     test_safe_functions_are_clean()
     test_yaml_unsafe_loader_is_still_a_sink()

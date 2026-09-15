@@ -1110,3 +1110,48 @@ Introduced by iteration 52, never released.
 Fix: `_call_expr` re-rates the inner compile to `builtin` when a builtin,
 unshadowed `exec`/`eval` wraps it. A `compile()` on its own, or one under a
 local `def exec`, stays at the floor.
+
+### BUG-031  E0727 told ElementTree users a caller's parser "never" expands external entities (false reassurance)  [OPEN]
+test: tests/test_py_frontend_sinks.py
+(`::test_xxe_elementtree_text_is_scoped_to_calls_without_a_parser`; the
+detection shapes the same audit found untested are in
+`::test_xxe_guard_and_parser_binding_shapes`)
+
+
+Found 2026-09-15 by a skeptic review of iteration 53's commit `11efc72`,
+confirmed twice by measurement. The `xml.etree.cElementTree.` rows and the
+`xml.` fallback rows (ElementTree, expatbuilder) printed "this parser never
+expands external entities, so there is no XXE file read or SSRF through
+entities on any Expat". That holds only for a call with no parser:
+`ET.parse(source, parser=None)` and `ET.fromstring`/`ET.XML(text,
+parser=None)` use a caller's parser as given, keyword or positional, and
+`xml.etree.cElementTree` is still importable on 3.11 as the same function
+objects. Measured on CPython 3.11.15 / Expat 2.7.4 / lxml 6.1.1 with a
+local HTTP server: an lxml `XMLParser(resolve_entities=True)` returned a
+local file's contents through `ET.fromstring`, `ET.XML`, `ET.parse` (both
+slots) and `cElementTree.fromstring`, and with `no_network=False` made 1
+request through `ET.parse` and `ET.fromstring`; a `make_parser()` with
+`feature_external_ges` delivered the file's contents to its handler through
+`ET.parse` (both slots) and `ET.fromstring`, and made 1 request through
+`ET.parse`. E0727 fired on every one of those calls (a `qualified` match,
+0.95); only the text was falsely reassuring, and it steered a reader away
+from the one argument that made the call an XXE. The claim was copied into
+`grammar/diagnostics.md`, q1 and the violation taxonomy. Two smaller
+wording defects in the same rows: `_LXML_MSG` ended "so a crafted
+<!ENTITY SYSTEM ...> reads local files", which read as unconditional
+(lxml 6.1.1's default parser raises `Entity 'x' not defined` and reads
+nothing), and `_DOM_MSG` dated minidom's default to "Python 3.7.1", which
+is the `xml.sax` `feature_external_ges` change (minidom without a parser
+goes through expatbuilder, which never resolved them). Introduced by
+iteration 53, never released.
+
+Fix: ElementTree and cElementTree get their own message (`_ET_MSG`): "never"
+is scoped to a call without a parser argument, and a parser passed in is
+said to be used as given, with the two measured consequences. expatbuilder
+keeps an exact "never" (`_EXPATBUILDER_MSG`): its second positional is
+`namespaces`, `parser=` is a TypeError, and it dropped the entity with 0
+requests. The `xml.` fallback rows become explicit `xml.etree.ElementTree.`
+and `xml.dom.expatbuilder.` rows, and the test requires every one of the 20
+callees mapped to `parseXml` to match a Python row. The lxml file-read
+clause is conditional; the minidom/pulldom text drops the date. Detection,
+confidence and the DoS clause are unchanged.

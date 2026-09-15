@@ -1371,8 +1371,9 @@ def _call_expr(node: _pyast.Call, imp: "_Imports",
             # path as written (possibly chained) on a `method` match. The Aether
             # name is one sink for every spelling that maps to it, and
             # for E0727 the spellings are not one hazard: ElementTree
-            # never expands an external entity, `lxml.etree` before 5.0
-            # did by default. The spec row picks its wording by this
+            # without a parser argument never expands an external entity
+            # (a caller's parser is used as given, BUG-031), `lxml.etree`
+            # before 5.0 did by default. The spec row picks its wording by this
             # (`LiteralOrWrapperSpec.callee_text`) and puts it in
             # `extra.callee`; detection never reads it.
             out["callee"] = dotted
