@@ -5,9 +5,10 @@ run.**
 
 Point it at a Python file. It finds SQL injection, command injection, code
 injection through `exec`/`eval`, open redirect, SSTI, insecure
-deserialization, hardcoded credentials and XXE by reading each argument's
-shape and where it came from, not just the name of the call. No rewrite,
-no annotations, no configuration.
+deserialization, hardcoded credentials and untrusted XML parsing (XXE
+through lxml or a resolving `parser=`) by reading each argument's shape and
+where it came from, not just the name of the call. No rewrite, no
+annotations, no configuration.
 
     $ aether check-py bench/py_frontend/corpus/sqli_repro.py
     [E0713] error (capability) at line 20, col 12: function 'find_user' builds a SQL query for
@@ -116,7 +117,7 @@ Default-on, no annotations required:
 | `E0719` | Template injection / SSTI | 94 |
 | `E0720` | Insecure deserialization | 502 |
 | `E0723` | Hardcoded credential | 798 |
-| `E0727` | XML external entity (XXE) | 611 |
+| `E0727` | Untrusted XML parsing — XXE through lxml (before 5.0, or with `resolve_entities=True`) or a `parser=` that resolves external entities; denial of service on an older Expat. Not checked yet: a SAX parser object's own `.parse(...)`, where external entities can be switched on | 611 |
 | `E0731` | Code injection — `exec`/`eval`/`compile` of dynamic source | 94, 95 |
 
 `--strict` adds `E0711` (dynamic filesystem paths) and the `E0701`
