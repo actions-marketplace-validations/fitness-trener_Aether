@@ -1367,8 +1367,11 @@ def _call_expr(node: _pyast.Call, imp: "_Imports",
         if dotted:
             # WHICH Python callee it was: the spelling `_callee_spelling`
             # resolved — a dotted import path on a `qualified`/`guard`/
-            # `argv` match, the builtin name on `builtin`, the attribute
-            # path as written (possibly chained) on a `method` match. The Aether
+            # `argv` match, the builtin name on `builtin`; on a `method`
+            # match, the bare method name for a plain-variable receiver
+            # (`execute` for `cur.execute`), the attribute path as written
+            # for a chained one (`self.conn.execute`), and the resolved
+            # dotted path for an imported receiver. The Aether
             # name is one sink for every spelling that maps to it, and
             # for E0727 the spellings are not one hazard: ElementTree
             # without a parser argument never expands an external entity

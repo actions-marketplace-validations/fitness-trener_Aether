@@ -412,8 +412,12 @@ finding of a literal-or-wrapper row (E0711/E0713/E0714/E0718/E0719/E0720/
 E0727/E0731) also carries `match` (how the frontend named the sink,
 `transpiler/aether/confidence.py`) and `callee` (the spelling the frontend
 resolved: a dotted import path on a `qualified`/`guard`/`argv` match, the
-builtin name on `builtin`/`builtin_compile`, the attribute path as written
-— possibly chained, `self.db.cursor.execute` — on a `method` match).
+builtin name on `builtin`/`builtin_compile`; on a `method` match, the bare
+method name when the receiver is a plain variable — `execute` for
+`cur.execute(...)` — the attribute path as written when it is chained —
+`self.conn.execute` — and the resolved dotted path when the receiver is
+an imported name). Only these rows carry `callee` on Python; `E0723`,
+`E0701` and the sink rows on Aether source do not.
 
 E0728 is the fourth `Untrusted<T>` sink (CWE-1236) and the first in a
 NON-HTTP context — proving the marker generalizes past web output. A CSV

@@ -538,9 +538,14 @@ def cmd_check_py(args) -> int:
                 f"{c}x{n}" for c, n in sorted(by_code.items())))
     print(f"{n_find} finding(s) in {n_func} function(s); "
           f"{n_unp} unprovable region(s) in {n_unp_fns} function(s).")
+    # The net.fetch rows read effects the frontend synthesizes as
+    # [capability, method name], so a mapped network call named `fetch`
+    # does reach them; requests.get / urlopen do not (measured 2026-09-15).
     print("NOT checked on Python (no declared effects clause, no marker "
-          "types): E0801 effect composition, and the taint-marker family "
-          "(E0712/E0715/E0716/E0717/E0724).")
+          "types): E0801 effect composition; the net.fetch scope rows "
+          "(E0710/E0721/E0722), except on a network call named fetch; the "
+          "marker rows (E0712/E0715/E0716/E0717/E0724/E0725/E0726/E0728/"
+          "E0729/E0730); and the semantic family (E0202-E0207).")
     if not strict:
         print("NOT checked by default (--strict adds both): E0711 dynamic "
               "filesystem paths, and the capability inventory (E0701). "

@@ -30,8 +30,9 @@ inputs:
     description: >-
       Also report E0711 (dynamic filesystem paths) and the E0701 capability
       inventory. Both are held back by default by measurement, not taste:
-      E0711 alone fired 476 times against 39 for the whole default set on
-      1.19M lines of PyPI code (bench/pypi_scan/REPORT.md).
+      on 1.19M lines of PyPI code (2026-07-26), E0711 alone fired 476 times
+      against 170 for the whole default set, both over every file
+      (bench/pypi_scan/REPORT.md).
     required: false
     default: 'false'
   fail-on-findings:
