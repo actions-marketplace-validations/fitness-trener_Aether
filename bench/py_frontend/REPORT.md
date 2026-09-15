@@ -30,7 +30,7 @@ credential, E0727 XXE, and since 0.4.0 E0731 code injection
 | E0801 effect composition | compares a call site against a **declared** `effects` clause; Python has none |
 | E0712/E0715/E0724/E0725/E0726/E0728 taint markers | need `Secret<T>`/`PII<T>`/`Untrusted<T>` on a signature; Python has no annotation-free equivalent |
 | E0729/E0730 marker laundering | same markers, at a parameter or return type |
-| E0716/E0717 authorization | need `Authorized<T>`, same reason |
+| E0716/E0717 authorization | need `Authorized<T>`, same reason. Exception: `executescript` maps to `sqlExec`, so E0716 fires on every `executescript(...)` call, literal scripts included, and no Python spelling tried (an `authorize(...)` second argument, an `Authorized` annotation) clears it (measured 2026-09-15) |
 | E0710/E0721/E0722 SSRF, cleartext | read the **declared** `net.fetch` annotation. The frontend synthesizes `[capability, method name]` effects, so a mapped network call named `fetch` (`httpx.fetch(url)`) does reach them; `requests.get`/`post` and `urlopen` do not (measured 2026-09-15) |
 | E0202–E0207 semantic | check Aether language constructs; on translated Python they describe the translation, not the program (E0205 read `cur = conn.cursor()` as a dead store) |
 

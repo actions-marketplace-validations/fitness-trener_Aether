@@ -32,7 +32,9 @@ for how to read Aether names in findings on Python.
 Exit `0` clean, `2` on findings or on an error (a missing path, an
 analyzer crash). Every command on this page that names a path in this
 repo runs from a fresh clone after `pip install .` (see Install); the two
-bandit comparisons also need `pip install bandit==1.9.4`.
+bandit comparisons and `run_recall.py` also need
+`pip install bandit==1.9.4` (without it `run_recall.py` still runs, with
+no oracle results to compare).
 
 ---
 
@@ -84,7 +86,9 @@ This is not a general "better than bandit" claim, and the repo says so at
 length in [`bench/py_frontend/REPORT.md`](https://github.com/fitness-trener/Aether/blob/main/bench/py_frontend/REPORT.md) §3:
 bandit 1.9.4 registers 75 test ids (42 plugins plus 33 blacklisted calls
 and imports) across crypto, Django, TLS and more; Aether models 9 rows on
-Python (the 8 default-on codes below plus `E0711` under `--strict`).
+Python (the 8 default-on codes below plus `E0711` under `--strict`;
+`E0716` on `executescript` and the `net.fetch` rows on a call named
+`fetch` also fire, see below).
 **On breadth bandit wins outright.** The narrow claim is
 the one above, and it is checkable in two commands.
 
@@ -132,7 +136,7 @@ Default-on, no annotations required:
 | `E0719` | Template injection / SSTI | 94 |
 | `E0720` | Insecure deserialization | 502 |
 | `E0723` | Hardcoded credential | 798 |
-| `E0727` | Untrusted XML parsing — dynamic input to a mapped lxml or standard-library XML parse call, whatever parser is passed, unless it is an lxml `XMLParser(resolve_entities=False, no_network=True, load_dtd=False)` bound in the same function. XXE through lxml before 5.0 or with `resolve_entities=True`, or through a passed parser that resolves external entities; denial of service on an older Expat. Gaps: see below the table | 611 |
+| `E0727` | Untrusted XML parsing — dynamic input to a mapped lxml or standard-library XML parse call, whatever parser is passed, unless it is an lxml `XMLParser` bound in the same function with `resolve_entities=False` and `no_network`, `load_dtd` and `dtd_validation` left at their safe defaults or set to them as constants (the hint's `XMLParser(resolve_entities=False, no_network=True, load_dtd=False)` is one such binding). XXE through lxml before 5.0 or with `resolve_entities=True`, or through a passed parser that resolves external entities; denial of service on an older Expat. Gaps: see below the table | 611 |
 | `E0731` | Code injection — `exec`/`eval`/`compile` of dynamic source | 94, 95 |
 
 `--strict` adds `E0711` (dynamic filesystem paths) and the `E0701`
@@ -142,7 +146,9 @@ that day's whole default set, both counted over every file including
 bundled tests ([`bench/pypi_scan/REPORT.md`](https://github.com/fitness-trener/Aether/blob/main/bench/pypi_scan/REPORT.md) §2).
 
 **`E0727` is not checked yet** on: a SAX parser object's own `.parse(...)`;
-`xml.etree.ElementTree.XML(...)` (handed an lxml resolving parser),
+`xml.etree.ElementTree.XML(...)` in any form (the same function as
+`fromstring`; handed an lxml `XMLParser(resolve_entities=True)` it reads a
+local file, measured),
 `lxml.etree.iterparse(..., resolve_entities=True)` and
 `lxml.etree.XMLParser(resolve_entities=True).feed(...)`, each of which
 reads a local file on lxml 6.1.1 (measured); `ElementTree.iterparse` and
@@ -169,15 +175,21 @@ letting you assume otherwise:
   declared scope; on Python they fire only on a call named `fetch` through
   a mapped network module (`httpx.fetch(...)`), not on `requests.get`,
   `requests.post` or `urlopen` (measured).
-- The marker rows `E0712`, `E0715`, `E0716`, `E0717`, `E0724`, `E0725`,
-  `E0726`, `E0728`, `E0729` and `E0730`, which need a
+- The marker rows `E0712`, `E0715`, `E0717`, `E0724`, `E0725`, `E0726`,
+  `E0728`, `E0729` and `E0730`, which need a
   `Secret`/`PII`/`Untrusted`/`Authorized` type.
 - The static-semantic family `E0202`–`E0207`: it checks Aether language
   constructs, and on translated Python it would describe the translation,
   not the program.
 
 These run on Aether source, where the access-control rows live — see
-*Where the rules come from*, below.
+*Where the rules come from*, below. One exception: `E0716` (missing
+authorization) does fire on Python, on every `executescript(...)` call,
+literal scripts included, because the frontend maps it to Aether's
+`sqlExec`, which requires an authorization proof. No Python spelling we
+tried clears it, `authorize(...)` passed as a second argument or an
+`Authorized` annotation included (measured), so read it as "this call
+runs a SQL script", not as a missing check.
 
 Further limits, stated plainly: the analysis is **intraprocedural and
 syntactic** — over-flag, never miss *within the modeled surface*, which is
@@ -191,7 +203,12 @@ Findings on Python still use Aether's names. Messages name the Aether sink
 `readFile`) rather than your call, and the messages or hints for `E0711`
 (`--strict`), `E0713`, `E0714`, `E0718`, `E0720`, `E0723` and `E0731` name
 functions Python does not have: `safeJoin`, `sqlBind`, `shellArg`,
-`safeRedirect`, `schemaDecode`, `getEnv`, `trusted`. Read them as the
+`safeRedirect`, `schemaDecode`, `getEnv`, `trusted`. `executescript` findings name `sqlExec`, and the
+`E0716` hint names `authorize` and `Authorized<String>`. Under `--strict`,
+the `E0701` hint suggests an Aether `module ... requires capability`
+declaration or `effects pure`; `E0710`/`E0721`/`E0722` say a function
+"declares effect 'net.fetch'" when a mapped `fetch` call fires them,
+though Python declares nothing. Read them as the
 Python fix they stand for: a parameterized query for `sqlBind`, an argv
 list or `shlex.quote` for `shellArg`, a resolved path checked to stay
 under a fixed base directory for `safeJoin`, a host allow-list for

@@ -1,6 +1,6 @@
 name: 'Aether Python Security Scan'
 # Marketplace caps this at 125 characters.
-description: 'Security scan for AI-written Python: injection, deserialization, SSTI, XXE, credentials. SARIF to Code Scanning.'
+description: 'Security scan for Python, aimed at AI-agent code: injection, deserialization, SSTI, untrusted XML, credentials. SARIF output.'
 author: 'Aether'
 
 branding:
