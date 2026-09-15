@@ -133,7 +133,7 @@ scope and on Python fire only on a mapped network call named `fetch`; the
 marker rows (`E0712`/`E0715`/`E0717`/`E0724`/`E0725`/`E0726`/`E0728`/
 `E0729`/`E0730`); and the static-semantic family `E0202`–`E0207`.
 Python has no declared `effects` clause and no marker types. The
-exception is `E0716`: it fires on every `executescript(...)` call, literal
+exception is `E0716`: it fires on every `.executescript(...)` method call, literal
 scripts included, because the frontend maps it to Aether's `sqlExec`,
 which requires an authorization proof; no Python spelling tried clears
 it, an `authorize(...)` second argument or an `Authorized` annotation

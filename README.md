@@ -184,7 +184,7 @@ letting you assume otherwise:
 
 These run on Aether source, where the access-control rows live — see
 *Where the rules come from*, below. One exception: `E0716` (missing
-authorization) does fire on Python, on every `executescript(...)` call,
+authorization) does fire on Python, on every `.executescript(...)` method call,
 literal scripts included, because the frontend maps it to Aether's
 `sqlExec`, which requires an authorization proof. No Python spelling we
 tried clears it, `authorize(...)` passed as a second argument or an

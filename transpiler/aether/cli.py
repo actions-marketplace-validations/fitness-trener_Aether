@@ -549,7 +549,7 @@ def cmd_check_py(args) -> int:
           "(E0710/E0721/E0722), except on a network call named fetch; the "
           "marker rows (E0712/E0715/E0717/E0724/E0725/E0726/E0728/"
           "E0729/E0730); and the semantic family (E0202-E0207). E0716 "
-          "fires on every executescript call; no Python spelling tried "
+          "fires on every .executescript method call; no Python spelling tried "
           "clears it.")
     if not strict:
         print("NOT checked by default (--strict adds both): E0711 dynamic "
