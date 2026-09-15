@@ -213,7 +213,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: fitness-trener/Aether@v0.4.0
+      - uses: fitness-trener/Aether@v0.4.1
         with:
           path: 'src tests'      # default: .
           strict: 'false'        # adds E0711 + the E0701 inventory
