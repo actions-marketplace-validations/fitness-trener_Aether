@@ -1,11 +1,12 @@
 # Aether
 
-**A security checker for the Python your AI agent writes — including the
-classes pattern scanners structurally miss.**
+**A security checker for Python, aimed at the code AI agents write and
+run.**
 
-Point it at a Python file. It finds SQL injection, command injection, open
-redirect, SSTI, insecure deserialization, hardcoded credentials and XXE by
-reading dataflow and argument shape, not by matching patterns. No rewrite,
+Point it at a Python file. It finds SQL injection, command injection, code
+injection through `exec`/`eval`, open redirect, SSTI, insecure
+deserialization, hardcoded credentials and XXE by reading each argument's
+shape and where it came from, not just the name of the call. No rewrite,
 no annotations, no configuration.
 
     $ aether check-py bench/py_frontend/corpus/sqli_repro.py
@@ -25,7 +26,7 @@ from a fresh clone.
 
 ---
 
-## Why it finds things other scanners don't
+## How the checks work
 
 Aether's detectors are designed against a **typed intermediate
 representation** with explicit security markers — `Authorized<T>`,
@@ -68,8 +69,8 @@ provider key *shapes* (`AKIA…`, `ghp_…`, PEM blocks).
 
 This is not a general "better than bandit" claim, and the repo says so at
 length in [`bench/py_frontend/REPORT.md`](https://github.com/fitness-trener/Aether/blob/main/bench/py_frontend/REPORT.md) §3:
-bandit ships ~70 plugins across crypto, Django, TLS and more; Aether models
-8 rows on Python. **On breadth bandit wins outright.** The narrow claim is
+bandit 1.9.4 ships 75 checks across crypto, Django, TLS and more; Aether
+models 9 rows on Python. **On breadth bandit wins outright.** The narrow claim is
 the one above, and it is checkable in two commands.
 
 ## Measured on 1.19M lines nobody wrote for us
@@ -84,8 +85,13 @@ got some that weren't.
 | Python files / SLOC | 5,588 / **1,192,484** |
 | parse failures | **0** |
 | analyzer crashes | **0** |
-| findings outside test dirs | 39 (**0.033 per KLOC**) |
+| findings outside test dirs | 39 (**0.033 per KLOC**); 48 after the five recall fixes below |
 | agreement with bandit, comparable categories | **86.8%** (125 agreed / 19 candidate misses) |
+
+Measured 2026-07-26, before 0.4.0, on whatever was installed in that
+interpreter's `site-packages`. A later run on a changed install gave
+different totals, and the report says so, so read these as that day's
+numbers.
 
 **No vulnerability was discovered in that corpus**, and roughly 56% of the
 39 findings trace to one documented over-flag rule. Both facts are stated
@@ -111,6 +117,7 @@ Default-on, no annotations required:
 | `E0720` | Insecure deserialization | 502 |
 | `E0723` | Hardcoded credential | 798 |
 | `E0727` | XML external entity (XXE) | 611 |
+| `E0731` | Code injection — `exec`/`eval`/`compile` of dynamic source | 94, 95 |
 
 `--strict` adds `E0711` (dynamic filesystem paths) and the `E0701`
 capability inventory. Both are **held back by measurement, not taste**:
@@ -135,7 +142,8 @@ They run on Aether source, where the access-control rows live — see
 Further limits, stated plainly: the analysis is **intraprocedural and
 syntactic** — over-flag, never miss *within the modeled surface*, which is
 not a soundness proof. Sinks are matched by method name on receivers of
-unresolved type. Single file, no cross-module resolution, no control flow.
+unresolved type; those findings are rated 0.6 confidence, so they sort
+below the import-resolved findings of the same risk rating. Single file, no cross-module resolution, no control flow.
 Full list in [`bench/py_frontend/REPORT.md`](https://github.com/fitness-trener/Aether/blob/main/bench/py_frontend/REPORT.md) §4.
 
 ## Install
@@ -173,8 +181,17 @@ the findings you can actually fix:
     scanned 128 file(s) · 3 with findings · 1 unparseable · 0 analyzer error(s)
     findings by code: E0713x2, E0723x1
 
-Findings sort worst-first by the per-code risk rating, so the top of a long
-scan is the part worth reading.
+Findings sort worst-first by the per-code risk rating, then, within a
+rating, most-certain first: a callee resolved through the file's imports
+rates 0.95 confidence, a method matched only by its name on a receiver of
+unknown type 0.6. `--min-confidence 0.9` hides the 0.6 findings — 628 of
+676 on the 15-framework corpus. It is a filter, not a verdict on what it
+hides (those are what the rules flag, measured over-flags included), and
+it filters the exit code too: a run whose only findings are below the
+floor exits 0. On a multi-core machine, trees of more than 32 files are
+analysed in parallel; `--jobs N` overrides (1,024 files: 241 s serially,
+69 s on 8 workers, byte-identical output). Details in
+[`docs/SCANNING.md`](https://github.com/fitness-trener/Aether/blob/main/docs/SCANNING.md).
 
 ## CI and GitHub Code Scanning
 
@@ -195,7 +212,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: fitness-trener/Aether@v0.3.1
+      - uses: fitness-trener/Aether@v0.4.0
         with:
           path: 'src tests'      # default: .
           strict: 'false'        # adds E0711 + the E0701 inventory
@@ -235,16 +252,9 @@ for:
 - **`E0717` cross-tenant access / IDOR** (CWE-639) — an authorization proof
   that is not bound to the *same resource id* the sink mutates.
 
-Nine named companies' own public CVEs and incidents are ported and refused
-at check time in [`outreach/CUSTOMER_EVIDENCE.md`](https://github.com/fitness-trener/Aether/blob/main/outreach/CUSTOMER_EVIDENCE.md)
-— Copilot, Cursor, Lovable, Replit, Vercel, Atlassian, Ivanti, GitLab,
-crawl4ai. **Five of the nine are access-control cases that mainstream SAST
-does not cover.** These are retrospective ports of public incidents, not
-live scans of anyone's systems, and the file says so first.
-
-Current surface: **54 diagnostic codes across 30 gated detectors**, held by
+Current surface: **55 diagnostic codes across 31 gated detectors**, held by
 a monotonic ratchet (`tests/ratchet_baseline.json`) that turns the build red
-if a detector is ever removed or weakened. Security family `E0710`–`E0730`;
+if a detector is ever removed or weakened. Security family `E0710`–`E0731`;
 static-semantic family `E0202`–`E0207` (non-exhaustive match, unreachable
 arm, dead code, dead store, ignored `Result`, unsatisfiable refinement).
 
@@ -254,7 +264,7 @@ Working with the language directly:
     aether run   demos/payment_workflow/aether/main.aeth
     aether fmt   demos/payment_workflow/aether/main.aeth
     aether fix-loop demos/payment_workflow/broken.aeth       # deterministic AST repair
-    aether fix-loop demos/payment_workflow/broken.aeth --live # LLM repair (needs ANTHROPIC_API_KEY)
+    aether fix-loop demos/payment_workflow/broken.aeth --live # LLM repair: source checkout + ANTHROPIC_API_KEY
 
 `--json` on any command emits structured output for an agent to consume;
 the Python SDK is `from aether import sdk`, the same spelling installed or

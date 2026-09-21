@@ -663,7 +663,9 @@ class Parser:
             return {"kind": "FloatLit", "value": t.value}
         if t.kind == "string":
             self.advance()
-            return {"kind": "StringLit", "value": t.value}
+            # Positioned: E0723 (hardcoded credential) anchors on the
+            # literal itself, and reported `line 0, col 0` without it.
+            return {"kind": "StringLit", "value": t.value, "pos": t.pos.to_dict()}
         if t.kind == "kw" and t.value in ("true", "false"):
             self.advance()
             return {"kind": "BoolLit", "value": t.value == "true"}

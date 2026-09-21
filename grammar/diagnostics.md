@@ -140,7 +140,7 @@ Bench-harness only. The CLI does not currently enforce timeouts;
 | **E0704** | module requires a capability outside the known vocabulary (D.3) | `module`, `capability`, `known` |
 | **E0705** | an `import` names a file that does not exist beside the importing file, or exists but cannot be read (H.E.3) | `resolved_to`, `path` (unreadable file: `resolved_to`, `os_error`) |
 | **E0706** | imports form a cycle — A imports B, B imports A (H.E.3). File-level: the cycle is detected during the DFS, past the `ImportDecl` position | `file`, `stack` |
-| **E0710** | a `net.fetch` effect leaves the host/authority unpinned (bare `*`, `scheme://*`, wildcard scheme, or leading `*` that is not a `*.subdomain` pin), admitting SSRF to internal hosts like `169.254.169.254` | `function`, `effect_arg`, `reason` |
+| **E0710** | a `net.fetch` effect leaves the host/authority unpinned (bare `*`, `scheme://*`, wildcard scheme, a leading `*` that is not a `*.subdomain` pin, or any other `*` in the authority — `*.*`, `api.*`, `a*`, `api.example.com*`, `[*]`, a userinfo-masked `user@*`, or a `*.tld` pin with no registrable domain), admitting SSRF to internal hosts like `169.254.169.254` | `function`, `effect_arg`, `reason` |
 | **E0711** | `readFile`/`writeFile` is called with a path that is neither a fixed string literal nor routed through `safeJoin(...)`, i.e. a path steerable by untrusted input (path-traversal / Zip-Slip precondition) | `function`, `sink`, `reason` |
 | **E0712** | a `Secret<...>`-marked value reaches a log sink (`print`) or is persisted to disk (`writeFile` contents) without an explicit `reveal(...)` — the "secret accidentally logged/written" class (CWE-532) | `function`, `sink` |
 | **E0713** | a `sqlQuery`/`sqlExec` query argument is built by raw string concatenation (or another dynamic expression) instead of a fixed literal or `sqlBind(...)` parameterized query — SQL injection (CWE-89) | `function`, `sink`, `reason` |
@@ -151,16 +151,17 @@ Bench-harness only. The CLI does not currently enforce timeouts;
 | **E0718** | a `redirect` target is neither a fixed literal nor a `safeRedirect(host, path)` result — an untrusted/dynamic redirect target (open redirect, CWE-601) | `function`, `sink`, `reason` |
 | **E0719** | a `renderTemplate` template argument is not a fixed string literal (built by concatenation or from a parameter) — server-side template injection (SSTI / RCE, CWE-94) | `function`, `sink`, `reason` |
 | **E0720** | a `deserialize` argument is untrusted (non-literal) data instead of a `schemaDecode(schema, data)` call — insecure deserialization (pickle/readObject RCE, CWE-502) | `function`, `sink`, `reason` |
-| **E0721** | a `net.fetch` scope uses the `http://` scheme to a non-loopback host — cleartext transmission of credentials/PII (CWE-319) | `function`, `effect_arg`, `reason` |
-| **E0722** | a `net.fetch` scope is pinned to the link-local range `169.254.0.0/16` (cloud metadata / IMDS) — server-side metadata request / IAM-credential theft (CWE-918) | `function`, `effect_arg`, `reason` |
-| **E0723** | a string literal matches a known provider-credential shape (AWS `AKIA…`, GitHub `ghp_…`, Google `AIza…`, Slack `xox…`, Stripe `sk_live_…`, PEM private key) — a hardcoded secret in source (CWE-798) | `credential_kind` |
+| **E0721** | a `net.fetch` scope uses the `http://` scheme to a non-loopback host — cleartext transmission of credentials/PII (CWE-319). Loopback is host-exact (`localhost`, `0.0.0.0`, a `127.0.0.0/8`, `::1` or `::ffff:127.x` address literal, userinfo/port/brackets stripped); `127.0.0.1.evil.com`, `127.0.0.1@evil.com` and an obfuscated spelling like `2130706433` are not loopback | `function`, `effect_arg`, `reason` |
+| **E0722** | a `net.fetch` scope is pinned to the link-local range `169.254.0.0/16` in any spelling (dotted, decimal, hex, octal, short, IPv4-mapped IPv6, with userinfo/port), the AWS IPv6 IMDS `fd00:ec2::254`, or a cloud metadata name (`metadata.google.internal`, `metadata`, `instance-data`, Alibaba `100.100.100.200`) — server-side metadata request / IAM-credential theft (CWE-918) | `function`, `effect_arg`, `reason` |
+| **E0723** | a string literal matches a known provider-credential shape (AWS `AKIA…`, GitHub `ghp_…`, Google `AIza…`, Slack `xox…` / incoming-webhook URL, Stripe `sk_live_…`, OpenAI `sk-proj-…` / `sk-…`, Anthropic `sk-ant-…`, Hugging Face `hf_…`, Groq `gsk_…`, Google OAuth `ya29.…`, GitLab `glpat-…`, SendGrid `SG.….…`, npm `npm_…`, PyPI `pypi-…`, a PEM private key with a base64 body) — a hardcoded secret in source (CWE-798); positioned at the literal | `credential_kind` |
 | **E0724** | an `Untrusted<...>`-marked value reaches a log sink (`print`) without `sanitizeLog(...)` — log injection / forging via embedded CR/LF (CWE-117) | `function`, `sink` |
 | **E0725** | an `Untrusted<...>`-marked value reaches an HTML response (`htmlResponse`) without `htmlEscape(...)` — reflected cross-site scripting (CWE-79) | `function`, `sink` |
 | **E0726** | an `Untrusted<...>`-marked value reaches a response header (`setHeader`) without `sanitizeHeader(...)` — HTTP response splitting / header injection (CWE-113) | `function`, `sink` |
-| **E0727** | a `parseXml` argument is untrusted (non-literal) instead of a `parseXmlSafe(data)` call — XML external entity injection (file read / SSRF, CWE-611) | `function`, `sink`, `reason` |
+| **E0727** | a `parseXml` argument is untrusted (non-literal) instead of a `parseXmlSafe(data)` call — XML external entity injection (file read / SSRF, CWE-611). On Python the text is per resolved callee (iteration 53, measured): `lxml.etree` — read local files through external entities by default before lxml 5.0 and under `resolve_entities=True`, a URL only with `no_network=False` as well; a parser bound in the same function with `resolve_entities=False` (and `no_network`/`load_dtd`/`dtd_validation` absent or at their safe value), passed positionally or as `parser=`, clears it. `xml.sax.parse`/`parseString` — build their own parser with external entities off (since Python 3.7.1) and take no parser argument, so no XXE through entities. `xml.dom.minidom`/`xml.dom.pulldom` — off by default, but a `parser=` built with `make_parser()` and `feature_external_ges` reads files and fetches URLs. `xml.etree.ElementTree`/`cElementTree`/`xml.dom.expatbuilder` — never expand external entities, on any Expat. Every `parse()` spelling adds that its source string is itself opened as a local path (`xml.sax.parse`, `lxml.etree.parse`: or fetched as a URL), which no row judges. Every stdlib row adds the docs' hedged DoS clause (an older Expat, possibly the system copy, may be open to billion laughs / quadratic blowup below 2.4.1, large tokens below 2.6.0, disproportional memory use below 2.7.2) and names the `defusedxml` equivalent without a `parser=` argument. `defusedxml.minidom`/`pulldom` `parse`/`parseString` and `defusedxml.ElementTree.parse` handed a caller's `parser=` are the sink themselves (defusedxml defuses only the parser it builds; `parser` absent or `None` is clean) | `function`, `sink`, `reason`; on Python also `match` and `callee` |
 | **E0728** | an `Untrusted<...>`-marked value reaches a CSV cell (`csvCell`) without `csvEscape(...)` — spreadsheet formula injection (CWE-1236) | `function`, `sink` |
-| **E0729** | a `Secret<...>`/`PII<...>`/`Untrusted<...>`-marked value is passed to a user-function parameter not typed with that marker — the callee holds the value with the marker erased, blinding every downstream sink check (taint laundering). Sanctioned exits: the marker's unwrapper (`reveal`/`redact`/the per-sink sanitizers/`trusted`) at the call site, or a marker-typed parameter | `function`, `callee`, `param`, `marker` |
+| **E0729** | a `Secret<...>`/`PII<...>`/`Untrusted<...>`-marked value is passed to a user-function parameter not typed with that marker — the callee holds the value with the marker erased, blinding every downstream sink check (taint laundering). Sanctioned exits: the marker's unwrapper (`reveal`/`redact`/the per-sink sanitizers/`trusted`) at the call site, or a marker-typed parameter. Two crossings the row also refuses: (a) a call **through a function-typed parameter** (`f: function(String) returns Unit`, `grammar.ebnf` line 88) — the callee is chosen by the caller's caller and is unknown here, so no sanctioned crossing exists and only unwrapping at the call site clears it (`extra.via = "function_type"`); an alias of such a parameter (`let g = f`) is the same callee and `extra.param` names the parameter (BUG-025); (b) a crossing cleared by the **wrong sanitizer** — a sanitizer is sink-specific, so `sanitizeLog(u)` into a callee that feeds `htmlResponse` is still refused, naming what cleared it and what the reached sink demands. A parameter that reaches the sink only THROUGH that sink's own sanitizer (`htmlResponse(htmlEscape(s))`) does not reach it raw and is accepted (BUG-024); any other wrapper still leaks (`trusted(...)`, an explicit assertion rather than a sanitizer, still clears) | `function`, `callee`, `param`, `marker`; plus `via`, or `cleared_with`/`reaches_sink`/`needs` |
 | **E0730** | a function returns a `Secret<...>`/`PII<...>`/`Untrusted<...>`-carrying value while its declared return type does not carry the marker — every caller receives the value with the marker washed off (return laundering, the dual of E0729). Sanctioned exits: declare the marker-typed return, or unwrap (`reveal`/`redact`/the per-sink sanitizers/`trusted`) at the return site | `function`, `marker`, `declared_return` |
+| **E0731** | an `evalCode` source argument is not a fixed string literal (built by concatenation, from a parameter, or by another call) — an interpreter fed attacker-authored source is arbitrary code execution (code injection, CWE-94/95). On Python: `exec`/`eval`/`compile` on a non-literal | `function`, `sink`, `reason` |
 
 E0701 comes from the B.3 default-on capability pass. E0702/E0703/E0704
 come from the D.3 module-validation pass — also default-on, opt out
@@ -326,25 +327,36 @@ reach-scope pass (CWE-319). E0710 checks that a `net.fetch` host is
 E0710 but still sends credentials and PII unencrypted, readable by any
 passive network observer. Loopback hosts (`localhost`, `127.0.0.0/8`,
 `::1`, `0.0.0.0`) are exempt — that traffic never leaves the machine. The
-fix is the `https://` scheme. Same `--no-scope-check` opt-out.
+exemption is host-exact: the host is what remains after userinfo, port
+and IPv6 brackets are stripped, so `127.0.0.1@evil.com` is `evil.com`,
+`127.0.0.1.evil.com` is a public name, and an obfuscated spelling
+(`2130706433`) is not a sanctioned loopback. The fix is the `https://`
+scheme. Same `--no-scope-check` opt-out.
 
 E0722 is the metadata-fetch sibling of E0710 in the same reach-scope pass
 (CWE-918). E0710 refuses an *unpinned* scope; E0722 refuses a scope
 *pinned* to the link-local range `169.254.0.0/16`, which holds the cloud
 metadata endpoint `169.254.169.254` (AWS/GCP/Azure IMDS) — a pinned
 metadata host satisfies E0710/E0721 yet is the crown-jewel SSRF target for
-IAM-credential theft. Application code should obtain credentials through
-the SDK/credential provider, never a raw metadata request. Private
-RFC-1918 ranges are deliberately NOT flagged (legitimate in service
-meshes). Same `--no-scope-check` opt-out.
+IAM-credential theft. The host is canonicalised before the range test —
+decimal, hex, octal and short IPv4 spellings, IPv4-mapped IPv6, userinfo
+and port are all read as the address they resolve to — and the
+provider names (`metadata.google.internal`, `metadata`, `instance-data`,
+`100.100.100.200`) and the AWS IPv6 endpoint `fd00:ec2::254` are refused
+by name. Application code should obtain credentials through the
+SDK/credential provider, never a raw metadata request. Private RFC-1918
+ranges are deliberately NOT flagged (legitimate in service meshes). Same
+`--no-scope-check` opt-out.
 
 E0723 is a new detector family — a **literal-content scan** (not effect
 or dataflow): every string literal is matched against high-confidence
-provider-credential shapes (AWS/GitHub/Google/Slack/Stripe/PEM). A match
-is a hardcoded secret (CWE-798) — committed to version control forever,
+provider-credential shapes (AWS/GitHub/Google/Slack/Stripe/OpenAI/
+Anthropic/Hugging Face/Groq/GitLab/SendGrid/npm/PyPI/PEM). A match is a
+hardcoded secret (CWE-798) — committed to version control forever,
 shipped in every build. The patterns are deliberately narrow so false
 positives are near zero (a demo password like `"hunter2"` does not match;
-a real `AKIA…` key does). Fix: load the secret at runtime from the
+a real `AKIA…` key does; a PEM header quoted in an error message without
+a base64 body does not). Fix: load the secret at runtime from the
 environment / a secret manager. Same `--no-scope-check` opt-out.
 
 E0724 introduces the taint-SOURCE marker `Untrusted<T>` — the sound,
@@ -378,7 +390,26 @@ content-escaping one. `parseXml` (external entities enabled) reads local
 files and reaches internal URLs from a crafted `<!ENTITY SYSTEM ...>`; it
 is refused on untrusted (non-literal) input. `parseXmlSafe(data)` disables
 entity resolution and is the sanctioned alternative. Same `--no-scope-check`
-opt-out.
+opt-out. On Python the mapped stdlib parsers are NOT that parser: "By
+default, Expat itself does not access local files or create network
+connections" (Python docs, `library/xml.html`, "XML security"), so a
+stdlib callee's message says where the XXE read actually is (a `parser=`
+SAX parser with `feature_external_ges` on minidom/pulldom; nowhere on
+ElementTree, expatbuilder or `xml.sax.parse`/`parseString`), hedges the
+DoS clause the way the docs do, names the `defusedxml` equivalent, and on
+a `parse()` spelling adds that the source string is itself opened as a
+path or URL — a hazard no row judges; lxml's keeps the file-read wording
+(the default before 5.0, `resolve_entities=True` on any version, a URL
+only with `no_network=False`) and names the parser binding, which the
+frontend clears in either slot. The sink set and the argument rule are
+identical for every callee; only the text differs
+(`LiteralOrWrapperSpec.callee_text`, iteration 53). Every Python-translated
+finding of a literal-or-wrapper row (E0711/E0713/E0714/E0718/E0719/E0720/
+E0727/E0731) also carries `match` (how the frontend named the sink,
+`transpiler/aether/confidence.py`) and `callee` (the spelling the frontend
+resolved: a dotted import path on a `qualified`/`guard`/`argv` match, the
+builtin name on `builtin`/`builtin_compile`, the attribute path as written
+— possibly chained, `self.db.cursor.execute` — on a `method` match).
 
 E0728 is the fourth `Untrusted<T>` sink (CWE-1236) and the first in a
 NON-HTTP context — proving the marker generalizes past web output. A CSV
@@ -387,10 +418,25 @@ formula when opened in Excel / Google Sheets (`=WEBSERVICE(...)` exfil,
 DDE → code execution). `csvEscape(...)` neutralizes a leading trigger and
 is the sanctioned exit. Same `--no-scope-check` opt-out.
 
-Both E0719 and E0720 also accept an explicit `trusted(...)` argument —
+E0731 is the code-injection sibling of E0719 in the same reach-scope
+pass (CWE-94/95, the agent-framework "run the code the model wrote"
+shape: `exec(tool_code)`, `eval(expr)`, `compile(src, ...)`). `evalCode`'s
+argument — the source an interpreter will run — must be a fixed string
+literal (or a name bound only to literals). A source built by
+concatenation, taken from a parameter, or produced by any other call is
+refused: whatever authored it decides what runs, with the process's full
+privileges. Like SSTI there is no sanitizer — there is no way to escape
+attacker-authored code into something safe to run — so the sanctioned
+form is the fixed literal and `trusted(...)` is the auditable escape
+hatch for a source the program vouches for (a script bundled with the
+application). On Python, `exec`/`eval`/`compile` map to this sink;
+`ast.literal_eval` does not (literals only), and a local `def exec(...)`
+is not the builtin. Same `--no-scope-check` opt-out.
+
+E0719, E0720 and E0731 also accept an explicit `trusted(...)` argument —
 the auditable trust boundary (the dual of `reveal`/`redact`) for a vetted
 dynamic source (a config bundle, a template from a trusted store). It is
-deliberately narrow: only these two no-sanitizer sinks honor it, and it
+deliberately narrow: only these three no-sanitizer sinks honor it, and it
 only relaxes the check, so it is strictly non-breaking. Wrapping
 attacker-controlled input in `trusted()` is the one misuse — visible in
 review by construction.
@@ -399,7 +445,7 @@ review by construction.
 
 | Code | Description | `extra` keys |
 |------|-------------|--------------|
-| **E0801** | callee's effects not covered by caller's declared set (B.1 + B.2) | `caller`, `callee`, `caller_effects`, `missing_effect` |
+| **E0801** | callee's effects not covered by caller's declared set (B.1 + B.2). A function passed as a **value** counts as a callee: its effects run under the call it is handed to, so `apply(logIt, s)` from a `pure` caller is refused (`extra.via = "function_value"`). A pure function value adds nothing — `map(double, xs)` stays clean. The name is resolved as a function only when nothing local shadows it: a `String` parameter or a `let` named after a function is a VALUE (BUG-024). A local alias binding still counts — `let g = logIt  apply(g, s)` reports `logIt` with `g` named in the message | `caller`, `callee`, `caller_effects`, `missing_effect`, optional `via` |
 
 Default-on. Opt out per-file with `aether check --no-static-effects`.
 Glob-matching on effect args (B.2) is part of this code.

@@ -60,6 +60,19 @@ def _read(path: str) -> str:
         return f.read()
 
 
+def _read_py(path: str) -> str:
+    # Python source declares its own encoding (PEP 263): `tokenize.open`
+    # honours a `# -*- coding: latin-1 -*-` cookie exactly as CPython
+    # does, strips a BOM, and is byte-identical to utf-8-sig on a file
+    # that has neither. Read as utf-8 a cookie'd file was a
+    # UnicodeDecodeError, counted "unreadable" and skipped — valid
+    # Python, findings lost. Kept apart from `_read`: `.aeth` has no
+    # cookie grammar, and its behaviour must not move.
+    import tokenize
+    with tokenize.open(path) as f:
+        return f.read()
+
+
 def _has_imports(ast: Dict[str, Any]) -> bool:
     """True if the AST contains any top-level ImportDecl."""
     for d in ast.get("decls", []) or []:
@@ -271,21 +284,92 @@ _PY_SKIP_DIRS = frozenset((
 ))
 
 
-def _py_files(target: str) -> list:
+def _py_files(target: str, skipped: list = None) -> list:
     """Every `.py` file under `target`, or `[target]` if it is a file.
 
     Sorted at every level so two runs over the same tree produce the same
-    output in the same order (tests/test_deterministic.py's rule)."""
+    output in the same order (tests/test_deterministic.py's rule). A
+    directory pruned by `_PY_SKIP_DIRS` is appended to `skipped` (its
+    path relative to `target`) — a `build/` or `env/` that holds the
+    user's own source used to vanish with no trace in any output."""
     if os.path.isfile(target):
         return [target]
     found = []
     for dirpath, dirnames, filenames in os.walk(target):
+        if skipped is not None:
+            for d in dirnames:
+                if d in _PY_SKIP_DIRS or d.endswith(".egg-info"):
+                    skipped.append(os.path.relpath(os.path.join(dirpath, d), target)
+                                   .replace(os.sep, "/"))
         dirnames[:] = sorted(d for d in dirnames
                              if d not in _PY_SKIP_DIRS
                              and not d.endswith(".egg-info"))
         found.extend(os.path.join(dirpath, f) for f in sorted(filenames)
                      if f.endswith(".py"))
     return found
+
+
+def _scan_one(job):
+    """Analyze ONE Python file. Everything `cmd_check_py`'s loop collects
+    for a file, as one picklable tuple, so the loop can run in a worker
+    process unchanged:
+
+        ("ok", path, [Diagnostic], unprovable, meta)
+      | ("unreadable", path, why, detail)
+      | ("crashed", path, error_text)
+
+    Module-level and self-contained on purpose: `ProcessPoolExecutor`
+    pickles the callable by qualified name, and a closure over
+    `cmd_check_py`'s locals would not survive. The per-file `except` walls
+    stay INSIDE the worker — a detector that crashes must come back as
+    this file's ANALYZER ERROR line, not as a BrokenProcessPool that
+    loses the whole run.
+    """
+    path, skip, strict = job
+    from .py_frontend import py_to_ir
+    from .passes import analyze_flat
+    from .risk import rank
+    try:
+        src = _read_py(path)
+    except (OSError, UnicodeDecodeError, SyntaxError) as e:
+        # `tokenize.open` raises SyntaxError for an unknown cookie.
+        return ("unreadable", path, type(e).__name__, str(e))
+    try:
+        ast, unprovable, meta = py_to_ir(src)
+        diags = analyze_flat(ast, skip=skip)
+    except (SyntaxError, ValueError) as e:
+        # py2 sources, templates and test fixtures are normal in a real
+        # tree; they are counted, not fatal.
+        return ("unreadable", path, type(e).__name__, str(e))
+    except RecursionError as e:
+        # The frontend catches this per scope and reports an `unprovable`
+        # region; one that still escapes is the analyzer's limit, not the
+        # input's — loud, like any crash, never a silently "unreadable"
+        # file with exit 0.
+        return ("crashed", path,
+                f"RecursionError: expression too deep for the analyzer ({e})")
+    except Exception as e:
+        # An analyzer crash is a BUG in Aether, not a property of the
+        # input. It must be loud and must fail the run — `passes/
+        # __init__.py` deliberately does not swallow exceptions.
+        return ("crashed", path, f"{type(e).__name__}: {e}")
+    if not strict:
+        diags = [d for d in diags if d.code not in _PY_STRICT_ONLY_CODES]
+    # Worst-first, then most-certain-first: the top of a long scan is the
+    # part worth reading, and of two equally-risky findings the one the
+    # analysis is surest about leads. Line and code break ties so the
+    # order stays deterministic (tests/test_deterministic.py).
+    diags.sort(key=lambda d: (-rank(d.code), -d.confidence,
+                              d.position.line, d.code))
+    return ("ok", path, diags, unprovable, meta)
+
+
+# Below this many files a worker pool costs more (process start-up, and
+# pickling every Diagnostic back) than the parallelism buys. Measured on
+# 8 logical cores: 300 files serially 23.6 s, 4 workers 9.4 s, 8 workers
+# 9.2 s, identical findings — but a handful of files is dominated by the
+# ~0.5 s of interpreter start-up per worker.
+_JOBS_THRESHOLD = 32
 
 
 def cmd_check_py(args) -> int:
@@ -298,15 +382,8 @@ def cmd_check_py(args) -> int:
     guarantee set is genuinely smaller than `check` on a .aeth file. That
     is printed, not implied: a tool that quietly offers less than it looks
     like it offers is worse than one that offers less out loud."""
-    # Relative, and no sys.path surgery: the frontend used to live in
-    # `tools/`, which `[tool.setuptools.packages.find]` does not package,
-    # so `check-py` raised ModuleNotFoundError in every pip-installed copy
-    # while working fine from a checkout. Library code the CLI depends on
-    # belongs in the library (BUG-007).
-    from .py_frontend import py_to_ir
-    from .passes import analyze_flat
-    from .risk import rank
-
+    # The per-file work — and the frontend/pass imports it needs — lives
+    # in `_scan_one`, which is also what a worker process runs.
     strict = getattr(args, "strict", False)
     skip = _PY_SKIP_STAGES if strict else _PY_SKIP_STAGES + ("capability",)
 
@@ -320,39 +397,61 @@ def cmd_check_py(args) -> int:
         sys.stderr.write("aether: --sarif and --json are two different "
                          "output formats; pick one\n")
         return 2
-    paths = sorted({p for t in targets for p in _py_files(t)})
+    min_conf = getattr(args, "min_confidence", 0.0) or 0.0
+    if not 0.0 <= min_conf <= 1.0:
+        sys.stderr.write(f"aether: --min-confidence must be in [0,1], "
+                         f"got {min_conf}\n")
+        return 2
+    # A usage error on our own flag must read like one. Unvalidated,
+    # `--jobs 0` scanned serially with no message and `--jobs 999` died
+    # with a raw ValueError traceback and exit 1 — Windows caps
+    # ProcessPoolExecutor at 61 workers, which is a platform fact, not
+    # something the caller should have to know.
+    jobs_arg = getattr(args, "jobs", None)
+    if jobs_arg is not None and jobs_arg < 1:
+        sys.stderr.write(f"aether: --jobs must be >= 1, got {jobs_arg}\n")
+        return 2
+    skipped_dirs: list = []
+    paths = sorted({p for t in targets for p in _py_files(t, skipped_dirs)})
+    skipped_dirs = sorted(set(skipped_dirs))
     # One explicit file keeps the original single-file output verbatim; a
     # directory (or several targets) prefixes each file's findings with
     # its path, because otherwise line numbers name nothing.
     show_paths = not (len(targets) == 1 and os.path.isfile(targets[0]))
 
+    jobs = jobs_arg
+    if jobs is None:
+        jobs = (os.cpu_count() or 1) if (
+            len(paths) > _JOBS_THRESHOLD and (os.cpu_count() or 1) > 1) else 1
+    # Windows caps ProcessPoolExecutor at 61 workers. Asking for more is
+    # not worth an error: clamp and scan, rather than refusing a run over
+    # a number that only names how fast the caller wanted it.
+    jobs = min(jobs, 61)
+    work = [(p, skip, strict) for p in paths]
+    if jobs > 1 and len(paths) > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=jobs) as ex:
+            # `map` over the ALREADY-SORTED paths: results come back in
+            # submission order, so the output is byte-identical to the
+            # serial loop's (tests/test_deterministic.py).
+            outcomes = list(ex.map(_scan_one, work, chunksize=4))
+    else:
+        outcomes = [_scan_one(w) for w in work]
+
     results, unreadable, crashed = [], [], []
-    for p in paths:
-        try:
-            src = _read(p)
-        except (OSError, UnicodeDecodeError) as e:
-            unreadable.append((p, type(e).__name__))
-            continue
-        try:
-            ast, unprovable, meta = py_to_ir(src)
-            diags = analyze_flat(ast, skip=skip)
-        except (SyntaxError, ValueError, RecursionError) as e:
-            # py2 sources, templates and test fixtures are normal in a real
-            # tree; they are counted, not fatal.
-            unreadable.append((p, type(e).__name__))
-            continue
-        except Exception as e:
-            # An analyzer crash is a BUG in Aether, not a property of the
-            # input. It must be loud and must fail the run — `passes/
-            # __init__.py` deliberately does not swallow exceptions.
-            crashed.append((p, f"{type(e).__name__}: {e}"))
-            continue
-        if not strict:
-            diags = [d for d in diags if d.code not in _PY_STRICT_ONLY_CODES]
-        # Worst-first, so the top of a long scan is the part worth reading.
-        # Line and code break ties so the order stays deterministic.
-        diags.sort(key=lambda d: (-rank(d.code), d.position.line, d.code))
-        results.append((p, diags, unprovable, meta))
+    for o in outcomes:
+        if o[0] == "ok":
+            results.append(o[1:])
+        elif o[0] == "unreadable":
+            unreadable.append(o[1:])
+        else:
+            crashed.append(o[1:])
+    if min_conf > 0.0:
+        # A filter on the OUTPUT, like `tools/scan.py`'s `--min-risk`: it
+        # hides rows the analysis is less sure of, and changes nothing
+        # about which findings the detectors produced.
+        results = [(p, [d for d in ds if d.confidence >= min_conf], unp, m)
+                   for p, ds, unp, m in results]
 
     n_find = sum(len(ds) for _, ds, _, _ in results)
     n_func = sum(m["n_functions"] for _, _, _, m in results)
@@ -366,19 +465,39 @@ def cmd_check_py(args) -> int:
         sys.stderr.write(f"aether: ANALYZER ERROR on {p}: {err}\n"
                          f"  this is a bug in Aether, not in your code — "
                          f"please report it (see BUGS.md)\n")
+    # A file the scanner could not read is a missed finding, not a clean
+    # file. It is reported on stderr in EVERY output mode — a `--sarif`
+    # or `--json` run used to swallow it (the text mode said it for one
+    # file only, and then failed the run for it while the other modes
+    # did not). The rule, applied uniformly: unparseable input never
+    # fails the run; an analyzer crash always does.
+    for p, why, detail in unreadable:
+        sys.stderr.write(f"aether: could not parse {p}: {why}: {detail}\n")
+    if skipped_dirs:
+        sys.stderr.write(f"aether: {len(skipped_dirs)} director"
+                         f"{'y' if len(skipped_dirs) == 1 else 'ies'} skipped "
+                         f"as vendored/build output: "
+                         + ", ".join(skipped_dirs) + "\n")
 
     if getattr(args, "sarif", False):
         from .risk import risk_of
         from .sarif import to_sarif
         # Relative to the working directory, which under CI is the
         # checkout root. Code Scanning silently drops a result whose
-        # artifactLocation is not relative to it.
+        # artifactLocation is not relative to it. Column, suggestion and
+        # `extra` ride along so the SARIF says what the JSON says.
         print(json.dumps(to_sarif(
             [{"path": p,
               "findings": [{"code": d.code, "message": d.message,
-                            "line": d.position.line, "risk": risk_of(d.code)}
+                            "line": d.position.line,
+                            "column": d.position.column,
+                            "risk": risk_of(d.code),
+                            "confidence": d.confidence,
+                            "suggestion": d.suggestion, "extra": d.extra}
                            for d in ds]}
-             for p, ds, _u, _m in results], base=os.getcwd()), indent=2))
+             for p, ds, _u, _m in results], base=os.getcwd(),
+            unreadable=[(p, f"{why}: {detail}") for p, why, detail in unreadable]),
+            indent=2))
         return 2 if (n_find or crashed) else 0
 
     if args.json:
@@ -388,7 +507,9 @@ def cmd_check_py(args) -> int:
                               "unprovable": unp, "meta": meta}
                              for p, ds, unp, meta in results],
                    "unreadable": [{"path": p.replace(os.sep, "/"),
-                                   "reason": why} for p, why in unreadable],
+                                   "reason": why, "detail": detail}
+                                  for p, why, detail in unreadable],
+                   "skipped_dirs": skipped_dirs,
                    "errors": [{"path": p.replace(os.sep, "/"), "error": e}
                               for p, e in crashed]}, sys.stdout)
         sys.stdout.write("\n")
@@ -401,10 +522,6 @@ def cmd_check_py(args) -> int:
             sys.stderr.write(f"{p.replace(os.sep, '/')}\n")
         for d in ds:
             _emit_error(d, False)
-    if unreadable and not show_paths:
-        p, why = unreadable[0]
-        sys.stderr.write(f"aether: could not parse {p}: {why}\n")
-        return 2
 
     print()
     if show_paths:
@@ -414,7 +531,8 @@ def cmd_check_py(args) -> int:
                 by_code[d.code] = by_code.get(d.code, 0) + 1
         print(f"scanned {len(results)} file(s) · "
               f"{sum(1 for _, ds, _, _ in results if ds)} with findings · "
-              f"{len(unreadable)} unparseable · {len(crashed)} analyzer error(s)")
+              f"{len(unreadable)} unparseable · {len(crashed)} analyzer error(s)"
+              + (f" · {len(skipped_dirs)} dir(s) skipped" if skipped_dirs else ""))
         if by_code:
             print("findings by code: " + ", ".join(
                 f"{c}x{n}" for c, n in sorted(by_code.items())))
@@ -581,8 +699,8 @@ def cmd_test(args) -> int:
 # `aether fix-loop <file>` dispatches to one of two paths:
 #
 #   default (deterministic)
-#     Calls the deterministic reference implementation at
-#     `demos/payment_workflow/fix_loop.py`. Handles E0801 (effect not
+#     Calls the deterministic reference implementation in the package,
+#     `aether/fix_loop.py`. Handles E0801 (effect not
 #     covered) and E0701 (capability not declared) — the codes whose
 #     `extra` dict is sufficient for a mechanical AST rewrite. Used in
 #     CI; produces an identical transcript on every invocation. NOT
@@ -590,7 +708,8 @@ def cmd_test(args) -> int:
 #
 #   --live
 #     Calls Anthropic via the live LLM path used by
-#     `demos/payment_workflow/llm_fix_demo.py`. Handles arbitrary
+#     `demos/payment_workflow/llm_fix_demo.py` — source checkout only,
+#     since demos/ is not in the wheel. Handles arbitrary
 #     errors including logic errors that the deterministic path cannot
 #     repair (E0301, E0302, E0304, E0305). Requires
 #     ANTHROPIC_API_KEY. If the env var is missing, fails with a clear
@@ -601,19 +720,9 @@ def cmd_test(args) -> int:
 
 def cmd_fix_loop(args) -> int:
     """Dispatch to deterministic (default) or --live LLM path."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    repo_root = os.path.dirname(os.path.dirname(here))
-    demo_dir = os.path.join(repo_root, "demos", "payment_workflow")
-
     if not os.path.isfile(args.file):
         sys.stderr.write(f"file not found: {args.file}\n")
         return 2
-
-    # Make the demo modules importable.
-    if demo_dir not in sys.path:
-        sys.path.insert(0, demo_dir)
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
 
     if args.live:
         # Live LLM path — calls Anthropic. Requires ANTHROPIC_API_KEY.
@@ -626,21 +735,30 @@ def cmd_fix_loop(args) -> int:
                 "  deterministic path (E0801 + E0701 only).\n"
             )
             return 2
+        # The live path drives the demo in demos/payment_workflow/, which
+        # the wheel does not ship: it runs from a source checkout only.
+        here = os.path.dirname(os.path.abspath(__file__))
+        repo_root = os.path.dirname(os.path.dirname(here))
+        for d in (os.path.join(repo_root, "demos", "payment_workflow"), repo_root):
+            if d not in sys.path:
+                sys.path.insert(0, d)
         try:
             from llm_fix_demo import _do_live   # type: ignore
         except ImportError as e:
-            sys.stderr.write(f"aether fix-loop --live: import failed: {e}\n")
+            sys.stderr.write(
+                f"aether fix-loop --live: import failed: {e}\n"
+                "  --live drives demos/payment_workflow/llm_fix_demo.py and\n"
+                "  runs from a source checkout only. The deterministic path\n"
+                "  (without --live) works in an installed copy.\n")
             return 2
         transcript = args.out_transcript or args.file.replace(
             ".aeth", ".live.transcript.json")
         return _do_live(args.file, transcript, label=f"cli ({args.file})")
 
-    # Deterministic path (default).
-    try:
-        from fix_loop import main as deterministic_main  # type: ignore
-    except ImportError as e:
-        sys.stderr.write(f"aether fix-loop: deterministic path import failed: {e}\n")
-        return 2
+    # Deterministic path (default) — part of the package, so it works in
+    # a pip-installed copy. It used to be imported from demos/, which no
+    # wheel has ever shipped (BUGS.md BUG-026).
+    from .fix_loop import main as deterministic_main
     argv = [args.file]
     if args.out_source:
         argv += ["--out-source", args.out_source]
@@ -702,6 +820,21 @@ def main(argv=None) -> int:
                     help="emit SARIF v2.1.0 on stdout for GitHub Code "
                          "Scanning; paths are relative to the working "
                          "directory, which under CI is the checkout root")
+    sp.add_argument("--min-confidence", type=float, default=0.0,
+                    metavar="FLOAT",
+                    help="hide findings the analysis is less sure of, on a "
+                         "0-1 scale (see transpiler/aether/confidence.py): "
+                         "0.6 is a sink matched by method name on an "
+                         "unresolved receiver, 0.95 one resolved through "
+                         "the imports. A filter on the output; it changes "
+                         "nothing about what the detectors found")
+    sp.add_argument("--jobs", type=int, default=None, metavar="N",
+                    help="analyze files in N worker processes. Default: a "
+                         "pool only when it can pay for itself (more than "
+                         f"{_JOBS_THRESHOLD} files on a multi-core machine), "
+                         "else the serial loop — so single-file and "
+                         "small-tree runs stay byte-identical. --jobs 1 "
+                         "forces serial. Output order does not depend on it")
 
     sp = sub.add_parser("check", help="parse + emit (no execution)")
     sp.add_argument("file")

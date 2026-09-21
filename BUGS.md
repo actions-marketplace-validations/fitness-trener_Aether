@@ -1,7 +1,10 @@
 # Aether upstream bug list
 
-Bugs found by agents using Aether in other projects on this PC.
-Entries appended automatically per prompt/upstream-bug-report.md.
+Aether's bug log. Most entries were found in this repo, by the improvement
+loop, the benchmark scans and the pre-release checks; some are appended by
+agents using Aether in other projects on this PC
+(prompt/upstream-bug-report.md). BUG-017 to BUG-019 were reserved for a
+parallel work slice on 2026-09-03 and never assigned.
 
 ## Fix protocol
 Run fix sessions from this repo with the most capable Claude model
@@ -504,3 +507,606 @@ ambiguous-alias case, and `yaml.safe_load`, all labelled. Ground truth:
 Residual: `collect()` still discovers FUNCTIONS only as direct children of
 module and class bodies, so a `def` nested under `if TYPE_CHECKING:` or
 `try:` is not analysed at all. Different gap, same shape; not fixed here.
+
+### BUG-012  a sink in any statement position the translator did not model was SILENT, and a rebinding it did not model proved a name literal-only  [FIXED 8afdfad]
+test: tests/test_py_frontend_sinks.py
+
+
+Found 2026-09-02 by a five-lens survey of the Python frontend, and
+confirmed by execution before the fix. `py_to_ir` translated four
+statement kinds — `Assign` to a single name, `Expr` whose value is a
+call, `Return`, `With` — and one expression shape, and DROPPED every
+other node. Nothing was over-flagged; it was never seen:
+
+```python
+async def a(conn, uid):
+    await conn.execute("SELECT * FROM u WHERE id = " + uid)   # silent
+def b(cur, uid):
+    for row in cur.execute("SELECT * FROM u WHERE id = " + uid):   # silent
+        ...
+def c(blob):
+    obj, _ = pickle.loads(blob), None                           # silent
+def d(cur, uid):
+    return cur.execute("SELECT " + uid) or []                   # silent
+try:
+    def load(raw): return pickle.loads(raw)                     # never analysed
+except Exception: ...
+os.system(sys.argv[1])                                          # module level: n_functions 0, ok true
+```
+
+Census over bench/framework_scan (4,946 files): 603 sink calls sat
+behind an `await` and 89 in other unmodeled positions (BoolOp 50,
+Compare 20, tuple/attribute/subscript targets 11, dict/list displays 7,
+for-iterables 17, comprehensions 20); 26 of the 89 would fire under the
+existing rows. Same family as BUG-004 and BUG-011: the unknown case
+defaulted to "not a sink".
+
+**The second half is a false SAFE, not a missed position.** Three
+resolvers (`_local_constants`, `_safe_xml_parser_names`,
+`_sql_expression_names`) and the `Let` nodes the Aether safe-name pass
+reads all saw ONE binding form, a single-Name `Assign`. So:
+
+```python
+sql = "SELECT * FROM u WHERE id = "
+sql += uid                      # AugAssign: invisible
+cur.execute(sql)                # `sql` proved literal-only -> silent
+
+def load(raw, loader=None):
+    if loader is None:
+        loader = yaml.SafeLoader   # the only VISIBLE binding
+    return yaml.load(raw, Loader=loader)   # caller-supplied loader cleared the guard
+```
+
+Parameters, `+=`, for-targets, tuple unpacks, walrus, except-as,
+`global`, comprehension targets and match captures were all invisible
+bindings. `_safe_xml_parser_names` additionally skipped any binding
+that was not a parser constructor, so `parser = make()` after the
+hardened constructor still disarmed E0727. And `_guard_verdict` read a
+`**kwargs` splat as "shell= absent" and cleared `subprocess.run(cmd,
+**opts)`, against its own contract that unresolvable means SINK.
+
+Fix, in `transpiler/aether/py_frontend.py`:
+
+- `_bindings_of(node)` — ONE walk over every binding form, consumed by
+  all three resolvers and by `_FnVisitor.seed_bindings`, which emits an
+  opaque `Assign` for every name bound by a form whose value cannot be
+  seen. A name with such a binding can never prove literal-only.
+- `_FnVisitor.visit_stmt` is total over statement kinds: bindings
+  become `Let`s, and every other value expression a statement evaluates
+  (`for`'s iterable, `if`/`while` tests, `assert`, `raise`, `match`
+  subjects and guards, a nested `def`'s decorators and defaults, a
+  non-Name assignment target's value) is translated in place.
+  `_expr` carries the children of every unmodeled expression under
+  `parts`, so a call inside `x or []`, `a == b`, `f()[0]`, a display, a
+  lambda or a comprehension is found by `walk`; `await` and `yield`
+  are transparent; keyword-argument values ride under `kwargs`.
+- `collect()` finds a `def` at any statement depth outside a function
+  body (under `try:`/`if`/`with`/`for`, in a class nested in a class),
+  and each module and class body with a call becomes a synthetic
+  `<module>` / `Class.<class>` scope run through the same machinery.
+- `_guard_verdict`: a `**` or `*` splat that could carry the deciding
+  argument is SINK; `shell` is also read positionally (`arg_index=8`),
+  `Loader` at `arg_index=1`.
+- `_callee_spelling` / `_method_name`: `getattr(obj, "execute")(...)`
+  with a literal attribute, and a bare name bound once to a bound
+  method (`ex = cur.execute; ex(q)`), spell the method.
+- Two sink rows that were simply missing: `exec_driver_sql` (22 of 31
+  corpus sites non-literal, all silent) and sqlmodel's `Session.exec`.
+  And a hole INSIDE the iteration-47 sanctioned exit: `prefix_with`,
+  `suffix_with`, `with_hint`, `with_statement_hint`, `op` splice a
+  string verbatim into compiled SQL; they now get `text()`'s discipline.
+- A scope whose expression is deeper than the interpreter stack reports
+  an `unprovable` `too_deep` region instead of losing the WHOLE FILE as
+  "unreadable" with exit 0; `check-py` reads source with
+  `tokenize.open`, so a PEP 263 `coding:` cookie no longer makes a valid
+  file "unreadable".
+
+Precision fixes shipped alongside, each by positive identification only:
+`from yaml import SafeLoader` then `Loader=SafeLoader` resolves through
+the import table (ambiguous names still resolve to nothing); a
+module-level str constant bound exactly once in the whole module is
+inlined at its reads (`conn.execute(_CREATE_TABLE)`); a `stmt = None`
+sentinel before `stmt = select(...)` binds nothing.
+
+`bench/py_frontend/corpus/totality_repro.py` carries twelve silent
+shapes and seven documented fixes, all labelled.
+
+### BUG-013  `var` bindings and `x = ...` re-assignments were invisible to every binding walker (false accepts)  [FIXED b30d7f1]
+test: tests/test_effect_scope.py
+
+
+Found 2026-09-03 by the improvement survey (candidates AEDET-01/02/03),
+probe-confirmed before the fix. The parser emits three binding kinds —
+`Let` (name), `Var` (name) and `Assign` (target) — and `detector_specs.py`'s
+`_bindings`, the marker-taint fixpoint `_marked_tainted_names`, the
+literal-or-wrapper safe-name pass `_safe_names`, `_fn_aliases` and
+E0717's stable-name proof all walked `Let`/`Assign` by `name` only. A
+`var` was never a binding, and an `Assign` (which carries `target`) never
+matched. So:
+
+```aether
+var x: String = password      // Secret<String> param
+print(x)                      // exit 0: x was never tainted
+
+let p: String = "/etc/motd"
+p = userPath
+readFile(p)                   // exit 0: the only VISIBLE binding is the literal
+
+var docId: String = requestedId
+let proof = authorizeResource(user, "docs:edit", docId)
+docId = victimId
+sqlByOwner("...", docId, proof)   // exit 0: E0717's stable-name proof missed the rebinding
+```
+
+Fix: one shared walker (`_walk_binds` / `_bind_target` over `Let`,
+`Var`, `Assign`) that every consumer uses, plus `_mutable_names` for the
+proofs that need "bound exactly once". Flag-more only. The survey's
+in-memory rewrite over 418 parseable `.aeth` changed 0 files; the gate
+confirms 0 corpus deltas.
+
+### BUG-014  `for` loop variables and match-EXPRESSION arm bindings did not carry taint (false accepts)  [FIXED b30d7f1]
+test: tests/test_effect_scope.py
+
+
+Found 2026-09-03 (candidates AEDET-06/07). BUG-001 (iteration 41) made
+match-STATEMENT arm bindings over a tainted scrutinee tainted; the
+match-EXPRESSION form (`let r = match o do ... end`) and the `for x in
+markedList do ... end` loop variable were left out, so
+`for s in secrets do print(s) end` with `secrets: List<Secret<String>>`
+was exit 0. Fix: the taint fixpoint treats a `For` target over a tainted
+iterable and every arm binding of a tainted match expression as tainted
+(every arm, every binding — conservative).
+
+### BUG-015  an alias of a STDLIB sink hid it from every detector and from E0801 (false accept)  [FIXED b30d7f1]
+test: tests/test_effect_scope.py
+
+
+Found 2026-09-03 (candidate AEDET-04). Iteration 42 resolved aliases of
+USER functions (`let f = logIt; f(secret)`); a stdlib sink aliased the
+same way — `let run = sqlQuery; run(input)`, `let w = writeFile`, `let
+p = print`, `let sh = shellExec` — matched no row (the callee name was
+`run`) and no effect (`_STDLIB_EFFECTS` keyed on `shellExec`), so the
+query, path, secret, command and the E0801/E0701 effect all went silent.
+Fix: `_fn_aliases` targets extended with the stdlib sink names and
+`_STDLIB_EFFECTS` keys; an aliased SINK is the sink, an aliased
+sanitizer/unwrapper is still never honoured (flag-more only). E0716/E0717
+keep demanding their proofs through the alias.
+
+### BUG-016  a record carrying a marker field reached a sink whole, unflagged (false accept)  [FIXED b30d7f1]
+test: tests/test_effect_scope.py
+
+
+Found 2026-09-03 (candidate AEDET-10). Iteration 44 made a marker-typed
+FIELD read a taint source (`u.email`), but the record VALUE itself was
+not tainted, so `print(u)` and `writeFile(path, u)` with `u: User`
+(`record User do email: PII<String> ... end`) were exit 0 — the whole
+record, PII included, in the log. Fix: `_marked_records` (records whose
+fields carry the marker, transitively) and `_record_names` (names whose
+declared type, constructor call or seeding return is such a record);
+a carrier at a sink is a leak; a PLAIN field read of a carrier
+(`u.name`) is not; passing a carrier into a parameter typed with that
+record is a sanctioned crossing and into a plain parameter is E0729;
+returning it under a plain return type is E0730. `Authorized<T>` is
+untouched (a proof marker is never widened).
+
+### BUG-020  a sanctioned wrapper was accepted on its NAME; its pinning argument was never judged (false accept)  [FIXED c35b3f3]
+test: tests/test_effect_scope.py
+
+
+Found 2026-09-03 by the improvement survey (candidate AEDET-05), probe-
+confirmed before the fix. The literal-or-wrapper rows accept an argument
+that is "a fixed literal or the result of a sanctioned wrapper call":
+`_arg_reason` returned safe for ANY call whose callee was in the row's
+wrapper list, without looking at the wrapper's own arguments. Every
+wrapper pins the untrusted value to its FIRST argument — the template
+`sqlBind` binds into, the command line `shellArg` quotes into, the host
+`safeRedirect` pins to — so a wrapper handed a non-literal there launders
+the very thing the row exists to refuse:
+
+```aether
+function q(tmpl: String, v: String) returns String
+  effects db.query
+do
+  return sqlQuery(sqlBind(tmpl, v))      // exit 0: the QUERY TEXT is tmpl
+end
+```
+
+Same for `shellExec(shellArg(tmpl, v))` and `redirect(safeRedirect(host,
+p))`. All three were exit 0.
+
+Fix: `ArgRule.pin` — a reason string per row; when the callee is a
+wrapper, `args[0]` must itself satisfy the rule (literal or literal-bound
+name), else the call is refused with that reason. `safeJoin(base, rel)`
+deliberately has no `pin`: it strips `..` and absolute roots from `rel`,
+the base directory arriving as a parameter is the idiom (7 corpus sites,
+both zip-slip demos' `fixed.aeth`), and the base is program-chosen, not
+the untrusted half — pinning it would refuse the sanctioned exit itself.
+Recorded as a residual, not enforced.
+
+The Python frontend's wrapper calls have no template slot — `shlex.quote(x)`
+arrives as `shellArg(x)`, a SQLAlchemy expression as `sqlBind(...)` — so
+every Call the frontend emits carries `"py": True` and the pinning check
+skips it. That marker is the ONLY difference between the two IRs the
+rules see; a frontend Call without it would be judged by the Aether rule.
+
+### BUG-021  the argv form `["bash", "-c", cmd]` was read as the safe exit (false accept)  [FIXED c35b3f3]
+test: tests/test_py_frontend_sinks.py
+
+
+Found 2026-09-03 (survey candidate PYSINK-07). `subprocess.run` without
+`shell=` IS the documented fix — the argv form — so the guard read it as
+safe. But an argv whose program is a shell and whose flag is `-c` hands
+its third element to that shell to PARSE: `subprocess.run(["bash", "-c",
+"ls " + user])` is `os.system("ls " + user)` with extra steps, and was
+silent. Same for `os.execvp("sh", ["sh", "-c", cmd])` (recorded, not
+mapped: 0 corpus sites).
+
+Fix: `_argv_shell_payload` — when a subprocess-guard call is NOT a shell
+by keyword and its first positional is a list/tuple literal whose first
+element spells a shell (`sh`, `bash`, `zsh`, `dash`, `ksh`, `/bin/sh`,
+`/bin/bash`, `/usr/bin/sh`, `/usr/bin/bash`, `cmd`, `cmd.exe`,
+`powershell`, `pwsh`) and whose second is `-c` (or `/c` for cmd), the
+call is `shellExec` and the THIRD element is the judged argument. A
+literal third element stays clean; `["ls", "-l", x]` stays the argv exit.
+
+---
+
+### BUG-022  function-typed parameters launder markers AND effects (false accept)  [FIXED eaeb316]
+test: tests/test_effect_scope.py
+test: tests/test_static_effects.py
+
+Found 2026-09-03 (iter-51, survey candidate AEDET-08; re-probed live on
+`3986d38`). q1's Evidence table asserted "`grammar.ebnf` has no function
+types", so the whole surface was written off in iter-42. The claim was
+wrong: `grammar/grammar.ebnf` line 88 is
+
+    type_atom = IDENT
+              | "function" "(" [ type_expr {"," type_expr} ] ")" "returns" type_expr ;
+
+and `parser.py:369` emits `{"kind": "FunctionType", ...}`. Two exit-0
+probes, verbatim:
+
+    function apply(f: function(String) returns Unit, x: Secret<String>) returns Unit
+      effects log
+    do
+      f(x)
+    end
+
+    function main(pw: Secret<String>) returns Unit
+      effects log
+    do
+      apply(print, pw)
+    end
+    -> OK (2 decls), exit 0
+
+    function logLine(s: String) returns Unit
+      effects log
+    do
+      print(s)
+    end
+
+    function apply(f: function(String) returns Unit, x: String) returns Unit
+      effects pure
+    do
+      f(x)
+    end
+
+    function main(s: String) returns Unit
+      effects pure
+    do
+      apply(logLine, s)
+    end
+    -> OK (3 decls), exit 0
+
+Why these are false accepts, not over-flags. (1) `check_marker_boundary`
+resolves the callee by name; `f` is a PARAMETER, so `cands` is empty and
+the `if not cands: continue` branch dropped the crossing. The marker then
+crossed into a callee the analysis cannot see AT ALL — strictly worse
+than the plain-param case E0729 already refuses — and `print` received
+the secret with every sink pass blind. (2) `check_effects` unioned only
+the CALLEE's effects into the caller's obligation. A function passed as
+a VALUE runs under that call just the same, so `log` was performed by two
+functions that both declared `pure`. Both are misses inside the modeled
+surface: the contract-breach class.
+
+Fix. (1) When a call's callee name is a function-typed parameter of the
+enclosing function and no user decl or alias resolves it, any argument
+that leaks the marker raises E0729 with `extra.via = "function_type"`.
+No sanctioned crossing is offered on purpose — a function TYPE's argument
+types are never checked against the function that actually arrives, so
+declaring `function(Secret<String>) returns Unit` would be an exit that
+proves nothing. Unwrapping at the call site is the only clearance.
+(2) In `check_effects`, every argument that is a bare `Ident` naming a
+user `FunctionDecl` or a `_STDLIB_EFFECTS` key contributes its declared
+effects to the caller's obligation, reported against the caller as the
+existing E0801 with `extra.via = "function_value"` and wording that says
+the value is passed, not called. A pure function value adds nothing, so
+`map(double, xs)` stays clean — the corpus has 9 such sites (bench
+humanize x3, three `v02_map_filter_chain` files x2 each), every one of
+them declared pure, and 0 function-typed parameters, so the change fires
+0x on the corpus.
+
+Residual (recorded in q1, not invented away): a function that merely
+DECLARES a function-typed parameter can still claim any effects clause it
+likes. The function TYPE carries no effects clause in the grammar, so
+there is nothing to check a callee's own declaration against, and
+`apply(f: function(String) returns Unit) effects pure do f(x) end` stays
+accepted. Closing it needs effect-polymorphic function types — a language
+change, not a detector change.
+
+### BUG-023  the boundary sanitizer is marker-wide, not sink-specific (false accept)  [FIXED eaeb316]
+test: tests/test_effect_scope.py
+
+Found 2026-09-03 (iter-51, survey candidate AEDET-09; re-probed live on
+`3986d38`). q1's Recommended Actions had parked this as "probe for a MISS
+before acting — if none exists it is doctrine". The probe finds the miss:
+
+    function render(s: String) returns String
+      effects pure
+    do
+      return htmlResponse(s)
+    end
+
+    function handle(u: Untrusted<String>) returns String
+      effects pure
+    do
+      return render(sanitizeLog(u))
+    end
+    -> OK (2 decls), exit 0
+
+while the inline shape one call closer is refused:
+
+    function handle(u: Untrusted<String>) returns String
+      effects pure
+    do
+      return htmlResponse(sanitizeLog(u))
+    end
+    -> [E0725] ... (sanitizeLog does NOT protect here), exit 2
+
+`boundary_markers()` unions EVERY `Untrusted` row's sanitizer into one
+set, so any one of them cleared the E0729 crossing regardless of which
+sink the callee actually reached. E0725's own hint says sanitizeLog does
+not protect at `htmlResponse`; stripping CR/LF does nothing about
+`<script>`. Moving the sink one call away laundered it — a miss, and the
+same class of laundering E0729 exists to refuse.
+
+Fix. `param_sink_reach(ast)` in `detector_specs.py` summarises, per user
+function and per parameter index, which marker-flow SINK names that
+parameter's Ident reaches inside the body — using the same argument-index
+rule `marker_flow` applies (`Sink.arg_indices`, so `writeFile`'s path
+slot does not count) and honouring aliased sinks via `_sink_targets`.
+`marker_sink_sanitizers()` derives (marker, sink) -> sanitizer from
+`MARKER_FLOW_SPECS`; nothing restates the map. `check_marker_boundary`
+then accepts a cleared crossing only when the unwrapper that cleared it
+is the right sanitizer for every sink the callee's parameter feeds, and
+otherwise reports E0729 naming the mismatch (`cleared_with`,
+`reaches_sink`, `needs`). `trusted(...)` is nobody's row sanitizer — it
+is an explicit assertion, not inference — and still clears. An empty
+reached-sink set keeps the pre-fix behaviour exactly, so the change fires
+0x on the corpus.
+
+Residuals (recorded in q1): the summary is ONE LEVEL and by direct Ident.
+A callee that rebinds the parameter before the sink, or passes it on to a
+THIRD function, contributes no sinks, and the crossing is then accepted
+on the old marker-wide rule. E0730 (return laundering) is untouched — a
+return has no callee parameter to summarise, so the coarseness stands
+there.
+
+### BUG-024  the iter-51 rules over-flagged: shadowed names and self-sanitizing callees (false reject)  [FIXED 8f94e59]
+test: tests/test_static_effects.py
+(half (a) above; half (b) is locked by
+`tests/test_effect_scope.py::test_boundary_callee_sanitizes_internally_clean`
+and `::test_boundary_callee_wraps_without_sanitizing_still_rejected`)
+
+Found 2026-09-03 by the review of iteration 51's own commit `eaeb316`.
+Two over-flags shipped in that commit; both were exit 0 on `3986d38` and
+exit 2 on the branch, i.e. introduced by the fix, not pre-existing.
+
+**(a) E0801 resolved a bare Ident argument by GLOBAL name.** The `passed`
+comprehension in `check_effects` asked only whether the argument's name
+appears in `user_effects` / `_STDLIB_EFFECTS`, never whether the name is
+bound locally. Every argument position of every call was affected:
+
+    function logIt(s: String) returns Unit
+      effects log
+    do
+      print(s)
+    end
+
+    function main(logIt: String) returns String
+      effects pure
+    do
+      return concat(logIt, "x")
+    end
+    -> [E0801] ... passes 'logIt' as a value to 'concat', whose effect
+       'log' is not covered by the caller
+
+`logIt` here is a plain `String` PARAMETER handed to the pure stdlib
+`concat`. `let notify = "hello"` shadowing a `net` function produced the
+same thing for a string LITERAL. This is not over-flagging a risky shape;
+it invents an effect for a String.
+
+**(b) E0729 counted a parameter as reaching a sink it only reaches
+through that sink's own sanitizer.** `param_sink_reach` passed
+`frozenset()` as the unwrapper set on purpose, so the idiomatic safe
+helper was reported as feeding the sink unsanitized:
+
+    function render(s: String) returns String
+      effects pure
+    do
+      return htmlResponse(htmlEscape(s))
+    end
+
+    function handle(u: Untrusted<String>) returns String
+      effects pure
+    do
+      return render(sanitizeLog(u))
+    end
+    -> [E0729] ... it was cleared with sanitizeLog(...), but 'render'
+       passes it to 'htmlResponse', whose sanitizer is htmlEscape
+       hint: apply htmlEscape(...) instead
+
+`render` does not pass `s` to `htmlResponse`; it passes `htmlEscape(s)`.
+Following the hint gives `render(htmlEscape(u))`, so `htmlEscape` runs
+twice and the response body carries `&amp;lt;`. The message was factually
+false and the suggested fix corrupted output.
+
+Fix. (a) `check_effects` computes `local` — this function's parameter
+names plus every `_walk_binds` target in its body — and a shadowed Ident
+argument resolves ONLY through `_fn_aliases`, which already maps a local
+binding to the function it aliases. The same edit closes the gap iter-51
+documented but left open: `let g = logIt  apply(g, s)` now reports
+E0801 naming `g` as an alias of `logIt`. (b) `_marker_sink_unwrappers()`
+derives, per sink, every sanitizer a marker row demands there (plus the
+sink-agnostic `trusted`), and `param_sink_reach` summarises with that set
+— so a value that arrives at the sink already sanitized is not counted as
+reaching it. Any other wrapper still leaks: `htmlResponse(concat(s, "!"))`
+is still reported, and the message now says "reaches ... unsanitized"
+rather than "passes it to".
+
+Residual. The shadow set is function-wide, not scoped: a call textually
+BEFORE a later `let` of the same name is also treated as shadowed, which
+is the accept direction. The sanitizer prune is syntactic at the sink
+call, which the pre-existing one-level/direct-Ident limit already bounds.
+
+### BUG-025  an alias of a function-typed parameter reopened BUG-022 (false accept)  [FIXED 8f94e59]
+test: tests/test_effect_scope.py
+
+Found 2026-09-03 by the review of iteration 51. `check_marker_boundary`
+matched `ftparams` against the LITERAL callee name, and `_fn_aliases`
+resolves aliases against `frozenset(decls)` only, so an alias bound to a
+function-typed PARAMETER was never a target and the crossing fell through
+`if not cands: ... if cname not in ftparams: continue`:
+
+    function apply(f: function(String) returns Unit, x: Secret<String>)
+      returns Unit
+      effects log
+    do
+      let g = f
+      g(x)
+    end
+    -> OK (1 decls), exit 0   [both on 3986d38 and on eaeb316]
+
+while the identical program without the `let` fires E0729 after BUG-022.
+One line of aliasing reopened exactly the laundering that slice claims to
+have closed — the same alias class q1 already records as CLOSED for named
+functions (BUG-002).
+
+Fix. `check_marker_boundary` resolves the callee through
+`_fn_aliases(d, frozenset(ftparams))` before giving up, and reports the
+underlying parameter with `extra.param` naming it and the message adding
+"(through alias 'g')". The alias map is built separately from the marker
+alias map so nothing else in the pass changes behaviour.
+
+
+### BUG-026  `aether fix-loop` was broken in every installed copy since 0.3.0  [FIXED 8fb3c59]
+test: tests/test_fix_loop_cli.py
+
+
+Found 2026-09-11 by the pre-release check for 0.4.0, which runs every probe
+through the pip-installed `aether` console script from outside the
+checkout. Verbatim, exit 2:
+
+    aether fix-loop: deterministic path import failed: No module named 'fix_loop'
+
+The same file through `python -B -m transpiler.aether.cli fix-loop` exited
+0. `cmd_fix_loop` found its engine by walking up from `__file__` to
+`<repo>/demos/payment_workflow/` and importing `fix_loop` from there. No
+wheel has ever shipped `demos/` — the package is scoped to
+`transpiler/aether*` since BUG-009 — so in site-packages the walk lands in
+`venv/Lib`. `git show v0.3.0:transpiler/aether/cli.py` has the same code:
+broken in both released versions, while `aether --help` listed the
+subcommand and the README documented it. Same class as BUG-006..009: it
+works from the checkout, and is invisible to every test that runs in it.
+
+Fix: the deterministic engine is library code (the stdlib plus
+`aether.sdk`, `parser` and `pretty`), so it moved into the package as
+`aether/fix_loop.py`; `demos/payment_workflow/fix_loop.py` stays as the
+demo's by-path entry point. `--live` drives a 275-line Anthropic demo and
+stays source-checkout-only, and now says so instead of reporting an import
+failure. `tests/test_fix_loop_cli.py` runs the CLI from a temp dir holding
+only a copy of `aether/` — an installed wheel's shape — and `gate.yml`'s
+installed-wheel job runs `aether fix-loop`.
+
+### BUG-027  a sink inside an assignment target's subscript or attribute was SILENT (false accept)  [FIXED 8fb3c59]
+test: tests/test_py_frontend_sinks.py
+
+
+Found 2026-09-11 by the 0.4.0 release-notes audit, which tested the
+claim that BUG-012 made the frontend total over syntax. Exit 0:
+
+```python
+del d[os.system("ls " + x)]
+d[os.system("ls " + x)] += 1
+for d[os.system("ls " + x)] in xs: ...
+with cm as d[os.system("ls " + x)]: ...
+```
+
+while `d[os.system("ls " + x)] = 1` fired. BUG-012 treated a binding
+target field as "names, not values" and skipped it whole; only a plain
+`Assign` target's sub-expressions were translated. But only a bare name is
+purely a binding site: a subscript or attribute target evaluates its base
+and index first. BUG-012's entry and q7 claimed totality over positions;
+this is the counterexample, found by a probe of the claim rather than by a
+reader of it.
+
+Fix: `_target_loads(t)` yields what a target evaluates — nothing for a
+name, the base and index of a subscript, the base of an attribute,
+recursively through tuples, lists and starred — and every consumer of a
+target field (`_exprs_in`, `_stmt_expr_children`, and the `Assign`,
+`AugAssign` and `With` branches) takes the loads instead of skipping.
+`test_sink_in_every_statement_position_is_seen` pins all four positions,
+each seen exactly once.
+
+### BUG-028  a sink in a match-case guard or an `except` type was reported twice  [FIXED 8fb3c59]
+test: tests/test_py_frontend_sinks.py
+
+
+Found 2026-09-11 by the same audit: `case _ if os.system("ls " + x):`
+emitted the same E0714 twice (same line, column and `extra`), and
+`except <sink>:` had the identical shape. `py_to_ir` visited `match_case`
+and `excepthandler` nodes as statements of their own, while the parent
+`Match` / `Try` statement already reached the guard and the exception type
+as its expression children, so each was translated twice. It inflates
+counts; it never hides a finding. Introduced by BUG-012's rework, which
+added the separate visits; 0.3.1 translated neither position at all.
+Never released.
+
+Fix: the walk visits statements only; guards and handler types are
+translated once, through their parent. Both positions are in the
+exactly-once test.
+
+### BUG-029  a file too deep for CPython's own parser was reported as an Aether crash, exit 2  [FIXED 8fb3c59]
+test: tests/test_py_frontend_sinks.py
+
+
+Found 2026-09-11 by the same audit. `ast.parse` itself raises
+`RecursionError: maximum recursion depth exceeded during ast construction`
+on a 3,000-term `a + a + ...` chain under CPython 3.11 and 3.13 (probed
+both). Such a file was reported as `ANALYZER ERROR ... this is a bug in
+Aether` and failed the run with exit 2. 0.3.1 caught `RecursionError`
+beside `SyntaxError` and counted the file unparseable; the BUG-012 rework
+narrowed that clause so a `RecursionError` from Aether's own translator
+would go red rather than silent, and the parser's `RecursionError` fell in
+with it. Never released. CPython cannot compile or import such a file
+either, so it is unparseable input, not a bug in Aether.
+
+Fix: `py_to_ir` converts a `RecursionError` or `MemoryError` raised by
+`ast.parse` itself into a `SyntaxError`; one raised by the translator still
+reaches the analyzer-crash path. The test puts a 20,000-term chain beside a
+real sink and requires that no ANALYZER ERROR appears.
+
+### BUG-030  `exec(compile(src))` was rated as a compile that runs nothing  [FIXED 8fb3c59]
+test: tests/test_py_frontend_sinks.py
+
+
+Found 2026-09-11 by the same audit. `exec(compile(src, "<s>", "exec"))` is
+collapsed to one E0731 finding on the inner `compile()`, and iteration 52
+rated that kind `builtin_compile`, 0.6 — the rating for a `compile()` whose
+result nobody runs. This source IS executed, so `--min-confidence 0.9` hid
+real execution; crewai's `flow/runtime/_actions.py:309` is that shape.
+Introduced by iteration 52, never released.
+
+Fix: `_call_expr` re-rates the inner compile to `builtin` when a builtin,
+unshadowed `exec`/`eval` wraps it. A `compile()` on its own, or one under a
+local `def exec`, stays at the floor.

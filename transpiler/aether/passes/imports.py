@@ -16,7 +16,7 @@ What this *does* support, as of v0.3:
   of recursing infinitely.
 - File-not-found (E0705).
 
-What it *does not* support — documented as v2 work in `yc/v2_ROADMAP.md`:
+What it *does not* support (deferred to v2):
 
 - Dotted import paths (`import pkg.mod`) — the parser already accepts
   them; resolution treats only the leaf segment.

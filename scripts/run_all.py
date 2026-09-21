@@ -7,6 +7,7 @@ Exit 0 if everything passes, 1 otherwise.
 from __future__ import annotations
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -126,6 +127,16 @@ def main() -> int:
         cmd = [sys.executable, "-B", risk_t]
         r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
         results["risk"] = {
+            "ok": r.returncode == 0,
+            "stdout": r.stdout.strip(),
+            "stderr": r.stderr.strip(),
+        }
+
+    conf_t = os.path.join(ROOT, "tests", "test_confidence.py")
+    if os.path.isfile(conf_t):
+        cmd = [sys.executable, "-B", conf_t]
+        r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
+        results["confidence"] = {
             "ok": r.returncode == 0,
             "stdout": r.stdout.strip(),
             "stderr": r.stderr.strip(),
@@ -422,9 +433,18 @@ def main() -> int:
     rte_ok = bool(results.get("runtime_enforcement") and results["runtime_enforcement"]["ok"])
     fp_ok = bool(results.get("false_positive") and results["false_positive"]["ok"])
     corpus_ok = bool(results.get("corpus") and results["corpus"]["ok"])
+    # Read the count out of the suite's own line rather than restating it:
+    # the literal here said 83 while the corpus had grown to 93, and a
+    # summary that has to be edited by hand is a summary that goes stale.
+    n_corpus = "?"
+    _m = re.search(r"corpus: (\d+) programs",
+                   (results.get("corpus") or {}).get("stdout", "") or "")
+    if _m:
+        n_corpus = _m.group(1)
     ex_ok = bool(results.get("exhaustiveness") and results["exhaustiveness"]["ok"])
     scan_ok = bool(results.get("scan_tool") and results["scan_tool"]["ok"])
     risk_ok = bool(results.get("risk") and results["risk"]["ok"])
+    conf_ok = bool(results.get("confidence") and results["confidence"]["ok"])
     ratchet_ok = bool(results.get("ratchet") and results["ratchet"]["ok"])
     pysound_ok = bool(results.get("py_soundness") and results["py_soundness"]["ok"])
     pysink_ok = bool(results.get("py_frontend_sinks")
@@ -462,10 +482,11 @@ def main() -> int:
     print(f"# effect_scope:   {'PASS' if scope_ok else 'FAIL'} (E0710: SSRF host-pin)", file=sys.stderr)
     print(f"# runtime_enforce:{'PASS' if rte_ok else 'FAIL'} (8 defenses defang real payloads)", file=sys.stderr)
     print(f"# false_positive: {'PASS' if fp_ok else 'FAIL'} (every fixed.aeth + clean examples, 0 diagnostics)", file=sys.stderr)
-    print(f"# corpus:         {'PASS' if corpus_ok else 'FAIL'} (83 programs state + meet their own expectation)", file=sys.stderr)
+    print(f"# corpus:         {'PASS' if corpus_ok else 'FAIL'} ({n_corpus} programs state + meet their own expectation)", file=sys.stderr)
     print(f"# static_semantic: {'PASS' if ex_ok else 'FAIL'} (E0202-E0207: match/reachability/dead-store/error/impossible-type)", file=sys.stderr)
     print(f"# scan_tool:      {'PASS' if scan_ok else 'FAIL'} (tools/scan.py corpus scanner)", file=sys.stderr)
     print(f"# risk:           {'PASS' if risk_ok else 'FAIL'} (diagnostic risk ratings)", file=sys.stderr)
+    print(f"# confidence:     {'PASS' if conf_ok else 'FAIL'} (per-finding match-kind confidence)", file=sys.stderr)
     print(f"# ratchet:        {'PASS' if ratchet_ok else 'FAIL'} (monotonic: detector count never drops)", file=sys.stderr)
     print(f"# parser_recovery:{'PASS' if recovery_ok else 'FAIL'} (C.6)", file=sys.stderr)
     print(f"# deterministic:  {'PASS' if det_ok else 'FAIL'} (C.5)", file=sys.stderr)
@@ -500,7 +521,8 @@ def main() -> int:
                   and smt_ok and bb_ok and pack_ok and rel_ok
                   and arch_ok and f_ok and llm_ok and pkg_ok and pg_ok
                   and demos_ok and fuzz_ok and scope_ok and rte_ok and fp_ok
-                  and ex_ok and scan_ok and risk_ok and ratchet_ok and corpus_ok
+                  and ex_ok and scan_ok and risk_ok and conf_ok and ratchet_ok
+                  and corpus_ok
                   and alsp_ok and flc_ok and capfw_ok
                   and pysound_ok and pysink_ok and action_ok)
     return 0 if everything else 1

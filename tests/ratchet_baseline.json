@@ -1,5 +1,5 @@
 {
   "_comment": "Monotonic ratchet floor. Aether may only improve. These numbers are the FLOOR the gate enforces: the current build must meet or exceed them. When a self-teaching iteration ships a new detector, RAISE the matching number here in the same commit to lock the gain permanently (test_ratchet.py prints a reminder when current > floor). NEVER lower a number here — that is the one edit the ratchet cannot catch itself, and the agent contract forbids it. Removing a detector drops the current count below the floor and turns the gate red.",
-  "min_emitted_codes": 54,
-  "min_gated_detectors": 30
+  "min_emitted_codes": 55,
+  "min_gated_detectors": 31
 }

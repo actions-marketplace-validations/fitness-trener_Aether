@@ -153,3 +153,10 @@ jobs:
         run: |
           printf 'def add(a, b):\n    return a + b\n' > /tmp/clean.py
           /tmp/venv/bin/aether check-py /tmp/clean.py
+
+      - name: The deterministic fix-loop works installed (BUG-026)
+        working-directory: /tmp
+        run: |
+          cp "$GITHUB_WORKSPACE/demos/payment_workflow/broken.aeth" /tmp/broken.aeth
+          /tmp/venv/bin/aether fix-loop /tmp/broken.aeth --out-source /tmp/fixed.aeth --out-transcript /tmp/fix.json --quiet
+          /tmp/venv/bin/aether check /tmp/fixed.aeth

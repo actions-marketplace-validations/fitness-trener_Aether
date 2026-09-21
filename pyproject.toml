@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aether-lang"
-version = "0.3.1"
-description = "Security checker for AI-written Python: injection, deserialization, hardcoded credentials, access control. Emits SARIF."
+version = "0.4.0"
+description = "Security checker for AI-written Python: SQL, command and code injection, deserialization, SSTI, XXE, hardcoded credentials. Emits SARIF."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "BUSL-1.1"

@@ -1,0 +1,32 @@
+// expect: E0712, E0713
+// Example 29 — a stdlib sink hidden behind a local alias.
+// `let run = sqlQuery` then `run(input)` is the same query the direct
+// call would send, and `let out = print` then `out(password)` is the
+// same log line. Both checked CLEAN before this iteration: every sink
+// detector recognised its sink by the callee's spelled name only, so a
+// one-line alias silenced E0713 and E0712 (and E0801 — `pureButExecs`
+// below is the third shape, reported by the effects stage first).
+// Resolution is flag-more only: an alias of a sink IS the sink; an
+// alias of a sanitizer (`let r = reveal`) is still NOT honoured.
+// Click "check".
+
+function q(input: String) returns String
+  effects db.query
+do
+  let run = sqlQuery
+  return run(input)                       // E0713: through alias 'run'
+end
+
+function logIt(password: Secret<String>) returns Unit
+  effects log
+do
+  let out = print
+  out(password)                           // E0712: through alias 'out'
+end
+
+function main() returns Unit
+  effects db.query, log
+do
+  let _r: String = q("1")
+  logIt(classify("hunter2"))
+end

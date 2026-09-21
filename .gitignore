@@ -21,3 +21,11 @@ dist/
 
 # framework_scan downloads its own corpus
 bench/framework_scan/_work/
+
+# Sales, outreach, competitive and YC-application material: kept on the
+# maintainer's disk, deliberately not in the public tree (untracked
+# 2026-09-11).
+outreach/
+yc/
+/handoff.md
+/docs/competitive.md

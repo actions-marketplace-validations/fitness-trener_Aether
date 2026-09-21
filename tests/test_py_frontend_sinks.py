@@ -18,6 +18,7 @@ sys.path.insert(0, ROOT)
 from aether.py_frontend import py_to_ir                    # noqa: E402
 from aether.passes import analyze_flat                    # noqa: E402
 from aether.passes.ast_walk import walk                   # noqa: E402
+from aether.confidence import confidence_of          # noqa: E402
 
 
 def _fn(src: str, name: str):
@@ -297,6 +298,161 @@ def test_xxe_default_parser_still_fires():
     assert "E0727" in _codes(src), \
         "entity resolution left ON is the vulnerability"
     print("sinks: XML parser with entities on still fires")
+
+
+_LXML_SAFE = "lxml.etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)"
+
+
+def test_xxe_python_text_names_the_callee_and_a_python_fix():
+    """E0727's text on a Python finding names the resolved callee and a
+    fix that exists in Python — `parseXmlSafe` is an Aether function.
+    Measured 2026-09-11 (LOOP_LOG iteration 53): by default no stdlib
+    parser fetches an external entity, ElementTree/expatbuilder never do,
+    xml.sax.parse/parseString cannot, minidom/pulldom do through a
+    `parser=` built with `feature_external_ges`; a parse() spelling opens
+    its source string as a path (xml.sax.parse and lxml.etree.parse also
+    as a URL); lxml reads the file by default before 5.0 and under
+    `resolve_entities=True`, a URL only with `no_network=False`.
+    Detection is untouched on these shapes: same codes, same confidence."""
+    src = ("import xml.etree.ElementTree as ET\n"
+           "import xml.etree.cElementTree as CET\n"
+           "from xml.dom import minidom, pulldom, expatbuilder\n"
+           "import xml.sax\n"
+           "from lxml import etree\n"
+           "def a(raw):\n    return ET.fromstring(raw)\n"
+           "def b(raw):\n    return minidom.parseString(raw)\n"
+           "def c(raw):\n    return xml.sax.parseString(raw, None)\n"
+           "def d(raw):\n    return pulldom.parseString(raw)\n"
+           "def e(raw):\n    return etree.fromstring(raw)\n"
+           "def f(raw):\n    return CET.fromstring(raw)\n"
+           "def g(raw):\n    return expatbuilder.parseString(raw)\n"
+           "def h(raw):\n    return ET.parse(raw)\n"
+           "def i(raw):\n    return xml.sax.parse(raw, None)\n"
+           "def j(raw):\n    return etree.parse(raw)\n"
+           "def k(raw):\n    return minidom.parse(raw)\n")
+    ast_dict, _, _ = py_to_ir(src)
+    ds = {d.extra["function"]: d
+          for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES) if d.code == "E0727"}
+    assert set(ds) == set("abcdefghijk"), sorted(ds)
+    assert all(d.confidence == confidence_of("qualified") for d in ds.values()), \
+        {k: d.confidence for k, d in ds.items()}
+    for fn, callee, fix in [
+        ("a", "xml.etree.ElementTree.fromstring", "defusedxml.ElementTree.fromstring"),
+        ("b", "xml.dom.minidom.parseString", "defusedxml.minidom.parseString"),
+        ("c", "xml.sax.parseString", "defusedxml.sax.parseString"),
+        ("d", "xml.dom.pulldom.parseString", "defusedxml.pulldom.parseString"),
+        # defusedxml.cElementTree is deprecated: the hint names ElementTree.
+        ("f", "xml.etree.cElementTree.fromstring", "defusedxml.ElementTree.fromstring"),
+        ("g", "xml.dom.expatbuilder.parseString", "defusedxml.expatbuilder.parseString"),
+        ("h", "xml.etree.ElementTree.parse", "defusedxml.ElementTree.parse"),
+        ("i", "xml.sax.parse", "defusedxml.sax.parse"),
+        ("k", "xml.dom.minidom.parse", "defusedxml.minidom.parse"),
+    ]:
+        d = ds[fn]
+        assert d.extra["callee"] == callee, d.extra
+        assert callee in d.message and fix in d.suggestion, (d.message, d.suggestion)
+        assert "cElementTree" not in d.suggestion, d.suggestion
+        assert "parseXmlSafe" not in d.suggestion, d.suggestion
+        # defusedxml defuses only the parser it builds: the hint says so.
+        assert "no parser= argument" in d.suggestion, d.suggestion
+        # The DoS clause is hedged and per issue, as the Python docs put
+        # it; "large tokens" is not an entity-expansion attack.
+        assert "may be open to" in d.message and "2.4.1" in d.message \
+            and "2.6.0" in d.message and "2.7.2" in d.message, d.message
+        assert "entity-expansion" not in d.message, d.message
+        assert "pyexpat.version_info >= (2, 7, 2)" in d.suggestion, d.suggestion
+    # ElementTree, cElementTree, expatbuilder: never an XXE read, any Expat.
+    for fn in ("a", "f", "g", "h"):
+        assert "never expands external entities" in ds[fn].message \
+            and "on any Expat" in ds[fn].message, ds[fn].message
+    # xml.sax.parse/parseString build their own parser: the feature is
+    # unreachable through them; the negation is scoped to entities.
+    for fn in ("c", "i"):
+        assert "takes no parser argument" in ds[fn].message \
+            and "no XXE through entities" in ds[fn].message, ds[fn].message
+        assert "feature_external_ges" not in ds[fn].message, ds[fn].message
+        assert "not a file read" not in ds[fn].message, ds[fn].message
+    # minidom / pulldom: a parser= built with feature_external_ges reads
+    # files and reaches URLs (measured).
+    for fn in ("b", "d", "k"):
+        assert "parser= argument" in ds[fn].message \
+            and "feature_external_ges" in ds[fn].message \
+            and "reading local files and reaching internal URLs" in ds[fn].message, \
+            ds[fn].message
+    # The parse() spellings open their source; the string forms do not.
+    for fn in ("h", "k"):
+        assert "opened as a local path" in ds[fn].message, ds[fn].message
+        assert "never pass an untrusted path" in ds[fn].suggestion, ds[fn].suggestion
+    assert "urllib.request.urlopen()" in ds["i"].message, ds["i"].message
+    assert "path or URL" in ds["i"].suggestion, ds["i"].suggestion
+    assert "filename or URL lxml opens with any parser" in ds["j"].message, ds["j"].message
+    for fn in "abcdefg":
+        assert "source string" not in ds[fn].message, ds[fn].message
+    # lxml: the file read is real; a URL only with no_network=False; the
+    # fix is the exact binding the frontend clears, in either slot.
+    for fn in ("e", "j"):
+        e = ds[fn]
+        assert e.extra["callee"] == "lxml.etree." + ("fromstring" if fn == "e" else "parse"), e.extra
+        assert "5.0" in e.message and "resolve_entities=True" in e.message \
+            and "no_network=False" in e.message and "reads local files" in e.message, e.message
+        assert "reaches internal URLs" not in e.message, e.message
+        assert _LXML_SAFE in e.suggestion and "as parser=" in e.suggestion \
+            and "parseXmlSafe" not in e.suggestion, e.suggestion
+    print("sinks: E0727 on Python names the callee and a Python fix")
+
+
+def test_xxe_python_fix_shapes_are_clean():
+    """Every fix an E0727 hint names is itself clean, in the same walk as
+    shapes that must fire (the positive controls): the defusedxml
+    equivalents without a parser, and the exact lxml parser binding the
+    hint prescribes (`_LXML_SAFE`, the string the hint carries), passed
+    positionally or as `parser=` — lxml's own spelling, which fired until
+    iteration 53. Still firing: a parser that is not that binding in
+    either slot, a `**kwargs` splat, a hardened parser under the WRONG
+    keyword, a binding that re-enables DTD retrieval, the dead
+    `make_parser(resolve_entities=False)` shape, and defusedxml handed a
+    caller's parser — the shape its own hint would otherwise steer into."""
+    src = ("import defusedxml.ElementTree as DET\n"
+           "from defusedxml import minidom as dm\n"
+           "import defusedxml.sax\n"
+           "from lxml import etree\n"
+           "import xml.sax\n"
+           "from xml.dom import pulldom\n"
+           "def a(raw):\n    return DET.fromstring(raw)\n"
+           "def b(raw):\n    return dm.parseString(raw)\n"
+           "def c(raw):\n    return defusedxml.sax.parseString(raw, None)\n"
+           "def d(raw):\n"
+           f"    parser = {_LXML_SAFE}\n"
+           "    return etree.fromstring(raw, parser)\n"
+           "def e(raw):\n"
+           f"    parser = {_LXML_SAFE}\n"
+           "    return etree.fromstring(raw, parser=parser)\n"
+           "def f(raw):\n"
+           f"    parser = {_LXML_SAFE}\n"
+           "    return etree.parse(raw, parser=parser, base_url=None)\n"
+           "def g(raw):\n    return dm.parseString(raw, parser=None)\n"
+           "def s(raw, p):\n    return dm.parseString(raw, parser=p)\n"
+           "def t(raw):\n    parser = etree.XMLParser(resolve_entities=False, load_dtd=True, no_network=False)\n"
+           "    return etree.fromstring(raw, parser)\n"
+           "def u(raw):\n    p = xml.sax.make_parser(resolve_entities=False)\n"
+           "    return pulldom.parseString(raw, p)\n"
+           "def v(raw):\n"
+           f"    parser = {_LXML_SAFE}\n"
+           "    return etree.fromstring(raw, base_url=parser)\n"
+           "def w(raw, **kw):\n    return etree.fromstring(raw, **kw)\n"
+           "def x(raw):\n    return etree.fromstring(raw)\n"
+           "def y(raw):\n    parser = etree.XMLParser(resolve_entities=True)\n"
+           "    return etree.fromstring(raw, parser=parser)\n"
+           "def z(raw, parser):\n    return etree.fromstring(raw, parser=parser)\n")
+    ast_dict, _, _ = py_to_ir(src)
+    ds = {d.extra["function"]: d
+          for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES) if d.code == "E0727"}
+    assert sorted(ds) == ["s", "t", "u", "v", "w", "x", "y", "z"], sorted(ds)
+    assert ds["s"].extra["match"] == "guard" \
+        and ds["s"].extra["callee"] == "defusedxml.minidom.parseString", ds["s"].extra
+    assert "passes a caller's parser straight through" in ds["s"].message, ds["s"].message
+    assert "drop the parser= argument" in ds["s"].suggestion, ds["s"].suggestion
+    print("sinks: every E0727 hint's fix shape is clean; parser= clears like the positional slot")
 
 
 # --- guard-bound-elsewhere: an unresolved guard means SINK ---------------
@@ -815,6 +971,445 @@ def test_sql_builder_tables_are_auditable():
     print("sqla: builder tables exposed via mapping_table()")
 
 
+# --- BUG-012: the translator is total over positions and binding forms --
+
+_SQLI = 'cur.execute("SELECT * FROM u WHERE id = " + uid)'
+
+
+def test_await_wrapped_sink_is_seen():
+    src = ("import pickle\n"
+           "async def a(conn, uid):\n    await conn.execute('SELECT ' + uid)\n"
+           "async def b(conn, uid):\n    rows = await conn.execute('SELECT ' + uid)\n    return rows\n"
+           "async def c(raw):\n    return await pickle.loads(raw)\n")
+    sinks = [c for c in _codes(src) if c in SINK_CODES]
+    assert sinks == ["E0713", "E0713", "E0720"], _codes(src)
+    print("BUG-012: a sink behind `await` is the call")
+
+
+def test_sink_in_every_statement_position_is_seen():
+    shapes = {
+        "for": "def f(cur, uid):\n    for row in %s:\n        pass\n",
+        "if": "def f(cur, uid):\n    if %s:\n        return 1\n",
+        "while": "def f(cur, uid):\n    while %s:\n        break\n",
+        "yield": "def f(cur, uid):\n    yield %s\n",
+        "assert": "def f(cur, uid):\n    assert %s\n",
+        "raise": "def f(cur, uid):\n    raise ValueError(%s)\n",
+        "comprehension": "def f(cur, uid):\n    return [r for r in %s]\n",
+        "keyword": "def f(cur, uid, g):\n    return g(rows=%s)\n",
+        "boolop": "def f(cur, uid):\n    return %s or []\n",
+        "compare": "def f(cur, uid):\n    return %s == 0\n",
+        "subscript": "def f(cur, uid):\n    return %s[0]\n",
+        "ifexp": "def f(cur, uid, c):\n    return %s if c else None\n",
+        "lambda": "def f(cur, uid):\n    return lambda: %s\n",
+        "list": "def f(cur, uid):\n    return [%s]\n",
+        "dict": "def f(cur, uid):\n    return {'k': %s}\n",
+        "tuple-return": "def f(cur, uid):\n    return %s, 1\n",
+        "attr-target": "def f(self, cur, uid):\n    self.rows = %s\n",
+        "subscript-target": "def f(out, cur, uid):\n    out['k'] = %s\n",
+        "tuple-target": "def f(cur, uid):\n    a, b = %s, 1\n",
+        "chained-assign": "def f(cur, uid):\n    a = b = %s\n",
+        "augassign-value": "def f(cur, uid, n):\n    n += %s\n",
+        "expr-subscript": "def f(cur, uid):\n    %s[0]\n",
+        "default-arg": "def f(cur, uid, d=%s):\n    pass\n",
+        "decorator": "def f(cur, uid):\n    @deco(%s)\n    def g():\n        pass\n",
+        "match": "def f(cur, uid):\n    match %s:\n        case _:\n            pass\n",
+        "walrus": "def f(cur, uid):\n    if (r := %s):\n        return r\n",
+        "del-target": "def f(cur, uid, d):\n    del d[%s]\n",
+        "augassign-target": "def f(cur, uid, d):\n    d[%s] += 1\n",
+        "for-target": "def f(cur, uid, d, xs):\n    for d[%s] in xs:\n        pass\n",
+        "with-target": "def f(cur, uid, d, cm):\n    with cm as d[%s]:\n        pass\n",
+        "match-guard": "def f(cur, uid):\n    match uid:\n        case _ if %s:\n            pass\n",
+        "except-type": "def f(cur, uid):\n    try:\n        pass\n    except %s:\n        pass\n",
+    }
+    silent = [k for k, s in shapes.items() if "E0713" not in _codes(s % _SQLI)]
+    assert not silent, f"sink still invisible in: {silent}"
+    doubled = [k for k, s in shapes.items() if _codes(s % _SQLI).count("E0713") != 1]
+    assert not doubled, f"sink reported more than once in: {doubled}"
+    print(f"BUG-012: sink seen exactly once in {len(shapes)} statement positions")
+
+
+def test_def_at_any_statement_depth_is_analysed():
+    src = ("import pickle\n"
+           "try:\n    def load(raw):\n        return pickle.loads(raw)\nexcept Exception:\n    pass\n"
+           "if True:\n    class K:\n        def m(self, raw):\n            return pickle.loads(raw)\n"
+           "class Outer:\n    class Inner:\n        def m(self, raw):\n            return pickle.loads(raw)\n"
+           "with ctx() as fh:\n    def w(raw):\n        return pickle.loads(raw)\n")
+    ast_dict, _u, meta = py_to_ir(src)
+    names = [d["name"] for d in ast_dict["decls"] if d["kind"] == "FunctionDecl"]
+    for want in ("load", "K.m", "Outer.Inner.m", "w"):
+        assert want in names, (want, names)
+    assert meta["n_functions"] == 4, meta
+    assert _codes(src).count("E0720") == 4, _codes(src)
+    print("BUG-012: defs under try/if/with and in nested classes are analysed")
+
+
+def test_module_and_class_body_code_is_analysed():
+    src = ("import os, sys, pickle\n"
+           "os.system(sys.argv[1])\n"
+           "if __name__ == '__main__':\n    os.system(sys.argv[2])\n"
+           "class K:\n    DEFAULT = pickle.loads(os.environ['BLOB'])\n"
+           "    def m(self):\n        return 1\n")
+    ast_dict, _u, meta = py_to_ir(src)
+    names = [d["name"] for d in ast_dict["decls"] if d["kind"] == "FunctionDecl"]
+    assert "<module>" in names and "K.<class>" in names, names
+    assert meta["n_functions"] == 1 and meta["n_scopes"] == 2, meta
+    codes = _codes(src)
+    assert codes.count("E0714") == 2 and codes.count("E0720") == 1, codes
+    _a, _u2, m2 = py_to_ir('"""doc"""\nX = 1\nY = 2\n')
+    assert m2["n_scopes"] == 0, m2
+    _a, _u3, m3 = py_to_ir("KEY = 'AKIAIOSFODNN7EXAMPLE'\n")
+    assert m3["n_scopes"] == 1, m3
+    print("BUG-012: module-level and class-body code is analysed as its own scope")
+
+
+def test_rebinding_forms_disqualify_a_literal_only_name():
+    forms = {
+        "augassign": "def f(cur, uid):\n    sql = 'SELECT '\n    sql += uid\n    cur.execute(sql)\n",
+        "for-target": "def f(cur, qs):\n    sql = 'SELECT 1'\n    for sql in qs:\n        pass\n    cur.execute(sql)\n",
+        "tuple-unpack": "def f(cur, pair):\n    sql = 'SELECT 1'\n    sql, other = pair\n    cur.execute(sql)\n",
+        "walrus": "def f(cur, g):\n    sql = 'SELECT 1'\n    if (sql := g()):\n        pass\n    cur.execute(sql)\n",
+        "except-as": "def f(cur):\n    sql = 'SELECT 1'\n    try:\n        pass\n    except Exception as sql:\n        pass\n    cur.execute(sql)\n",
+        "param": "def f(cur, sql):\n    if sql is None:\n        sql = 'SELECT 1'\n    cur.execute(sql)\n",
+        "nested-param": "def f(cur):\n    sql = 'SELECT 1'\n    def g(sql):\n        cur.execute(sql)\n    return g\n",
+        "global": "def f(cur):\n    global sql\n    sql = 'SELECT 1'\n    cur.execute(sql)\n",
+        "annassign-augassign": "def f(cur, uid):\n    sql: str = 'SELECT '\n    sql += uid\n    cur.execute(sql)\n",
+    }
+    silent = [k for k, s in forms.items() if "E0713" not in _codes(s)]
+    assert not silent, f"literal-only proof survived a rebinding in: {silent}"
+    assert "E0713" not in _codes("def f(cur):\n    sql = 'SELECT 1'\n    cur.execute(sql)\n")
+    print(f"BUG-012: {len(forms)} rebinding forms disqualify a literal-only name")
+
+
+def test_parameter_shadow_does_not_clear_a_guard():
+    src = ("import yaml\n"
+           "def load(raw, loader=None):\n    if loader is None:\n        loader = yaml.SafeLoader\n"
+           "    return yaml.load(raw, Loader=loader)\n")
+    assert "E0720" in _codes(src), _codes(src)
+    safe = ("import yaml\ndef load(raw):\n    loader = yaml.SafeLoader\n"
+            "    return yaml.load(raw, Loader=loader)\n")
+    assert "E0720" not in _codes(safe), _codes(safe)
+    print("BUG-012: a caller-supplied loader with a literal fallback stays a sink")
+
+
+def test_xml_parser_rebound_to_unknown_is_a_sink():
+    src = ("from lxml import etree\n"
+           "def parse(raw, make):\n    parser = etree.XMLParser(resolve_entities=False)\n"
+           "    parser = make()\n    return etree.fromstring(raw, parser)\n")
+    assert "E0727" in _codes(src), _codes(src)
+    print("BUG-012: a parser rebound to an unknown value no longer disarms XXE")
+
+
+def test_splat_and_positional_guard_arguments_are_sinks():
+    assert "E0714" in _codes("import subprocess\ndef f(cmd, **o):\n    subprocess.run(cmd, **o)\n")
+    assert "E0714" in _codes("import subprocess\ndef f(cmd, *a):\n    subprocess.run(cmd, *a)\n")
+    assert "E0714" in _codes("import subprocess\ndef f(cmd):\n"
+                             "    subprocess.Popen(cmd, 0, None, None, None, None, None, False, True)\n")
+    assert "E0714" not in _codes("import subprocess\ndef f(cmd):\n    subprocess.run(cmd, shell=False)\n")
+    assert "E0720" in _codes("import yaml\ndef f(raw):\n    yaml.load(raw, yaml.Loader)\n")
+    assert "E0720" not in _codes("import yaml\ndef f(raw):\n    yaml.load(raw, yaml.SafeLoader)\n")
+    print("BUG-012: a splat is unresolvable (sink); positional shell=/Loader are read")
+
+
+def test_getattr_and_bound_method_alias_reach_the_sink():
+    assert "E0713" in _codes("def f(cur, uid):\n    getattr(cur, 'execute')('SELECT ' + uid)\n")
+    assert "E0713" in _codes("def f(cur, uid):\n    ex = cur.execute\n    ex('SELECT ' + uid)\n")
+    assert "E0714" in _codes("import subprocess\ndef f(cmd):\n    run = subprocess.run\n    run(cmd, shell=True)\n")
+    assert "E0713" not in _codes("def f(cur, uid, m):\n    getattr(cur, m)('SELECT ' + uid)\n")
+    print("BUG-012: getattr with a literal attribute and a bound-method alias spell the sink")
+
+
+def test_exec_driver_sql_and_session_exec_are_sinks():
+    assert "E0713" in _codes("def f(conn, t):\n    conn.exec_driver_sql(f'ALTER TABLE {t} ADD x INT')\n")
+    assert "E0713" not in _codes("def f(conn):\n    conn.exec_driver_sql('SELECT 1')\n")
+    src = ("from sqlalchemy import text, select\n"
+           "def f(s, x, t):\n    s.exec(text('SELECT ' + x))\n    s.exec(select(t).where(t.c.id == x))\n")
+    assert _codes(src).count("E0713") == 1, _codes(src)
+    print("BUG-012: exec_driver_sql and Session.exec are query sinks")
+
+
+def test_raw_sql_methods_disqualify_the_expression():
+    hdr = "from sqlalchemy import select\n"
+    bad = {
+        "prefix_with": "def f(conn, t, h):\n    conn.execute(select(t).prefix_with('/*+ ' + h))\n",
+        "suffix_with": "def f(conn, t, h):\n    conn.execute(select(t).suffix_with('FOR UPDATE ' + h))\n",
+        "with_hint": "def f(conn, t, h):\n    conn.execute(select(t).with_hint(t, 'USE INDEX ' + h))\n",
+        "with_statement_hint": "def f(conn, t, h):\n    conn.execute(select(t).with_statement_hint('OPTION ' + h))\n",
+        "op": "def f(conn, t, o):\n    conn.execute(select(t).where(t.c.x.op(o)(1)))\n",
+        "incremental": "def f(conn, t, h):\n    stmt = select(t)\n    stmt = stmt.suffix_with(h)\n    conn.execute(stmt)\n",
+    }
+    silent = [k for k, s in bad.items() if "E0713" not in _codes(hdr + s)]
+    assert not silent, silent
+    assert "E0713" not in _codes(hdr + "def f(conn, t):\n    conn.execute("
+                                 "select(t).prefix_with('/*+ NO_INDEX */').with_hint(t, 'USE INDEX i'))\n")
+    from aether.py_frontend import mapping_table
+    assert "prefix_with" in mapping_table()["sql_expression_builders"]["raw_string_methods"]
+    print("BUG-012: verbatim-splice methods get text()'s literal discipline")
+
+
+def test_module_level_literal_constant_is_a_literal():
+    assert "E0713" not in _codes("_Q = 'SELECT 1'\ndef f(conn):\n    conn.execute(_Q)\n")
+    assert "E0713" not in _codes("from sqlalchemy import text\n_Q = 'SELECT 1'\n"
+                                 "def f(conn):\n    conn.execute(text(_Q))\n")
+    for name, src in {
+        "rebound-via-global": "_Q = 'SELECT 1'\ndef g(x):\n    global _Q\n    _Q = x\n"
+                              "def f(conn):\n    conn.execute(_Q)\n",
+        "shadowed-by-param": "_Q = 'SELECT 1'\ndef f(conn, _Q):\n    conn.execute(_Q)\n",
+        "bound-twice": "_Q = 'SELECT 1'\n_Q = 'SELECT 2'\ndef f(conn):\n    conn.execute(_Q)\n",
+        "not-a-literal": "_Q = build()\ndef f(conn):\n    conn.execute(_Q)\n",
+    }.items():
+        assert "E0713" in _codes(src), (name, _codes(src))
+    key = ("KEY = 'AKIAIOSFODNN7EXAMPLE'\ndef a():\n    return use(KEY)\n"
+           "def b():\n    return use(KEY)\n")
+    ast_dict, _u, _m = py_to_ir(key)
+    diags = [d for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES) if d.code == "E0723"]
+    assert len(diags) == 1 and diags[0].position.line == 1, \
+        [(d.code, d.position.line) for d in diags]
+    print("BUG-012: a module constant bound once is its literal; reported once")
+
+
+def test_none_sentinel_before_expression_is_clean():
+    src = ("from sqlalchemy import select\n"
+           "def f(conn, t, flag):\n    stmt = None\n    if flag:\n"
+           "        stmt = select(t).where(t.c.x == 1)\n    return conn.execute(stmt)\n")
+    assert "E0713" not in _codes(src), _codes(src)
+    still = ("def f(conn, x, flag):\n    stmt = None\n    if flag:\n"
+             "        stmt = 'SELECT ' + x\n    return conn.execute(stmt)\n")
+    assert "E0713" in _codes(still)
+    print("BUG-012: a None sentinel binds nothing")
+
+
+def test_safe_loader_from_import_is_positively_identified():
+    assert "E0720" not in _codes("import yaml\nfrom yaml import SafeLoader\n"
+                                 "def f(raw):\n    return yaml.load(raw, Loader=SafeLoader)\n")
+    amb = ("import yaml\ntry:\n    from yaml import CSafeLoader as SafeLoader\n"
+           "except ImportError:\n    from yaml import SafeLoader\n"
+           "def f(raw):\n    return yaml.load(raw, Loader=SafeLoader)\n")
+    assert "E0720" in _codes(amb), _codes(amb)
+    shadow = ("import yaml\nfrom yaml import SafeLoader\n"
+              "def f(raw, make):\n    SafeLoader = make()\n"
+              "    return yaml.load(raw, Loader=SafeLoader)\n")
+    assert "E0720" in _codes(shadow), _codes(shadow)
+    print("BUG-012: a from-imported SafeLoader resolves; ambiguous or rebound does not")
+
+
+def test_pep263_cookie_file_is_scanned():
+    import json as _json
+    import subprocess as sp
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "m.py")
+        with open(p, "wb") as f:
+            f.write(b"# -*- coding: latin-1 -*-\n# caf\xe9\n"
+                    b"def f(cur, uid):\n    cur.execute('SELECT ' + uid)\n")
+        r = sp.run([sys.executable, "-B", "-m", "transpiler.aether.cli",
+                    "--json", "check-py", p], cwd=ROOT, capture_output=True, text=True)
+    out = _json.loads(r.stdout)
+    assert r.returncode == 2 and not out["unreadable"], (r.returncode, out["unreadable"])
+    assert [x["code"] for f in out["files"] for x in f["diagnostics"]] == ["E0713"]
+    print("BUG-012: a PEP 263 coding cookie is honoured, not 'unreadable'")
+
+
+def test_deep_expression_loses_one_scope_not_the_file():
+    deep = ("def f(cur, uid):\n    cur.execute('SELECT ' + uid)\n"
+            "def g(a):\n    return " + "+".join(["a"] * 800) + "\n")
+    ast_dict, unp, _m = py_to_ir(deep)
+    assert "E0713" in [d.code for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES)]
+    assert any(u["reason"] == "too_deep" for u in unp.get("g", [])), list(unp)
+    print("BUG-012: a too-deep expression costs one scope, not the file")
+
+
+def test_keyword_only_sink_argument_is_judged():
+    assert "E0720" in _codes("import yaml\ndef f(raw):\n    return yaml.load(stream=raw)\n")
+    assert "E0720" not in _codes("import yaml\ndef f(raw):\n"
+                                 "    return yaml.load(stream=raw, Loader=yaml.SafeLoader)\n")
+    assert "E0713" in _codes("def f(cur, uid):\n    return cur.execute(query='SELECT ' + uid)\n")
+    assert "E0713" not in _codes("def f(cur):\n    return cur.execute(query='SELECT 1')\n")
+    assert "E0714" in _codes("import subprocess\ndef f(cmd):\n"
+                             "    return subprocess.run(args=cmd, shell=True)\n")
+    assert "E0714" not in _codes("import subprocess\ndef f(cmd):\n"
+                                 "    return subprocess.run(args=cmd, shell=False)\n")
+    assert "E0720" in _codes("import pickle\ndef f(blob):\n    return pickle.loads(data=blob)\n")
+    print("BUG-012: a keyword-only sink argument takes the judged slot")
+
+
+def test_let_count_is_unchanged_by_seeded_bindings():
+    d = _fn("def f(a):\n    x = 'lit'\n", "f")
+    assert len(list(walk(d["body"], "Let"))) == 1
+    seeds = [n for n in walk(d["body"], "Assign") if n.get("name") == "a"]
+    assert len(seeds) == 1 and seeds[0]["value"]["kind"] == "PyExpr", seeds
+    print("BUG-012: parameters seed an opaque Assign, not a Let")
+
+
+# --- E0731 and the slice-2 sink rows -------------------------------------
+
+def test_code_injection_sinks_fire():
+    for src in ("def f(code):\n    exec(code)\n",
+                "def f(expr):\n    return eval(expr)\n",
+                "def f(src):\n    return compile(src, '<s>', 'exec')\n",
+                "def f(code, ns):\n    exec(code, ns)\n",
+                "def f(x):\n    return eval(f'{x}+1')\n",
+                "def f(code):\n    exec(source=code)\n",
+                "async def f(code):\n    await run(exec(code))\n"):
+        assert "E0731" in _codes(src), src
+    for src in ("def f():\n    exec('print(1)')\n",
+                "import ast\ndef f(x):\n    return ast.literal_eval(x)\n",
+                "def exec(c):\n    return c\ndef f(code):\n    return exec(code)\n",
+                "def f(s, x):\n    return s.exec(x)\n"):
+        assert "E0731" not in _codes(src), src
+    once = "def f(src):\n    exec(compile(src, '<s>', 'exec'))\n"
+    assert _codes(once).count("E0731") == 1, _codes(once)
+    print("E0731: exec/eval/compile on a non-literal fire once; literal, literal_eval, shadow, method clean")
+
+
+def test_slice2_sink_rows_fire():
+    shapes = {
+        "torch.load": ("import torch\ndef f(p):\n    return torch.load(p)\n", "E0720"),
+        "torch.load weights_only": ("import torch\ndef f(p):\n    return torch.load(p, weights_only=True)\n", None),
+        "joblib": ("import joblib\ndef f(p):\n    return joblib.load(p)\n", "E0720"),
+        "cloudpickle": ("import cloudpickle\ndef f(b):\n    return cloudpickle.loads(b)\n", "E0720"),
+        "numpy allow_pickle": ("import numpy as np\ndef f(p):\n    return np.load(p, allow_pickle=True)\n", "E0720"),
+        "numpy default": ("import numpy as np\ndef f(p):\n    return np.load(p)\n", None),
+        "yaml load_all": ("import yaml\ndef f(s):\n    return list(yaml.load_all(s))\n", "E0720"),
+        "getoutput": ("import subprocess\ndef f(c):\n    return subprocess.getoutput('ls ' + c)\n", "E0714"),
+        "create_subprocess_shell": ("import asyncio\nasync def f(c):\n    return await asyncio.create_subprocess_shell('ls ' + c)\n", "E0714"),
+        "argv -c": ("import subprocess\ndef f(c):\n    subprocess.run(['bash', '-c', 'ls ' + c])\n", "E0714"),
+        "argv -c literal": ("import subprocess\ndef f():\n    subprocess.run(['bash', '-c', 'ls -l'])\n", None),
+        "argv plain": ("import subprocess\ndef f(c):\n    subprocess.run(['ls', '-l', c])\n", None),
+        "exec_command": ("def f(client, c):\n    return client.exec_command('ls ' + c)\n", "E0714"),
+        "from_string": ("def f(env, t):\n    return env.from_string(t).render()\n", "E0719"),
+        "mako": ("from mako.template import Template\ndef f(t):\n    return Template(t)\n", "E0719"),
+        "fetchrow": ("async def f(conn, x):\n    return await conn.fetchrow('SELECT ' + x)\n", "E0713"),
+        "read_sql": ("import pandas as pd\ndef f(con, q):\n    return pd.read_sql(q, con)\n", "E0713"),
+        "RedirectResponse": ("from starlette.responses import RedirectResponse\ndef f(u):\n    return RedirectResponse(u)\n", "E0718"),
+        "minidom.parse": ("from xml.dom import minidom\ndef f(fh):\n    return minidom.parse(fh)\n", "E0727"),
+    }
+    bad = []
+    for k, (s, code) in shapes.items():
+        got = [c for c in _codes(s) if c in SINK_CODES]
+        if code is not None and code not in got:
+            bad.append((k, "silent", got))
+        if code is None and got:
+            bad.append((k, "over-flag", got))
+    assert not bad, bad
+    from aether.py_frontend import mapping_table
+    m = mapping_table()
+    assert "torch.load" in m["sink_guards"] and "from_string" in m["sink_by_method"]
+    print(f"slice 2: {len(shapes)} sink-row shapes behave; tables auditable")
+
+
+def test_match_kind_reaches_extra_for_every_sink_match():
+    """How the frontend named a sink is data on the finding.
+
+    The confidence axis (`transpiler/aether/confidence.py`) rates the
+    match kind, so a finding that does not carry one silently claims an
+    Aether-source finding's certainty. `tests/test_confidence.py` owns
+    the ratings; this owns the wiring from `_sink_match` to `extra`."""
+    from aether.py_frontend import SINK_MATCH_KINDS
+    shapes = {
+        "qualified": ("import pickle\ndef f(b):\n    pickle.loads(b)\n", "E0720"),
+        "guard": ("import subprocess\ndef f(c):\n    subprocess.run(c, shell=True)\n", "E0714"),
+        "argv": ("import subprocess\ndef f(c):\n    subprocess.run(['bash', '-c', c])\n", "E0714"),
+        "builtin": ("def f(s):\n    exec(s)\n", "E0731"),
+        "builtin_compile": ("def f(s):\n    compile(s, '<s>', 'exec')\n", "E0731"),
+        "method": ("def f(cur, x):\n    cur.execute('SELECT ' + x)\n", "E0713"),
+    }
+    assert sorted(shapes) == sorted(SINK_MATCH_KINDS), (
+        f"every match kind the frontend publishes needs a shape here: "
+        f"{sorted(set(shapes) ^ set(SINK_MATCH_KINDS))}")
+    bad = []
+    for kind, (src, code) in shapes.items():
+        ast_dict, _u, _m = py_to_ir(src)
+        ds = [d for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES)
+              if d.code == code]
+        if len(ds) != 1:
+            bad.append((kind, "expected one finding", [d.code for d in ds]))
+            continue
+        if ds[0].extra.get("match") != kind:
+            bad.append((kind, "wrong match in extra", ds[0].extra))
+    assert not bad, bad
+    # A wrapper call the frontend NAMED (shlex.quote as shellArg) matched
+    # no sink, so it carries no match kind — there is nothing to be more
+    # or less sure of.
+    ast_dict, _u, _m = py_to_ir(
+        "import shlex, subprocess\n"
+        "def f(c):\n    subprocess.run('ls ' + shlex.quote(c), shell=True)\n")
+    for call in walk(ast_dict, "Call"):
+        if call["func"]["name"] == "shellArg":
+            assert "match" not in call, call
+            break
+    else:
+        raise AssertionError("shlex.quote did not become a shellArg call")
+    print(f"match: all {len(shapes)} match kinds reach `extra`; "
+          f"a wrapper carries none")
+
+
+def test_unreadable_and_skipped_are_visible_in_every_mode():
+    import json as _json
+    import subprocess as sp
+    import tempfile
+
+    def run(files, *global_flags, target=".", sub=()):
+        """`--json` is a GLOBAL option (before the subcommand); `--sarif`
+        belongs to `check-py` itself (after the target)."""
+        with tempfile.TemporaryDirectory() as d:
+            for rel, src in files.items():
+                p = os.path.join(d, *rel.split("/"))
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(src)
+            r = sp.run([sys.executable, "-B", "-m", "transpiler.aether.cli",
+                        *global_flags, "check-py",
+                        os.path.join(d, *target.split("/")), *sub],
+                       cwd=ROOT, capture_output=True, text=True)
+        return r.returncode, r.stdout, r.stderr
+
+    files = {"app/bad.py": "def f(:\n", "app/ok.py": _CMDI_SRC,
+             "build/gen.py": _CMDI_SRC}
+    rc, out, err = run(files, "--json")
+    js = _json.loads(out)
+    assert rc == 2 and js["unreadable"] and js["unreadable"][0]["detail"], js["unreadable"]
+    assert js["skipped_dirs"] == ["build"], js["skipped_dirs"]
+    assert "could not parse" in err and "skipped as vendored/build output" in err, err
+    rc, out, err = run(files, sub=("--sarif",))
+    doc = _json.loads(out)
+    notes = doc["runs"][0]["invocations"][0]["toolExecutionNotifications"]
+    assert len(notes) == 1 and "could not parse" in notes[0]["message"]["text"], notes
+    res = doc["runs"][0]["results"][0]
+    assert "startColumn" in res["locations"][0]["physicalLocation"]["region"]
+    assert res["properties"]["suggestion"], res
+    assert "could not parse" in err, err
+    rc, out, err = run(files)
+    assert rc == 2 and "could not parse" in err and "1 unparseable" in out \
+        and "1 dir(s) skipped" in out, (out, err)
+    # an unparseable file alone never fails the run, in any mode
+    rc, out, err = run({"only.py": "def f(:\n"}, target="only.py")
+    assert rc == 0 and "could not parse" in err, (rc, out, err)
+    print("cli: unreadable files and skipped dirs reported in json/sarif/text; exit codes agree")
+
+
+def test_exec_of_compile_rates_as_exec():
+    def e0731(src):
+        ast_dict, _u, _m = py_to_ir(src)
+        return [d for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES) if d.code == "E0731"]
+    ds = e0731("def f(src):\n    exec(compile(src, '<s>', 'exec'))\n")
+    assert len(ds) == 1 and ds[0].extra.get("match") == "builtin", [d.extra for d in ds]
+    ds = e0731("def f(src):\n    return compile(src, '<s>', 'exec')\n")
+    assert [d.extra.get("match") for d in ds] == ["builtin_compile"], [d.extra for d in ds]
+    ds = e0731("def exec(c, g=None):\n    return c\n"
+               "def f(src):\n    exec(compile(src, '<s>', 'exec'))\n")
+    assert [d.extra.get("match") for d in ds] == ["builtin_compile"], [d.extra for d in ds]
+    print("BUG-030: exec(compile(src)) rates as exec; compile alone or under a local exec stays at the floor")
+
+
+def test_file_too_deep_for_python_is_unparseable_not_a_crash():
+    src = ("import os\ndef f(c):\n    os.system('ls ' + c)\n"
+           "def g(a):\n    return " + "+".join(["a"] * 20000) + "\n")
+    rc, out = _run_check_py_tree({"deep.py": src}, target="deep.py")
+    assert "ANALYZER ERROR" not in out, out[-600:]
+    assert rc == 0 or "E0714" in out, (rc, out[-600:])
+    print("BUG-029: a file too deep for Python's own parser is unparseable, not an analyzer crash")
+
+
 if __name__ == "__main__":
     test_body_is_no_longer_discarded()
     test_assign_becomes_let()
@@ -836,6 +1431,8 @@ if __name__ == "__main__":
     test_string_literal_carries_a_position()
     test_xxe_safe_parser_disarms_the_sink()
     test_xxe_default_parser_still_fires()
+    test_xxe_python_text_names_the_callee_and_a_python_fix()
+    test_xxe_python_fix_shapes_are_clean()
     test_repro_corpus_flags_the_bug()
     test_safe_functions_are_clean()
     test_yaml_unsafe_loader_is_still_a_sink()
@@ -878,4 +1475,28 @@ if __name__ == "__main__":
     test_try_guarded_builder_import_clears_the_query()
     test_ambiguous_import_clears_nothing_and_sinks_nothing_new()
     test_sql_builder_tables_are_auditable()
+    test_await_wrapped_sink_is_seen()
+    test_sink_in_every_statement_position_is_seen()
+    test_def_at_any_statement_depth_is_analysed()
+    test_module_and_class_body_code_is_analysed()
+    test_rebinding_forms_disqualify_a_literal_only_name()
+    test_parameter_shadow_does_not_clear_a_guard()
+    test_xml_parser_rebound_to_unknown_is_a_sink()
+    test_splat_and_positional_guard_arguments_are_sinks()
+    test_getattr_and_bound_method_alias_reach_the_sink()
+    test_exec_driver_sql_and_session_exec_are_sinks()
+    test_raw_sql_methods_disqualify_the_expression()
+    test_module_level_literal_constant_is_a_literal()
+    test_none_sentinel_before_expression_is_clean()
+    test_safe_loader_from_import_is_positively_identified()
+    test_pep263_cookie_file_is_scanned()
+    test_deep_expression_loses_one_scope_not_the_file()
+    test_keyword_only_sink_argument_is_judged()
+    test_let_count_is_unchanged_by_seeded_bindings()
+    test_code_injection_sinks_fire()
+    test_slice2_sink_rows_fire()
+    test_match_kind_reaches_extra_for_every_sink_match()
+    test_unreadable_and_skipped_are_visible_in_every_mode()
+    test_exec_of_compile_rates_as_exec()
+    test_file_too_deep_for_python_is_unparseable_not_a_crash()
     print("PY FRONTEND: ALL TESTS PASS")

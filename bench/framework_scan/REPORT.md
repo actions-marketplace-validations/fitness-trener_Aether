@@ -1,6 +1,12 @@
-# `aether check-py` on 15 AI-agent frameworks
+# `aether check-py` on 15 AI-agent packages
 
-**Date:** 2026-09-01, re-measured 2026-09-02 after BUG-010 and BUG-011.
+**Date:** 2026-09-01, re-measured 2026-09-02 after BUG-010 and BUG-011,
+and again 2026-09-03 after BUG-012 (§7) and after iterations 49–50 (§8 — the
+tables in §1–§5 are the 2026-09-02 numbers; §8 supersedes the totals).
+Re-scanned 2026-09-11 at 0.4.0: 676 findings, the same set §8 lists, 0
+analyzer errors; confidence 0.95 ×44, 0.9 ×4, 0.6 ×628.
+**Corrected 2026-09-11:** §5 and §6 called the one upstream XML note
+DoS-class; re-run at full size, current CPython refuses the payload (§5).
 **Question:** `bench/pypi_scan/` scanned whatever happened to be in
 site-packages. What does the tool do on the population it actually claims
 to be for — the frameworks that generate and execute AI-written Python?
@@ -12,12 +18,16 @@ imported or executed.
 
 **Headline, stated first and unflatteringly.** The first run found no
 vulnerability worth reporting to anyone, and found that 97% of its own
-output was one false-positive class. Fixing that class exposed a
+output came from one rule (E0713), most of it one false-positive class:
+SQLAlchemy expressions read as dynamic SQL. Fixing that class exposed a
 **false-negative class underneath it** — imports under `try:` had never
 been registered, so a guarded `yaml.load(x)` was silent — and repairing
 both moved the count from **1,055 findings to 411**, four of which are
 sinks that were invisible before. The useful output of this run is two
-bugs in Aether, not a bug in LangChain.
+bugs in Aether, not a bug in LangChain. At 0.4.0 the same files give 676
+findings — the scanner seeing code it had been blind to (§7), plus a new
+code-injection rule (§8). None of the findings I have read is a
+vulnerability, and I have not read all 676.
 
 ---
 
@@ -131,7 +141,7 @@ were silent on 2026-09-01:**
 |---|---|---|
 | `E0727` | `langchain_community/document_loaders/docugami.py:153` | `etree.parse(io.BytesIO(content))` — lxml's default parser, `from lxml import etree` under `try:`. **Version-dependent:** lxml < 5 resolved external entities by default; lxml ≥ 5 does not, and libxml2 caps amplification (both verified here on 6.1.1). The package does not pin lxml. |
 | `E0727` | `langchain_community/document_loaders/docugami.py:277` | same, on `response.content` |
-| `E0727` | `smolagents/default_tools.py:443` | `ET.fromstring(response.text)` on a Bing RSS response — stdlib, so DoS-class rather than XXE |
+| `E0727` | `smolagents/default_tools.py:443` | `ET.fromstring(response.text)` on a Bing RSS response — stdlib expat resolves no external entities and, from 2.7.2, refuses entity-expansion payloads (§5): hardening, not XXE or DoS |
 | `E0720` | `agno/utils/pickle.py:26` | `pickle.load(...)` with a function-local `import pickle`; a persistence helper, true by shape |
 
 The two docugami sites looked like the strongest finding of the exercise
@@ -172,8 +182,19 @@ the product.
 |---|---:|---|
 | `E0714` shell in agent runtimes / coding tools | 13 | true by shape, by-design context |
 | `E0720` pickle | 9 | 8 behind an explicit opt-in the maintainers wrote; 1 newly visible (agno, above) |
-| `E0727` XML on remote content | 6 | **2 upstream notes drafted** (`outreach/upstream/`): `agno/knowledge/reader/sitemap_reader.py:123` — attacker-choosable sitemap URL into stdlib `ElementTree`, which expanded a 10⁶ entity payload to 3,000,000 chars here in 0.19s where `defusedxml` refuses it; and the docugami lxml sites, scoped to lxml < 5 |
+| `E0727` XML on remote content | 6 | **1 upstream note posted**, [agno#9920](https://github.com/agno-agi/agno/issues/9920): `agno/knowledge/reader/sitemap_reader.py:123` — attacker-choosable sitemap URL into stdlib `ElementTree`. A 10⁶ entity payload expanded to 3,000,000 chars here in 0.19s; the issue's own 10-level payload and a quadratic-blowup payload are refused by expat's amplification limit (CPython 3.11.15, expat 2.7.4). Hardening for an interpreter built against an older expat, not a DoS on current CPython — see the correction below. A second note, on the docugami lxml sites and relevant only to lxml < 5, was drafted and not posted |
 | `E0719` the framework's own Jinja templates | 2 | by design |
+
+**A correction made 2026-09-11.** This section and §6 called the agno
+note DoS-class, "with a verified repro". The repro verified a 10⁶
+expansion, which is under expat's limit. At the issue's own size (ten
+levels of ten), stdlib `ElementTree` refuses it with `limit on input
+amplification factor (from DTD and entities) breached`, and so do
+`minidom` and `sax`. The Python docs put the risk at expat versions
+lower than 2.7.2, which an interpreter can still use when it is built
+against a system expat
+([XML security](https://docs.python.org/3/library/xml.html#xml-security)).
+The issue filed on agno makes the same overstatement.
 
 **A correction to the 2026-09-01 version of this section**, which called
 two of the E0714 sites "correctness bugs worth filing." Read again at
@@ -194,12 +215,130 @@ Fragile style, not a defect. Neither is filed.
   backend user, and a false-accept class (BUG-011) underneath it that no
   amount of reading the over-flags would have found — it took clearing
   them to see what was missing.
-- **No security vulnerability in any of the 15 frameworks.** The expected
-  outcome for widely-reviewed code. The nearest thing is agno's sitemap
-  reader feeding an attacker-choosable URL to stdlib `ElementTree` — a
-  DoS-class hardening note with a verified repro, not a CVE.
+- **None of the 411 findings is a reportable vulnerability.** That is a
+  statement about the findings, not the frameworks: an intraprocedural
+  checker cannot show a package has none. The expected outcome for
+  widely-reviewed code. The nearest thing is agno's sitemap reader
+  feeding an attacker-choosable URL to stdlib `ElementTree` — a
+  hardening note, not a CVE, and not a DoS on current CPython (§5).
 
 The honest one-line summary: **on the corpus Aether is aimed at, its
 best-covered detector produced 97% noise, fixing the noise exposed a
 class of silence, and the tool is now both quieter and less blind than
 it was two days ago — measured, on the same 4,946 files.**
+
+## 7. Re-measured 2026-09-03, after BUG-012: 411 → 628, and why more is better here
+
+The frontend translated four statement kinds and dropped the rest, so a
+sink behind an `await`, in a `for` iterable, in a tuple-target
+assignment or inside `x or []` was never seen — not over-flagged,
+silent (BUGS.md BUG-012). A census over these 4,946 files found **603
+sink calls behind `await`** and 89 in other unmodeled positions. The
+same fix made every binding form visible to the safe-name resolvers,
+so `sql += uid` no longer leaves `sql` "literal-only".
+
+Same files, same interpreter, `git archive` of the before-commit:
+
+| distribution | 2026-09-02 | **2026-09-03** | what moved |
+|---|---:|---:|---|
+| agno | 245 | **424** | await-wrapped `text(f"…{table}…")` and `exec_driver_sql(f"…")` in migrations; 4 `stmt = None` sentinels cleared |
+| langchain-community | 118 | **139** | 5 tuple-target `pickle.load` (`allow_dangerous_deserialization` sites) now visible; await-wrapped SQL; 2 keyword-only `client.command.exec(code=…)` (riza) — the by-name rule reaching a call that had no positional slot, over-flag by class (it is a remote code-execution call, not SQL) |
+| semantic-kernel | 17 | **31** | `await cur.execute(sql.SQL(...).format(...))` — psycopg composition, the §4 residual, now visible |
+| openhands-ai | 8 | **12** | `self.gateway_process = subprocess.Popen(...)` (attribute target) + await-wrapped |
+| crewai | 7 | **5** | 4 module-level literal constants (`_CREATE_TABLE`, `_INSERT`, …) now resolve; 1 PEM-header docstring; 1 keyword-only `await handler.execute(client=…)` (a2a) — by-name over-flag, not SQL |
+| llama-index-core | 1 | **2** | |
+| others | 15 | 15 | unchanged |
+| **total** | **411** | **628** | 0 analyzer errors, 0 unparseable |
+
+By code: E0713 381 → 590 · E0720 9 → 14 · E0714 13 → 14 · E0723 0 → 2 ·
+E0727 6 · E0719 2. 225 findings appeared, 8 disappeared.
+
+**Read at source, the new ones are true by the existing rules.** A
+sample of twelve of the +217 E0713: `conn.exec_driver_sql(f"DROP INDEX
+IF EXISTS {quote_db_identifier(...)}")`, `await sess.execute(text(f"DROP
+INDEX {…} ON {full_table}"))`, `sess.execute(text(f"SELECT COUNT(*)
+FROM {self.session_table_name} …"))` — identifier interpolation into
+DDL, the shape §4 already classed as "true by shape", now counted where
+it was hidden. The five E0720 are `pickle.load` behind a tuple target in
+langchain-community's TF-IDF, Annoy, FAISS and ScaNN loaders — real by
+shape, behind the maintainers' explicit `allow_dangerous_deserialization`
+opt-in, so a note rather than a report.
+
+**The two E0723 are not credentials.** `agno/knowledge/remote_content/
+github.py:53` spells `-----BEGIN RSA PRIVATE KEY-----` inside an error
+message; `crewai/a2a/utils/agent_card_signing.py:85` inside a docstring.
+The literal scan's PEM pattern matches the header alone; before this
+change module- and class-level strings were never scanned, so the cost
+was invisible. Precision item for the E0723 pass — require a key body
+after the header — recorded for the next iteration, not fixed here.
+
+**The eight that disappeared** are precision, each by positive
+identification: crewai's module-level `_CREATE_TABLE` / `_INSERT` /
+`_PRUNE` / `_SELECT` are str literals bound exactly once in the whole
+module, so `conn.execute(_CREATE_TABLE)` is a literal query; agno's
+`pinned_stmt = None` before `pinned_stmt = select(...)` no longer
+disqualifies the name (executing `None` is a `TypeError`, not a query).
+
+**§4, corrected.** The "~100 cross-function or parameter cases" line was
+an estimate. All 381 pre-fix survivors were classified at source
+(`e0713_census_2026-09-03.txt` in this directory): 166
+`text(f"…{identifier}…")` DDL (true positives under the raw-entry
+rule), 37 DB-API f-string/format/concat, 21 Cassandra CQL, 21 graph
+query languages, 20 agent SQL toolkits running caller SQL by design, 17
+non-SQL `execute` methods, and **34 helper-assembled statements** (14
+same-module, 20 cross-module) — the only bucket a per-module helper
+summary would touch. That is why the summary stays parked, and why the
+identifier-interpolation majority is the natural target for a
+per-finding confidence axis (iteration 46's residual) rather than for a
+relaxation.
+
+**Reading the direction correctly.** 411 → 628 on unchanged files is
+the tool seeing more of the same code, not the code getting worse; the
+ground-truth bench moved 29 → 41 true positives at 0 false negatives and
+0 false positives, and the 76-module benign corpus did not move.
+
+
+## 8. Re-measured 2026-09-03 (evening), after iterations 49–50: 628 → 676, with E0731 on the corpus
+
+Same wheels (per-distribution file counts identical to §7's cache; the
+cache was re-downloaded, and every count matched), same interpreter.
+
+| code | §7 | **§8** | what moved |
+|---|---:|---:|---|
+| E0713 | 590 | **600** | `fetch_all` by name: langchain-community's HTTP loaders (`async_html`, `web_base`; over-flags the survey predicted) and cassandra's CQL wrappers (true by shape) |
+| E0714 | 14 | 14 | |
+| E0718 | 0 | **5** | `RedirectResponse(url)` in agno's MCP consent/media routes and mcp's OAuth `AuthorizationHandler` — dynamic targets; the repair (validate against registered URIs) is outside any argument-shape rule |
+| E0719 | 2 | **26** | the `from_string` row: ~14 jinja2 prompt templates rendered from strings by design (haystack builders/routers, semantic-kernel, langchain-core `jinja2_formatter`, smolagents, openhands' invariant policy); ~8 non-jinja `.from_string` methods matched by name (momento ×3, llama-cpp ×2, bigquery, networkx, agno) — q5's cost, about a third of the row |
+| E0720 | 14 | **17** | agno `code_mode`, databricks `_load_pickled_fn_from_hex_string` (cloudpickle, by design), tfidf via `joblib` |
+| E0723 | 2 | **0** | the PEM header inside a docstring and an error message no longer match: a key BODY is required (iteration 49) |
+| E0727 | 6 | 6 | |
+| **E0731** | — | **8** | see below |
+| **total** | **628** | **676** | 0 analyzer errors, 0 unparseable |
+
+**E0731, read at source.** Four sites are the class the detector was
+built for — the interpreter is the product: `agno/tools/python.py:159`
+(`exec(code, ...)` running the model's code), `smolagents/tools.py:575`
+(`Tool.from_code`, `exec(tool_code, module.__dict__)`),
+`browser_use/mcp/cli_mcp.py:128` (`exec(code, ns)`),
+`crewai/flow/runtime/_actions.py:309` (`exec(compile(module, filename,
+"exec"), namespace)`). None is a reportable vulnerability — each is a
+documented "run code" feature — but each is exactly what a reviewer of
+an agent framework wants pointed at, with the line. The other four are
+`compile()` without `exec`: `aider/linter.py:179`,
+`openhands/linter/languages/python.py:11` and `:66` (syntax-checking
+linters) and `langchain_community/tools/e2b_data_analysis/unparse.py:744`
+(a round-trip test). `compile` yields a code object and runs nothing;
+the rule treats it as the sink because `exec(compile(...))` is the
+common form and the frontend already collapses that pair to one
+finding. Precision item, recorded: judge `compile` only when its result
+reaches `exec`/`eval`, or rate it below `exec` on the per-finding
+confidence axis (q6).
+
+**What this measures.** 48 net new findings on unchanged code is the
+tool seeing more of the same code, in three ways: a class it did not
+have (E0731), rows it did not have (`from_string`, `RedirectResponse`,
+`fetch_all`, joblib/cloudpickle), and two false positives it no longer
+has (PEM headers). The by-name rows carry their measured cost with them:
+`from_string` at roughly one non-template hit in three, `fetch_all` at
+four HTTP loaders — both the direction q5 sanctions, both now numbers
+rather than predictions.

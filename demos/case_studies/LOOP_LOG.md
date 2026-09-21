@@ -1659,6 +1659,602 @@ State carried forward: the full gate suite must stay green
 
 ---
 
+## Iteration 48 — the translator was not total: 603 sinks behind `await`, and a literal-only proof that survived `+=` (no new detector)
+
+- **Target:** not a violation class. A five-lens survey of the whole
+  repo (65 probe-confirmed candidates; ranked by the contract, a false
+  accept outranks every precision item) put the Python frontend's
+  SILENT MISSES first. The ranked list is the input to the next
+  iterations, not just this one.
+- **Gap confirmed empirically first:** `await conn.execute("…" + uid)`,
+  `for row in cur.execute("…" + uid):`, `obj, _ = pickle.loads(b), None`,
+  `return cur.execute(q) or []`, `g(rows=cur.execute(q))`, a `def` under
+  `try:`, a class nested in a class, `os.system(sys.argv[1])` at module
+  level — every one exit 0, no finding (BUGS.md BUG-012). And the other
+  direction: `sql = "SELECT "; sql += uid; cur.execute(sql)` and
+  `if loader is None: loader = yaml.SafeLoader` before
+  `yaml.load(raw, Loader=loader)` both exit 0 — the name proved
+  literal-only from the ONE binding form the resolvers could see. Same
+  family as BUG-004 and BUG-011: the unknown case defaulted to "not a
+  sink", and the translator, not any rule, was where "unknown" lived.
+- **Census (bench/framework_scan, 4,946 files):** 603 sink calls behind
+  `await`, 89 in other unmodeled positions (BoolOp 50, Compare 20,
+  for-iterables 17, comprehensions 20, non-Name targets 11, displays 7);
+  26 of the 89 fire under the existing rows once visible.
+- **Improvement (frontend only — no Aether rule changed):**
+  `transpiler/aether/py_frontend.py` is now TOTAL over statement kinds
+  and binding forms. One walk, `_bindings_of`, feeds every resolver and
+  seeds an opaque binding for every name bound by a form whose value
+  cannot be seen (a parameter, `+=`, a for-target, a tuple unpack, a
+  walrus, an except-as, a `global`); `visit_stmt` translates every value
+  expression a statement evaluates, in place; `_expr` keeps an unmodeled
+  node opaque but carries its children; `await`/`yield` are transparent;
+  keyword values ride under `kwargs`, and take the positional slots when
+  there are none. `collect()` finds a `def` at any statement depth; a
+  module or class body with a call or a non-docstring literal becomes a
+  `<module>` / `Class.<class>` scope (which is also the first time a
+  module-level `KEY = "AKIA…"` reached E0723 at all). `_guard_verdict`
+  reads a `**`/`*` splat as unresolvable (SINK) and `shell=`/`Loader=`
+  positionally. `getattr(obj, "execute")(…)` and a bound-method alias
+  spell the method. Two missing rows (`exec_driver_sql`, sqlmodel
+  `Session.exec`) and a hole inside iteration 47's own sanctioned exit
+  (`prefix_with`/`suffix_with`/`with_hint`/`with_statement_hint`/`op`
+  splice a string verbatim and now get `text()`'s discipline). A scope
+  deeper than `_MAX_EXPR_DEPTH` (200) reports an `unprovable` `too_deep`
+  region instead of losing the whole file as "unreadable" with exit 0;
+  `check-py` reads source with `tokenize.open` (PEP 263 cookies).
+  Precision, by positive identification only: a `from yaml import
+  SafeLoader` name resolves through the import table; a module-level
+  str constant bound exactly once in the whole module is inlined at its
+  reads; a `stmt = None` sentinel binds nothing.
+- **Measured, same 4,946 files, same day:** frameworks **411 → 628**
+  (E0713 381 → 590, E0720 9 → 14, E0714 13 → 14, E0723 0 → 2), 0
+  analyzer errors, 0 unreadable. The +217 E0713 are await-wrapped
+  `text(f"…{table}…")` DDL and `exec_driver_sql(f"…")` in agno's
+  migrations, semantic-kernel's psycopg composition, and helper-built
+  statements that were behind `await` — every sampled one true by the
+  existing rule — plus 3 by-name over-flags the keyword-only mapping
+  newly reaches (`await handler.execute(client=…)` in crewai's a2a,
+  `client.command.exec(code=…)` in langchain-community's riza tool:
+  `execute`/`exec` by name, q5's accepted cost). The +5 E0720 are the tuple-target `pickle.load` sites
+  in langchain-community's vector stores (`allow_dangerous_deserialization`
+  — real by shape, opted-in by the maintainers). The +2 E0723 are the
+  PEM header spelled inside an error message and a docstring: the
+  literal scan's known cost, now reaching module-level strings — a
+  precision item for the E0723 pass (require a key body after the
+  header), not a frontend one. 8 over-flags gone (4 crewai module
+  constants, 4 agno `None` sentinels). Ground truth **41 TP / 0 FN / 0
+  FP** over 77 labelled functions (was 29 / 57); benign corpus unchanged
+  (E0711 11 · E0713 1 · E0720 1). `bench/framework_scan/REPORT.md` §7.
+- **Ratchet:** unchanged (54 codes / 30 detectors) — no detector shipped.
+- **Design point recorded:** why totality over syntax is a soundness
+  obligation and not a precision knob —
+  `vault/wiki/questions/q7-frontend-totality-over-syntax.md`.
+- **Correction to the record (iteration 47's "~100 helper-assembled"
+  estimate):** read at source, all 381 survivors classified
+  (`bench/framework_scan/e0713_census_2026-09-03.txt`): 34 are
+  helper-shaped (14 same-module, 20 cross-module); 166 are
+  `text(f"…{identifier}…")` DDL, true positives under the raw-entry
+  rule; 37 DB-API f-string/format/concat; 21 Cassandra CQL; 21 graph
+  query languages; 20 agent SQL toolkits running caller SQL by design;
+  17 non-SQL `execute`. That reprices the per-module helper summary
+  (~180 loc for 14 sites) below the misses it had been ranked above; it
+  stays parked, and the identifier-interpolation TPs are the natural
+  target for the per-finding `confidence` axis from iteration 46 (q6),
+  not for a relaxation.
+- **TYPE gaps surfaced for next iter (all probe-confirmed by the
+  survey):** (a) `exec(model_output)` / `eval` / `compile` on a
+  non-literal is a capability NOTE, never a finding — THE agent-framework
+  hazard (smolagents, langchain's PythonREPL, openhands run model output
+  through `exec`) has no detector; next free code E0731, literal-only
+  like E0719 with `trusted(...)` as the exit. (b) On the Aether side,
+  `var` bindings and `x = …` re-assignment are invisible to the marker
+  fixpoint, the literal-or-wrapper safe-name pass and E0717's
+  stable-name proof — the language-side instance of this iteration's
+  bug. (c) The sanctioned wrappers' PINNING argument
+  (`sqlBind(userTemplate, v)`, `safeJoin(userBase, p)`) is never
+  checked. (d) `for x in markedList` and match-EXPRESSION arm bindings
+  do not taint; aliasing a stdlib sink (`let run = sqlQuery`) hides it.
+- **Suite:** exit 0.
+
+---
+
+## Iteration 49 — the language side had the same bug: `var` was never a binding (four false-accept classes, no new detector)
+
+- **Target:** the Aether-side rows of the 2026-09-03 survey
+  (`audits/survey_2026-09-03_ranked.md`, AEDET-01..07/10), every one a
+  probe-confirmed SILENT MISS in the language the detectors were written
+  for. Same family as iteration 48's BUG-012, one layer down: the parser
+  emits three binding kinds — `Let` (name), `Var` (name), `Assign`
+  (target) — and every walker that reasons about what a name holds read
+  `Let`/`Assign` by `name`. A `var` was never a binding; an `Assign`
+  never matched.
+- **Gap confirmed empirically first (all exit 0 before):**
+  `var x = password; print(x)` (E0712); `let p = "/etc/motd"; p =
+  userPath; readFile(p)` (E0711 — the only VISIBLE binding was the
+  literal); `var docId = requestedId; ...authorizeResource(..., docId);
+  docId = victimId; sqlByOwner(..., docId, proof)` (E0717's stable-name
+  proof missed the rebinding); `for s in secrets do print(s) end` over
+  `List<Secret<String>>` and a match-EXPRESSION arm over a secret
+  scrutinee (BUG-001 had fixed only the statement form); `let run =
+  sqlQuery; run(input)` — an aliased STDLIB sink matched no row and no
+  effect, so E0713/E0711/E0712/E0801/E0701 were all silent (iteration 42
+  had resolved aliases of USER functions only); and `print(u)` with
+  `record User do email: PII<String> end` — iteration 44 made the FIELD
+  read a source but never the record value. BUGS.md BUG-013..016.
+- **Improvement (`passes/detector_specs.py`, `passes/effects.py`,
+  `passes/capability.py`, `parser.py`):** one shared binding walker
+  (`_walk_binds` / `_bind_target` over `Let`/`Var`/`Assign`, plus
+  `_mutable_names` for the proofs that need "bound exactly once") feeds
+  the marker-taint fixpoint, the literal-or-wrapper safe-name pass,
+  `_fn_aliases` and the E0716/E0717 proofs; `For` targets over a tainted
+  iterable and every arm binding of a tainted match expression are
+  tainted; alias targets include the stdlib sink names and the
+  `_STDLIB_EFFECTS` keys (an aliased sink IS the sink; an aliased
+  sanitizer is still never honoured; E0801/E0701 follow the alias edge);
+  records whose fields carry a marker are carriers (`_marked_records`,
+  `_record_names`): a carrier at a sink leaks, a PLAIN field read of a
+  carrier does not, a record-typed parameter is a sanctioned crossing,
+  a plain parameter is E0729, a plain return type is E0730;
+  `Authorized<T>` untouched — a proof marker is never widened.
+- **Widenings in the same slice, flag-more, 0× on the corpus:** E0710,
+  E0721 and E0722 share one host normalizer — userinfo, port, brackets,
+  a wildcard anywhere inside the host (`*.*`, `api.*`, `a*`,
+  `[*]`, `trusted@*`), decimal/hex/octal/short and IPv4-mapped IPv6
+  spellings of 169.254/16, `fd00:ec2::254`, `metadata.google.internal`,
+  `metadata`, `100.100.100.200`; the E0721 loopback exemption is
+  host-exact (`127.0.0.1.evil.com` and `127.0.0.1@evil.com` no longer
+  pass). E0723 gains OpenAI (`sk-proj-`, `sk-`), Anthropic (`sk-ant-`),
+  Hugging Face (`hf_`), Groq (`gsk_`), Google OAuth (`ya29.`), GitLab
+  (`glpat-`), SendGrid (`SG.`), npm (`npm_`), PyPI (`pypi-`) and Slack
+  incoming-webhook shapes — 0 matches over every in-tree file and the
+  4,946-file framework corpus — and the PEM pattern now requires a key
+  BODY after the header, which is exactly the two docstring/message
+  hits iteration 48 reported as its precision cost. `StringLit` carries
+  a position, so E0723 reports a line instead of `0:0`. E0207 treats
+  `Int` bounds as integers (`Int where self > 5 and self < 6` is
+  uninhabited). Marker-flow param masks are computed once per module
+  (was once per function, O(n²) in function count).
+- **Measured:** 33 new tests in `tests/test_effect_scope.py`; playground
+  `29_sink_alias.aeth` and `30_record_at_sink.aeth`; no existing
+  `// expect:` header changed (the survey's in-memory rewrite over 418
+  parseable `.aeth` had predicted 0 files; the gate confirmed it).
+  Merged as `60f60e6`; gate exit 0.
+- **Ratchet:** unchanged (54 codes / 30 detectors at this point; iteration
+  50 raises it).
+- **TYPE gap surfaced for next iter:** the survey's remaining Aether-side
+  P0 — boundary-sanitizer coarseness (AEDET-09: `render(sanitizeLog(u))`
+  clears E0729 while the callee feeds `htmlResponse`) — is a probe-
+  confirmed miss with a design cost (~50 loc) and a corpus question
+  (which playground examples sanitize at a boundary); park until the
+  corpus is measured. Record-field resolution by type (AEDET-16) stays a
+  precision item. Residuals in q1.
+
+---
+
+## Iteration 50 — E0731: the interpreter fed model output (new detector), and the sink rows the agent corpus needs
+
+- **Target:** survey candidate PYSINK-01, the top-ranked NEW detector.
+  `exec(model_output)` is what an AI-agent framework does for a living —
+  smolagents' `LocalPythonExecutor`, langchain's `PythonREPL`, openhands,
+  agno's python tool — and until now `exec`/`eval`/`compile` on a
+  non-literal was a capability NOTE under `--strict` (an UNPROVABLE
+  region), never a finding. By q3's heuristic it scores highest of the
+  batch: it reuses the E0719 shape exactly (literal-only, no sanitizer,
+  `trusted(...)` the sole exit), the population is the scanner's own,
+  and the machinery is one row.
+- **Gap confirmed empirically first:** `def run(code): exec(code)` under
+  `check-py` default flags — exit 0, no E07xx. AST census over
+  bench/framework_scan (4,946 files): 5 bare `exec()` and 9 `compile()`
+  with a non-literal first argument; `eval()` non-literal 0 (the grep
+  hits are docstrings); `importlib.import_module`/`__import__` with a
+  dynamic name 57 + 5 — deliberately NOT a sink (plugin loaders, CWE-470,
+  a different class).
+- **Improvement — the full slice:** stdlib sink `evalCode(source:
+  String) returns String` (`runtime.py` stub that never executes,
+  `grammar/stdlib.md`); `check_code_injection` row in
+  `passes/detector_specs.py` (`_CODE_RULE` = the template rule's contract
+  worded for code), bound in `effects.py`, registered in the `security`
+  stage; `grammar/diagnostics.md` row + prose; `risk.py` critical
+  (CWE-94/95); frontend `SINK_BY_BUILTIN` exec/eval/compile — bare names
+  only (`session.exec(stmt)` is the by-name SQL row, not the builtin),
+  `ast.literal_eval` is not a sink, a local `def exec` shadow is not the
+  builtin, `exec(compile(src, ...))` reports once; tests on both sides;
+  `demos/case_studies/code_injection/`, playground
+  `31_code_injection.aeth`, `bench/py_frontend/corpus/code_injection_repro.py`
+  + labels; `vault/wiki/clusters/violation-taxonomy.md` row.
+  **Ratchet raised 54 → 55 codes, 30 → 31 detectors** (`tests/ratchet_baseline.json`).
+- **Sink rows shipped alongside (PYFE-08, PYSINK-02..12), every one a
+  silent shape before, all flag-more:** deserialize — `torch.load`
+  (guard `weights_only=True`; absent is SINK, the pre-2.6 default,
+  version-dependent like lxml), joblib, dill, cloudpickle,
+  `pandas.read_pickle`, `jsonpickle.decode`, `numpy.load(allow_pickle=True)`,
+  `yaml.*load_all`; shell — `subprocess.getoutput`/`getstatusoutput`,
+  `asyncio.create_subprocess_shell`, `commands.getoutput`, paramiko
+  `exec_command`, and the argv form `["bash", "-c", cmd]` (BUG-021: the
+  argv "safe exit" whose third element the shell parses); template —
+  jinja2 `Environment.from_string` (24 non-literal corpus sites, the
+  prompt-template shape), mako `Template`; SQL — asyncpg/databases
+  `fetchrow`/`fetchval`/`fetch_all`/`fetch_one`/`fetch_val`, `mogrify`,
+  `pandas.read_sql`, django `RawSQL` (bare `fetch` deliberately not —
+  vector stores and HTTP clients spell it); redirect — starlette/fastapi
+  `RedirectResponse`, django `HttpResponseRedirect`, aiohttp `HTTPFound`;
+  XXE — `xml.dom.minidom.parse`. `bench/py_frontend/corpus/sink_coverage_repro.py`
+  carries every shape, labelled.
+- **BUG-020 (Aether side, false accept):** a sanctioned wrapper was
+  accepted on its NAME; `sqlBind(tmpl, v)`, `shellArg(tmpl, v)`,
+  `safeRedirect(host, p)` with a parameter in the pinning slot laundered
+  the very text the row refuses. `ArgRule.pin` now judges `args[0]`;
+  every frontend-emitted Call carries `"py": True` and is exempt (a
+  Python wrapper has no template slot). `safeJoin`'s base is deliberately
+  unpinned: a parameter base directory is the idiom (7 corpus sites, both
+  zip-slip demos' `fixed.aeth`) and the untrusted half is the relative
+  part — recorded as a residual, not enforced.
+- **Scanner visibility (TC-03/08/10/11):** every unreadable file is
+  reported on stderr in json/sarif/text with the parser's message (JSON
+  `detail`); SARIF carries `toolExecutionNotifications` for them plus
+  column, suggestion and `extra` per result; pruned vendored/build
+  directories are listed (JSON `skipped_dirs`, text summary); an
+  unparseable file alone never fails the run in any mode, an analyzer
+  crash always does; the Python stage-skip and strict-only lists are
+  defined once in `py_frontend.py` and imported by the CLI, both benches
+  and the tests.
+- **Measured (bench/framework_scan, same 4,946 files, after iterations
+  48–50):** frameworks **628 → 676** (+50, −2), 0 analyzer errors, 0 unreadable, wheel versions identical (per-distribution file counts match the 2026-09-02 cache). **E0731 × 8:** `agno/tools/python.py:159` (`exec(code, ...)` — the python tool running the model's code), `smolagents/tools.py:575` (`Tool.from_code` — `exec(tool_code, module.__dict__)`), `browser_use/mcp/cli_mcp.py:128` (`exec(code, ns)`), `crewai/flow/runtime/_actions.py:309` (`exec(compile(module, filename, "exec"), namespace)`) — four true-by-shape sites where the interpreter is the product — and three `compile()`-for-linting sites (`aider/linter.py:179`, `openhands/linter/languages/python.py:11,66`) plus `langchain_community/tools/e2b_data_analysis/unparse.py:744`, which compile without executing: over-flags by class (`compile` produces a code object; the rule treats it as the sink because `exec(compile(...))` is the common form). **E0719 +24**, the `from_string` row: ~14 are jinja2 prompt templates rendered from strings by design (haystack `PromptBuilder`/`ChatPromptBuilder`/`ConditionalRouter`/`OutputAdapter`, semantic-kernel `Jinja2PromptTemplate`, langchain-core `jinja2_formatter`, smolagents' gradio template, openhands' invariant policy) — the prompt-template SSTI shape, by-design context; the rest are non-jinja `.from_string(...)` methods matched by name (momento `CredentialProvider.from_string` ×3, llama-cpp `LlamaGrammar.from_string` ×2, bigquery, networkx, agno's chunking strategy) — q5's accepted cost, now measured at roughly a third of the row. **E0718 +5:** `RedirectResponse(url)` in agno's MCP consent/media routes and mcp's OAuth `AuthorizationHandler` — dynamic redirect targets, true by shape (validated-against-registered-URIs is the expected repair, outside any argument-shape rule). **E0720 +3:** agno `code_mode`, databricks `_load_pickled_fn_from_hex_string` (cloudpickle by design), tfidf `joblib`. **E0713 +10:** `fetch_all` by name on langchain-community's HTTP loaders (`async_html`, `web_base` — over-flags the survey predicted) and cassandra's CQL wrappers (true by shape, CQL). **−2:** the two E0723 PEM-header hits (a docstring and an error message) that iteration 48 recorded as its precision cost — closed by requiring a key body. benign corpus (76 modules): one new E0731 on `tools/py_corpus/17_template_render.py:8` — `eval(expr, {"__builtins__": {}}, context)`, the known-bypassable "sandboxed eval" — true by shape; the other rows unchanged (E0711 11 · E0713 1 · E0720 1). Ground truth 72 TP / 0 FN / 0 FP.
+- **Suite:** exit 0. Merged as `7c4f19d` (branch commits `c35b3f3`, `1855c2f`).
+- **TYPE gaps surfaced for next iter:** (a) `session.exec`/`execute` by
+  name on non-DB receivers (a2a handlers, riza's remote code exec) are
+  E0713 over-flags the keyword-only mapping now reaches — the per-finding
+  `confidence` axis (q6) is where a by-name match should be distinguished
+  from a resolved one; (b) boundary-sanitizer coarseness (AEDET-09) is
+  the last probe-confirmed Aether-side miss in the survey; (c) Zip-Slip
+  via `tarfile`/`zipfile.extractall` without `filter=` (PYSINK-14) needs
+  a member-path model E0711 does not have — parked with its prevalence
+  question open.
+
+---
+
+## Iteration 51 — the vault said the surface did not exist, and it did (four false accepts, no new detector)
+
+- **Target:** the last two P0 rows of the 2026-09-03 survey
+  (`audits/survey_2026-09-03_ranked.md`, AEDET-08 and AEDET-09), both
+  re-probed live on `3986d38` before any code moved.
+- **The honesty half, and it is the point of the iteration.** q1 carried
+  this as settled Evidence since iteration 42: *"`grammar.ebnf` has no
+  function types — nothing HOF-shaped remains in the language."*
+  `grammar/grammar.ebnf` line 88 is
+  `"function" "(" [ type_expr {"," type_expr} ] ")" "returns" type_expr`
+  and `parser.py:369` emits `FunctionType`. The row was a grammar claim
+  written without grepping the grammar, and it had been shielding two
+  live false accepts for nine iterations. **The lesson recorded in q1:
+  the iteration-41 rule "probe before you record it" applies to CLOSING
+  an item, not only to opening one. A closed row is a claim, and claims
+  expire.**
+- **Gap confirmed empirically first (exit 0 on `3986d38`):**
+  `apply(f: function(String) returns Unit, x: Secret<String>) do f(x) end`
+  called as `apply(print, pw)` — no E0712, no E0729, the password logged;
+  and `apply(logIt, s)` from a `pure` caller into a `pure` `apply` that
+  calls `f` — no E0801, the logging performed under two functions that
+  both declared they do none. Separately `render(sanitizeLog(u))` where
+  `render` feeds `htmlResponse` — exit 0, while the inline
+  `htmlResponse(sanitizeLog(u))` fires E0725 whose own hint reads
+  "sanitizeLog does NOT protect here".
+- **Improvement (BUG-022, BUG-023):** `check_marker_boundary` fires E0729
+  when a call's callee is a function-typed PARAMETER and an argument
+  leaks the marker — the callee is chosen by the caller's caller, so it
+  is strictly less visible than the plain-param crossing E0729 already
+  refused; there is deliberately NO sanctioned crossing there, because a
+  function type's argument types are never checked against what arrives.
+  `check_effects` counts a function passed as a VALUE as a callee whose
+  declared effects join the caller's obligation. And the boundary
+  sanitizer stopped being marker-wide: `param_sink_reach()` summarises
+  which marker-flow sinks each callee parameter reaches,
+  `marker_sink_sanitizers()` derives (marker, sink) → sanitizer from
+  `MARKER_FLOW_SPECS`, and a cleared crossing is accepted only when the
+  unwrapper that cleared it is right for every sink reached.
+- **The review found the slice had shipped two NEW false positives and
+  reopened one of its own fixes** (BUG-024, BUG-025), all three
+  probe-confirmed, all three fixed in the same iteration:
+  - E0801 resolved a bare Ident argument by GLOBAL name with no locality
+    check, so a plain `String` parameter named `logIt` handed to the pure
+    stdlib `concat` was reported as an escaping `log` effect — an
+    invented effect for a string, in every argument position of every
+    call. Fixed with a `local` set (parameters + `_walk_binds` targets)
+    and alias-only resolution for shadowed names; the same edit closed
+    the slice's own documented gap, so `let g = logIt; apply(g, s)` now
+    reports too.
+  - E0729 counted a parameter as reaching a sink it reached only through
+    that sink's own sanitizer, so `render(s) = htmlResponse(htmlEscape(s))`
+    was reported as feeding `htmlResponse` raw **and the hint told the
+    caller to escape a second time** — a diagnostic that corrupts output
+    if obeyed. Fixed by summarising reach with each sink's own sanitizers
+    as unwrappers.
+  - A one-line alias defeated the new function-typed-parameter rule:
+    `let g = f; g(x)` was exit 0 on both the base and the fix commit,
+    while the same program without the `let` fired. This is the alias
+    class q1 already records as CLOSED for named functions (BUG-002),
+    reopened at a new callee kind.
+- **Measured:** corpus survey before wiring found 9 function-value
+  argument sites (every one `effects pure`) and 0 function-typed
+  parameters, so both new rules fire 0× on existing code; a differential
+  over all 437 in-tree `.aeth` after the review fixes shows 0 diff. 11
+  new tests across `tests/test_effect_scope.py` and
+  `tests/test_static_effects.py`; playground examples 32 and 33.
+- **Ratchet:** unchanged (55 codes / 31 detectors) — no detector shipped,
+  four repaired.
+- **TYPE gaps surfaced for next iter:** a function type carries no
+  effects clause in the grammar, so a callee that declares a
+  function-typed parameter may still claim any effects it likes and only
+  the call site supplying the value is judged — closing that is a
+  LANGUAGE change (effect-polymorphic function types), and q1 says
+  explicitly not to invent an effects syntax to get around it. The sink
+  summary is one level and matches the parameter by direct Ident, so a
+  callee that rebinds the parameter or hands it to a third function
+  contributes no sinks and falls back to the old marker-wide rule; E0730
+  (return laundering) keeps the coarseness entirely, having no callee
+  parameter to summarise. Both are the accept direction — real remaining
+  misses, stated as such.
+- **Suite:** exit 0.
+
+---
+
+## Iteration 52 — the axis that had been declared unused since iteration 46 (no new detector)
+
+- **Target:** q6's Residual, open since iteration 46 and re-surfaced by
+  iteration 50's own gap line. `Diagnostic.confidence` is a field on
+  every diagnostic, serialized, read back by the SDK — and the constant
+  `1.0` at every detector. q6 said varying it "needs something the
+  detectors actually compute".
+- **Iteration 50 supplied exactly that, measured.** The Python frontend
+  names a sink in six different ways and they are not equally certain:
+  a dotted path resolved through the file's imports is not a guess, a
+  method name on an unresolved receiver is q5's sanctioned over-flag, and
+  `bench/framework_scan/REPORT.md` §8 had already priced the difference —
+  about a third of the new `from_string` hits are non-jinja methods, and
+  4 of 8 E0731 sites call `compile()` and never execute the result —
+  three syntax-checking linters and a round-trip test (corrected
+  2026-09-11; this block first said all four were linters).
+- **Improvement:** `_sink_match` returns HOW it matched beside WHAT it
+  matched; `_call_expr` parks that on the Call node; the two spec-driven
+  drivers set `confidence=confidence_of(call.get("match"))` and put the
+  kind in `extra`. `transpiler/aether/confidence.py` holds the table,
+  modelled on `risk.py` and read only at output time. `tools/scan.py` and
+  `check-py` sort by `(-risk, -confidence, line, code)`, both grow
+  `--min-confidence`, SARIF carries it. An unknown match kind takes the
+  FLOOR, never 1.0 — a new frontend match kind must not claim certainty
+  by being new.
+- **It changed no detection, and that is the measurement that matters:**
+  676 findings on the 15-framework corpus before, 676 after, identical
+  multiset and identical per-distribution stats. The distribution is
+  0.95 ×44, 0.9 ×3, 0.6 ×629, so `--min-confidence 0.9` hides 93% of the
+  corpus — almost all of it `cursor.execute`-shaped SQL matched by name.
+  Those findings are correct by Aether's rule and stay in the default
+  output; the flag is a reading order, not a verdict.
+- **`--jobs` alongside:** 241 s → 69 s on the 1,024-file agno package,
+  8 workers, all four `--json` outputs byte-identical. A pool is used
+  only above 32 files on a multi-core machine, so single-file and
+  small-tree runs stay byte-identical to what they were.
+- **Review found four minors, all fixed:** `--jobs 0` scanned serially in
+  silence and `--jobs 999` died with a raw traceback (Windows caps the
+  pool at 61); the coverage test read the frontend's match kinds with a
+  regex blind to the one continuation-line return it most needed to see;
+  and two docstrings claimed more than they had earned — `confidence.py`
+  read as if all six ratings were measured when only the ordering of the
+  two floor kinds is, and q6 named E0710/E0721/E0722 as carrying unearned
+  certainty on Python when those three cannot fire on Python at all.
+- **Ratchet:** unchanged (55 codes / 31 detectors).
+- **TYPE gap surfaced for next iter:** the axis reaches only the two
+  spec-driven drivers. Of the ~20 hand-written `Diagnostic` sites in
+  `passes/effects.py`, only E0723 fires on translated Python today and
+  its evidence is a literal read from the source, so its 1.0 is earned —
+  the residual is latent, and the next hand-written detector that fires
+  on Python must read `call.get("match")` like the drivers do.
+- **Suite:** exit 0.
+
+---
+
+## Iteration 53 — E0727's Python text described the Aether parser, not the Python one (no new detector)
+
+- **Target:** the residual `bench/framework_scan/REPORT.md` §3 left
+  (commit 8a3b919, 2026-09-02, the BUG-011 round) — "a version-dependent
+  sink is a residual no static rule resolves" — read from the user's
+  side. `check-py` maps twelve stdlib `xml.*` callees (ElementTree,
+  cElementTree, minidom, pulldom, expatbuilder, sax: parse plus
+  parseString/fromstring each) and three `lxml.etree` callees to
+  `parseXml`, and every one printed the row's Aether text: "an
+  entity-resolving parser reads local files and reaches internal URLs
+  (XXE)" with the hint "parse with parseXmlSafe(data)". `parseXmlSafe` is
+  an Aether stdlib function; a Python user cannot call it.
+- **Probe-confirmed first (2026-09-11, CPython 3.11.15,
+  `pyexpat.EXPAT_VERSION` = expat_2.7.4, lxml 6.1.1 / libxml2 2.11.9;
+  the URL claims measured against a local HTTP server, most of them only
+  after review asked):**
+  - stdlib `ElementTree` / `minidom` / `xml.sax` / `pulldom` /
+    `expatbuilder` on `<!ENTITY x SYSTEM "file:///…">` by default: no
+    file read — ElementTree raises `undefined entity`, the others drop the
+    reference. Same for an `http://` SYSTEM entity: no request. The Python
+    docs say so: "By default, Expat itself does not access local files or
+    create network connections" (`library/xml.html`, "XML security"); the
+    3.11 page's table footnotes: ElementTree "doesn't expand external
+    entities and raises a ParseError", minidom "returns the unexpanded
+    entity verbatim", sax/pulldom "Since Python 3.7.1, external general
+    entities are no longer processed by default".
+  - the same on entity expansion: a 6-level (10^6) billion-laughs payload
+    parses; 7 levels (10^7), 8 levels and a 50 kB × 2,000 quadratic
+    payload are refused with `limit on input amplification factor (from
+    DTD and entities) breached`. The docs hedge, and the thresholds are
+    per issue: the current page says Expat "lower than 2.7.2 may be
+    vulnerable to the 'billion laughs', 'quadratic blowup' and 'large
+    tokens' vulnerabilities, or to disproportional use of dynamic memory"
+    and "Python bundles a copy of Expat, and whether Python uses the
+    bundled or a system-wide Expat, depends on how the Python interpreter
+    has been configured in your environment … Check
+    `pyexpat.EXPAT_VERSION`"; the 3.11 table's footnotes put billion
+    laughs / quadratic blowup at 2.4.1 and large tokens (CVE-2023-52425, a
+    re-parse cost, not an entity attack) at 2.6.0, "still listed as
+    vulnerable due to potential reliance on system-provided libraries".
+  - the live stdlib XXE is a SAX parser with
+    `setFeature(feature_external_ges, True)`: it reads the file AND fetches
+    the `http://` entity (1 request on the local server). It is reachable
+    through `minidom.parse/parseString(…, parser=p)` and
+    `pulldom.parse/parseString(…, parser=p)` (both measured: file and URL)
+    and through the parser object's own `p.parse(...)`. It is NOT
+    reachable through `xml.sax.parse` / `xml.sax.parseString`: their
+    source builds a fresh `make_parser()` and exposes no parser argument.
+  - a `parse()` spelling opens its SOURCE argument itself, whatever the
+    parser: `ET.parse(path)`, `cElementTree.parse(path)`,
+    `expatbuilder.parse(path)`, `minidom.parse(path)`, `pulldom.parse(path)`
+    open a str as a local file (a URL raises `OSError`);
+    `xml.sax.parse(source)` opens an existing file or `urlopen()`s anything
+    else (the `xml.sax` docs; measured: 1 request), and so does
+    `defusedxml.sax.parse`; `lxml.etree.parse(url)` fetches it with the
+    default parser AND with the hardened one the hint names (measured: 1
+    request each). E0727 judges entity resolution; no row judges that
+    open (E0711's Python mapping covers `open`, not XML sources).
+  - lxml 6.1.1 default parser: `Entity 'x' not defined`, no read;
+    `XMLParser(resolve_entities=True)`: the file IS read, but the
+    `http://` entity is NOT fetched (0 requests) — `no_network=True` is the
+    default (the XMLParser docstring), and only `resolve_entities=True,
+    no_network=False` fetched it (1 request); `resolve_entities=False`:
+    clean, but `XMLParser(resolve_entities=False, load_dtd=True,
+    no_network=False)` fetched an external DTD (`<!DOCTYPE r SYSTEM
+    "http://…">`, 1 request) — the hardened binding needs all three
+    keywords. libxml2 2.11 refuses every expansion payload (`Maximum entity
+    amplification factor exceeded`). The lxml 5.0.0 changelog
+    (2023-12-29): "lxml no longer expands external entities (XXE) by
+    default … The new default is resolve_entities='internal'."
+  - `defusedxml` 0.7.1 refuses both the SYSTEM entity and the expansion
+    payload (`EntitiesForbidden`) — but only with the parser it builds
+    itself: `defusedxml.minidom.parseString(xxe, parser=ges)` returned the
+    secret and `defusedxml.pulldom.parse(…, parser=ges)` fetched the URL
+    (its source: `if parser is None: parser = make_parser()`). Its
+    `cElementTree` module is deprecated in favour of `ElementTree`. bandit
+    1.9.4 flags the stdlib calls (B313–B319, MEDIUM: "Replace … with its
+    defusedxml equivalent") and has no lxml check any more (B320 is
+    removed in that version).
+- **Improvement — text per callee, and the four detection changes the
+  probes forced:** `_call_expr` parks the callee spelling on a sink Call
+  (`callee`: the spelling `_callee_spelling` resolved — a dotted import
+  path on a `qualified`/`guard`/`argv` match, the builtin name on
+  `builtin`, the attribute path as written, possibly chained, on a
+  `method` match); `LiteralOrWrapperSpec` grows `callee_text` —
+  prefix-ordered `CalleeText` rows, a prefix or a tuple of them, with an
+  optional `leaf` so `parse` and `parseString` can differ — and
+  `text_for(callee)` picks the wording; the driver formats `message` AND
+  `suggestion` with `callee`, `callee_tail` (last two components) and
+  `callee_leaf` (last one) and puts `callee` in `extra`. E0727 carries
+  eleven rows: `lxml.` ×2 (file read by default before 5.0 and under
+  `resolve_entities=True`, a URL only with `no_network=False`; fix = the
+  three-keyword parser binding), `xml.sax.` ×2 (own parser, no parser
+  argument: no XXE through entities), `xml.dom.minidom.` +
+  `xml.dom.pulldom.` ×2 (a `parser=` with `feature_external_ges` reads
+  files and fetches URLs), `xml.etree.cElementTree.` ×2 (the hint names
+  `defusedxml.ElementTree`, the non-deprecated module), `xml.` ×2 for
+  ElementTree/expatbuilder (never expand external entities, any Expat),
+  and `defusedxml.` for the guard rows below. Each family's `parse` row
+  adds that the source string is itself opened as a path (or, for
+  `xml.sax.parse` and `lxml.etree.parse`, fetched as a URL) and that no
+  row judges it. Every stdlib row ends with the docs' hedged,
+  per-threshold DoS clause and a hint naming the `defusedxml` equivalent
+  "and no parser= argument" or a `pyexpat.version_info >= (2, 7, 2)` check
+  (`EXPAT_VERSION` is a string; comparing it is wrong). An `.aeth` source
+  has no callee and keeps the row's own text, which is exact there:
+  `_ae_parseXml` models an entity-resolving parser.
+  Detection: (1) RELAX — the hardened lxml parser bound in the same
+  function now clears the sink when passed as `parser=parser`, lxml's
+  documented spelling, as it already did positionally; the `parser`
+  keyword only (`base_url=parser` does not clear), never a `**kwargs`
+  splat. The first draft's hint promised "that binding clears this
+  finding" while the keyword form still fired (review, reproduced).
+  (2) STRENGTHEN — `_safe_xml_parser_names` requires `resolve_entities=
+  False` and, when present, `no_network=True`, `load_dtd=False`,
+  `dtd_validation=False`, and refuses a `**kwargs` splat in the
+  constructor: the DTD-retrieval shape above no longer clears. (3)
+  STRENGTHEN — `xml.sax.make_parser` leaves `_XML_PARSER_CTORS`: it has no
+  `resolve_entities` keyword (TypeError), so the only stdlib shape that
+  cleared E0727 was one that cannot run. (4) STRENGTHEN — new `SINK_GUARDS`
+  rows keyed on `parser=` for `defusedxml.minidom.parse/parseString`,
+  `defusedxml.pulldom.parse/parseString` and `defusedxml.ElementTree.parse`
+  (absent or `None`: not a sink; anything else: the sink, match kind
+  `guard`), because the hint names defusedxml and the shape it would
+  otherwise steer into was silent.
+- **Why wording and not confidence:** `confidence.py` rates how sure the
+  analysis is that the call IS the sink it matched — `ET.fromstring`
+  resolved through the imports is a 0.95 `qualified` match and stays one.
+  What is uncertain on a stdlib callee is the RUNTIME (which Expat, which
+  parser object), which no static rule resolves and which the message now
+  states. Lowering the rating would also move iteration 52's measured
+  corpus distribution (0.95 ×44 / 0.9 ×3 / 0.6 ×629) for a reason that is
+  not identification certainty.
+- **Kept flagged on purpose:** every stdlib row still fires (bandit
+  B313–B319 do too): a system Expat below the docs' thresholds is a real
+  DoS, minidom/pulldom become a real XXE with one `parser=`, and every
+  `parse()` spelling opens its source. Over-flag, never miss within the
+  modeled surface.
+- **Two review rounds, by measurement, rewrote this text twice.** Round
+  one: "reaches internal URLs" for lxml under `resolve_entities=True`
+  alone (`no_network=True` blocks it); "xml.sax resolves them once
+  feature_external_ges is set" on callees that cannot set it; the definite
+  "is open to … below 2.7.2" against the docs' "may be" and per-issue
+  thresholds; "large tokens" filed under entity expansion; the deprecated
+  `defusedxml.cElementTree` in a hint; a string comparison of
+  `EXPAT_VERSION`; "bandit B313–B320"; "ten" stdlib callees; the REPORT §3
+  provenance; a fix-shape test with no positive control. Round two: "not
+  a file read or SSRF" on the `parse()` spellings, whose source string IS
+  opened or fetched; "refuses entity declarations outright" for a
+  defusedxml call that keeps the caller's parser; the keyword clearing
+  keyed on the value instead of the `parser` slot; the sanctioned exit
+  clearing a parser that still retrieves an external DTD; the dead
+  `make_parser` constructor entry; a docs sentence attributed to a page
+  that does not carry it; a paraphrase in quotation marks on the q1 row;
+  a double-escaped wikilink pipe; and `callee` described as "a bare method
+  name" when it is the attribute path as written.
+- **Measured non-breaking:** `check-py --json` over the in-tree Python
+  corpus (`bench tests tools playground demos`: 208 files, 110 findings)
+  before and after: identical multiset of (path, code, confidence,
+  severity, extra minus `callee`) — the only position deltas are the
+  E0723 fixtures that sit below the edited test text in the two test
+  files; text differs on E0727 only; `extra.callee` is now present on
+  every literal-or-wrapper Python finding
+  (E0713/E0714/E0718/E0719/E0720/E0727/E0731). None of the four detection
+  changes touches an in-tree shape. Every fix shape the hints name checks
+  clean beside eight positive controls (an unhardened, parameter-supplied
+  or wrong-keyword `parser=`, a `**kwargs` splat, a DTD-retrieving
+  binding, the dead `make_parser` shape, defusedxml with a caller's
+  parser).
+- **Ratchet:** unchanged (55 codes / 31 detectors).
+- **Residuals (pushed to q1):** (a) a version-dependent sink — the
+  analyzer cannot see the runtime Expat or lxml; the text names the
+  boundary and the check, it cannot make it. (b) the `parser=` SAX parser
+  on minidom/pulldom is not inspected: `setFeature` is untracked, so the
+  default (safe) and the feature-on (XXE) states get the same finding —
+  over-flag. (c) `defusedxml.defuse_stdlib()` is untracked — over-flag.
+  (d) the source argument of a `parse()` spelling — a path, or for
+  `xml.sax.parse` / `defusedxml.sax.parse` / `lxml.etree.parse` a path or
+  URL — is opened by the library and judged by no row: the text names it,
+  E0727 does not fire for it, and a literal-free `ET.parse(path)` with a
+  hardened lxml parser is clean. A MISS (accept direction). (e)
+  `callee_text` reaches only the literal-or-wrapper driver.
+- **TYPE gap surfaced for next iter — a MISS, not text:**
+  `p = xml.sax.make_parser(); p.setFeature(feature_external_ges, True);
+  p.parse(raw)` is the stdlib XXE this iteration measured, and it reports
+  NOTHING: `p.parse` is a receiver-bound method, in neither
+  `SINK_BY_QUALIFIED` nor `SINK_BY_METHOD` (a bare `parse` method row
+  would over-flag every `.parse`). The shape is the guard-bound-elsewhere
+  class `_safe_xml_parser_names` already handles for lxml, in the
+  opposite direction: resolve `p` to its `make_parser()` binding and treat
+  `p.parse` as the sax sink. Probe prevalence on the framework corpus
+  before building it. Second in line, same class: residual (d) — the
+  `parse()` source string is a path/URL sink no row owns (E0711's Python
+  mapping stops at `open`). Third: the same per-callee audit one row over
+  — E0720's hint says `schemaDecode(schema, data)` to a `pickle.loads` /
+  `yaml.load` user, and E0719's says nothing Python-specific to a
+  `render_template_string` user; `callee_text` is the mechanism, each
+  row needs its own probe-confirmed facts first.
+- **Suite:** exit 0.
+
+---
+
 ## Next-iteration checklist (for the loop)
 
 1. Read the previous report's "TYPE gap for next iter".

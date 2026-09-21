@@ -32,7 +32,7 @@ it.
 | Finding | Evidence | Confidence |
 |---|---|---|
 | Refinements checked at the boundary at runtime | `types` source, Refinement types section; E0302/E0305 on the live path | high |
-| Rationale is fix-loop UX, not weaker types | competitive.md Dafny/Liquid-Haskell paragraphs (audience/surface argument) | high |
+| Rationale is fix-loop UX, not weaker types | `docs/competitive.md` (kept outside the public repo) Dafny/Liquid-Haskell paragraphs (audience/surface argument) | high |
 | Runtime-not-static is an explicit honesty rule | vault `CLAUDE.md` Never Do line 2 | high |
 | SMT is parked, additive | v2_ROADMAP references SMT default-on as B.5 substrate | medium |
 

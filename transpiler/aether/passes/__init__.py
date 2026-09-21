@@ -32,6 +32,7 @@ from .effects import (
     check_metadata_fetch, check_hardcoded_secret, check_log_injection,
     check_reflected_xss, check_header_injection, check_xxe,
     check_csv_injection, check_marker_boundary, check_return_laundering,
+    check_code_injection,
     check_exhaustiveness, check_unreachable_arms,
     check_dead_code, check_unused_binding, check_ignored_result,
     check_unsatisfiable_refinement,
@@ -41,7 +42,7 @@ from .modules import check_modules
 STAGES = [
     # B.1/B.2 — call-site effects must be a subset of declared effects.
     ("effects", [check_effects]),
-    # E0710-E0730 — reach-scope / taint-flow security detectors.
+    # E0710-E0731 — reach-scope / taint-flow security detectors.
     ("security", [
         check_effect_scope, check_fs_path_safety, check_secret_flow,
         check_injection, check_command_injection, check_pii_flow,
@@ -51,6 +52,7 @@ STAGES = [
         check_hardcoded_secret, check_log_injection, check_reflected_xss,
         check_header_injection, check_xxe, check_csv_injection,
         check_marker_boundary, check_return_laundering,
+        check_code_injection,
     ]),
     # E0202-E0207 — static semantic checks.
     ("semantic", [

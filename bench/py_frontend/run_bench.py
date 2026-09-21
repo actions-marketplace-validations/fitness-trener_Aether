@@ -31,7 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "transpiler"))
 sys.path.insert(0, ROOT)
 
-from aether.py_frontend import py_to_ir                      # noqa: E402
+from aether.py_frontend import py_to_ir, PY_SKIP_STAGES      # noqa: E402
 from aether.passes import analyze_flat                      # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -40,8 +40,7 @@ LABELS_PATH = os.path.join(HERE, "LABELS.json")
 # The sink family this frontend claims. Everything else a pass may emit
 # (E0701 capability, E0202-E0207 semantic) is out of scope here.
 SINK_CODES = ("E0711", "E0713", "E0714", "E0718", "E0719", "E0720",
-              "E0723", "E0727")
-PY_SKIP_STAGES = ("effects", "semantic")
+              "E0723", "E0727", "E0731")
 
 
 def _codes_for_source(src: str):

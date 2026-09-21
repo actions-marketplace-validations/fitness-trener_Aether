@@ -38,27 +38,56 @@ def rel_uri(path: str, base: str) -> str:
     return r if not r.startswith("../") else path.replace(os.sep, "/")
 
 
-def to_sarif(results: list, base: str) -> dict:
+def to_sarif(results: list, base: str, unreadable=()) -> dict:
     """Render findings as SARIF v2.1.0 — the format GitHub Code Scanning,
     VS Code, and most CI security dashboards ingest.
 
     `results` is `[{"path": str, "findings": [{"code", "message", "line",
-    "risk"}]}]`; `base` is the directory every path is reported relative to
-    (the checkout root under CI).
+    "risk", "column"?, "confidence"?, "suggestion"?, "extra"?}]}]`; `base` is the
+    directory every path is reported relative to (the checkout root under
+    CI). `unreadable` is `[(path, why)]` for files the scanner could not
+    parse: each becomes a `toolExecutionNotification` on the run, so a
+    tree the scanner could not read does not look green in Code Scanning.
     """
     rule_ids = sorted({f["code"] for r in results for f in r["findings"]})
     sarif_results = []
     for r in results:
         for f in r["findings"]:
-            sarif_results.append({
+            region = {"startLine": max(1, f["line"])}
+            if f.get("column"):
+                region["startColumn"] = max(1, f["column"])
+            res = {
                 "ruleId": f["code"],
                 "level": sarif_level(risk_of(f["code"])),
                 "message": {"text": f["message"]},
                 "locations": [{"physicalLocation": {
                     "artifactLocation": {"uri": rel_uri(r["path"], base)},
-                    "region": {"startLine": max(1, f["line"])},
+                    "region": region,
                 }}],
-            })
+            }
+            # The fix-loop reads `suggestion` and `extra` from the JSON;
+            # Code Scanning shows `properties` on the alert, so the SARIF
+            # carries the same two fields instead of dropping them.
+            props = {}
+            # How sure the ANALYSIS is that this call is the sink it
+            # says (`aether/confidence.py`) — per FINDING, unlike the
+            # rule's `security-severity`, which is per class. A rule
+            # property could not carry it.
+            if f.get("confidence") is not None:
+                props["confidence"] = f["confidence"]
+            if f.get("suggestion"):
+                props["suggestion"] = f["suggestion"]
+            if f.get("extra"):
+                props["aether"] = f["extra"]
+            if props:
+                res["properties"] = props
+            sarif_results.append(res)
+    notifications = [{
+        "level": "warning",
+        "message": {"text": f"could not parse: {why}"},
+        "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": rel_uri(p, base)}}}],
+    } for p, why in unreadable]
     rules = []
     for rid in rule_ids:
         risk = risk_of(rid)
@@ -82,5 +111,9 @@ def to_sarif(results: list, base: str) -> dict:
                 "rules": rules,
             }},
             "results": sarif_results,
+            "invocations": [{
+                "executionSuccessful": True,
+                "toolExecutionNotifications": notifications,
+            }],
         }],
     }

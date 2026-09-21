@@ -1,5 +1,127 @@
 # Operation Log (append-only — newest on top)
 
+## [2026-09-11] Q1 residual added | iteration 53: E0727's Python text is per callee
+- **The text was the Aether parser's, not the Python parser's.** Every
+  stdlib `xml.*` callee `check-py` maps to `parseXml` printed "reads local
+  files and reaches internal URLs" and a hint naming `parseXmlSafe`, an
+  Aether function. Probed on Expat 2.7.4: by default no stdlib parser
+  fetches a SYSTEM entity, and ElementTree/expatbuilder never do; the
+  live stdlib XXE is a SAX parser with `feature_external_ges` set,
+  reachable through minidom/pulldom `parser=` (measured: file read and an
+  `http://` fetch) and through the parser object's own `.parse`, which is
+  not a mapped sink — a MISS, recorded on q1 as the next TYPE gap, beside
+  a second one: every `parse()` spelling opens its source string as a
+  path or URL and no row judges it. lxml reads the file by default only
+  below 5.0.0, a URL only with `no_network=False`. The DoS clause is
+  hedged at the Python docs' thresholds (2.4.1 / 2.6.0 / 2.7.2). q1
+  carries the residual and the misses; the taxonomy row carries the
+  per-callee summary.
+- **Lesson carried, three times in one iteration:** a sink's message is a
+  claim about the RUNTIME the user has, and the Python frontend maps many
+  runtimes to one Aether sink — write the shape and run it on each before
+  the text says what it does. Two review rounds, each with a local HTTP
+  server, found what re-reading the docs had not: an lxml URL fetch that
+  `no_network=True` blocks; a `feature_external_ges` that `xml.sax.parse`
+  cannot set; and "not a file read" on `parse()` spellings that open
+  their source string. The hint's own fix shape was probed too: defusedxml
+  handed a caller's parser passes it through, so that shape is now a
+  sink instead of a silent miss.
+
+## [2026-09-11] Q7 corrected | the totality claim had a counterexample (BUG-027, BUG-028)
+- **q7 said the Python frontend was total over statement positions; it
+  was not.** The 0.4.0 pre-release audit probed the claim: a sink inside
+  a subscript or attribute assignment target — `del`, `+=`, `for` and
+  `with` targets — was silent (BUG-027), and a case guard or an `except`
+  type was reported twice (BUG-028). Both fixed; q7 carries the
+  correction row beside the original claim, and the exactly-once
+  position test grows from 26 to 32.
+- **The same audit, outside the vault:** `aether fix-loop` had been broken
+  in every installed copy since 0.3.0 (BUG-026); a file too deep for
+  CPython's own parser was reported as an Aether crash (BUG-029);
+  `exec(compile(src))` was rated at the floor although it executes the
+  source (BUG-030).
+- **Lesson carried** (q1's, now on q7 as well): a completeness claim is
+  checked by writing the shapes, not by re-reading the argument for it.
+
+## [2026-09-03] Q1 corrected, Q6 residual closed | iterations 51–52
+- **A settled q1 Evidence row was FALSE, and had been for nine
+  iterations.** Iteration 42 recorded "`grammar.ebnf` has no function
+  types — nothing HOF-shaped remains in the language" and closed the
+  surface on it. Line 88 of the grammar defines function types and
+  `parser.py` emits them, and behind the wrong row sat two live false
+  accepts: a `Secret<String>` through a function-typed parameter reached
+  `print` unflagged, and an effectful function passed as a value ran
+  under two `pure` declarations. Both closed in iteration 51 (BUG-022);
+  the row is corrected in place, the overclaim kept visible rather than
+  overwritten, and the lesson recorded: **the "probe before you record
+  it" rule applies to CLOSING an item, not only to opening one.**
+- **The same iteration overclaimed again and the review caught it.** The
+  first fix said "closed, both axes"; a one-line alias defeated one axis
+  (BUG-025) and the other shipped an invented effect for any string whose
+  name matched a function (BUG-024). Both fixed in the same iteration.
+  q1 now carries the counterexamples beside the closures.
+- **Boundary-sanitizer coarseness closed at the call site** (BUG-023):
+  a per-parameter sink summary means an unwrapper clears a crossing only
+  when it is the right sanitizer for every sink the callee reaches.
+  Residuals stated in BOTH directions after the review pointed out the
+  first draft listed only the flattering one.
+- **q6's Residual is closed** (iteration 52): `Diagnostic.confidence` was
+  a constant 1.0 at every detector since the axis was introduced in
+  iteration 46. The Python frontend now reports HOW it matched a sink, so
+  a `.from_string` matched on a method name ranks below a `pickle.loads`
+  resolved through imports. It changed no detection — 676 findings on the
+  framework corpus before and after, identical multiset — and the page
+  says what the axis still does not do.
+- **Never-Do reaffirmed:** no effects syntax for function types was
+  invented to close the residual that a function type cannot carry one;
+  that is a language change and q1 says so.
+
+## [2026-09-03] Q1 + taxonomy extended | iterations 49–50: the language side's binding walkers, E0731
+- **Iteration 49 (no detector):** four probe-confirmed false accepts on the
+  Aether side, one root cause — the parser emits `Let`/`Var`/`Assign` and
+  every binding walker read two of the three by `name`. `var x = password;
+  print(x)`, a literal-then-reassigned path, a rebound resource id, `for x
+  in markedList`, a match-expression arm, an aliased stdlib sink and a
+  whole record carrying a marker field were all exit 0 (BUGS.md
+  BUG-013..016). Q1 gains the evidence rows; the E0722 and E0723 taxonomy
+  rows record the widenings (one host normalizer, ten provider shapes,
+  PEM needs a body, StringLit carries a position).
+- **Iteration 50 (E0731 shipped):** an interpreter fed attacker-authored
+  source — `exec`/`eval`/`compile` of model output, the population's own
+  hazard — is a finding, not a capability note. Ratchet 54 → 55 codes,
+  30 → 31 detectors. Taxonomy row added by the slice. Alongside: the
+  sink rows the agent corpus needs (torch/joblib/dill/cloudpickle/numpy
+  pickle, shell-always runners, the `["bash", "-c", cmd]` argv form,
+  jinja2 `from_string`, asyncpg fetch*, framework redirects), BUG-020 (a
+  wrapper's pinning argument is judged; `safeJoin`'s base deliberately
+  not — recorded in Q1 as an accepted miss), and scanner visibility
+  (unreadable files and skipped directories reported in every mode).
+- **Design points that must not be re-litigated:** `safeJoin`'s base stays
+  unpinned (parameter base directories are the idiom); bare `fetch` is
+  not a SQL sink by name; builtin sinks match bare names only.
+
+## [2026-09-03] Q7 added, Q5 extended | the translator was not total (BUG-012)
+- **Iteration 48 shipped no detector; it closed a false-accept class in the
+  Python frontend.** A five-lens survey (65 probe-confirmed candidates)
+  ranked silent misses first: `py_to_ir` translated four statement kinds
+  and dropped the rest, so a sink behind `await` (603 on the framework
+  corpus), in a `for` iterable, in a tuple-target assignment or inside
+  `x or []` was never seen; and three resolvers saw one binding form, so
+  `sql += uid` left `sql` "literal-only". BUGS.md BUG-012.
+- **New page q7** — totality over syntax as the frontend's soundness
+  obligation: the detectors refuse unknown shapes, the frontend decides
+  which shapes exist, so a position it does not emit is neither cleared
+  nor suspected. Q5's name rule gains that third clause; taxonomy
+  Implications gains the precondition.
+- **Measured:** 411 → 628 on the same 4,946 files, 0 errors; ground truth
+  41 TP / 0 FN / 0 FP (was 29 / 57); benign corpus unchanged. Iteration
+  47's "~100 helper-assembled" estimate corrected to 34 by a source-level
+  census (`bench/framework_scan/e0713_census_2026-09-03.txt`).
+- **Residuals carried (q5):** attribute-receiver Table form, keyword-order
+  slot mapping, `fetch` not a sink by name, E0723 PEM header alone.
+  Surfaced for next iterations (LOOP_LOG 48): E0731 code injection;
+  Aether-side `var`/`Assign` invisibility; wrapper pinning argument.
+
 ## [2026-09-01] Q5 extended | the name rule's cost, measured on agent frameworks
 - **Iteration 47 shipped no detector; it repaired one.** `bench/framework_scan/`
   ran `check-py` over 15 AI-agent frameworks (4,946 files, 0 crashes) and

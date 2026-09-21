@@ -97,7 +97,9 @@ The three worth a look, none of them a vulnerability:
   `allow_pickle` flag. Deprecated by pydantic partly for this reason.
 - `prompt_toolkit/formatted_text/html.py:35` —
   `minidom.parseString(f"<html-root>{value}</html-root>")`. `minidom`
-  is entity-expansion-prone; `value` is developer-authored in practice.
+  is entity-expansion-prone only on an expat older than 2.7.2 (corrected
+  2026-09-11; current CPython refuses the payload); `value` is
+  developer-authored in practice.
 
 ## 4. A defect the scan found
 
