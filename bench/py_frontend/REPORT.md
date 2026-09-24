@@ -285,7 +285,10 @@ translated as `py:load`, which every detector looks past. Confirmed by
 execution before the fix. Imports are now collected from the whole
 module; a local name bound by two imports to different targets is
 ambiguous and resolves to nothing — it clears no query and sanctions no
-builder. `bench/py_frontend/corpus/guarded_import_repro.py` pins both
+builder. (Since 2026-09-24, BUG-033: it resolves to a candidate that is a
+sink if any is, because resolving to nothing silenced every sink behind
+the `try: import cPickle as pickle / except ImportError: import pickle`
+idiom. It still clears nothing.) `bench/py_frontend/corpus/guarded_import_repro.py` pins both
 directions. The bench's own slicer had the same bug (a column-0
 `import`/`from` header) and was fixed alongside.
 

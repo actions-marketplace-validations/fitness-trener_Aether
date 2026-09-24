@@ -2290,6 +2290,54 @@ State carried forward: the full gate suite must stay green
 
 ---
 
+## Iteration 54 — Wave 0 of the 2026-09-24 audit: four silent Python misses, closed before 0.4.1 (no new detector)
+
+- **Target:** not a backlog row. A six-lens audit of `dcd824d`
+  (`audits/audit_2026-09-24_plan.md`) found about 60 probe-confirmed flaws
+  that the green gate does not see. The owner chose to fold the four Python
+  false accepts that were already in 0.4.0 on PyPI into 0.4.1, before the
+  tag (plan: Wave 0, option b). The rest waits for Waves 1-7.
+- **Probe-confirmed first (exit 0, no finding, on `dcd824d`):**
+  - `eval(html.escape(x))` and `render_template_string(html.escape(x))`:
+    B1, BUG-032.
+  - `pickle.loads(b)` behind `try: import cPickle as pickle / except
+    ImportError: import pickle`, with the lxml, subprocess32 and
+    flask/werkzeug fallbacks the same: B2, BUG-033.
+  - `subprocess.run(shlex.quote(p), shell=True)`: B3, BUG-034.
+  - A detector raising `ValueError`, reported as "could not parse" with
+    exit 0 and its 3 findings lost: B7, BUG-035.
+  - Each regression test was run against the pre-fix code with the source
+    stashed. All four were red.
+- **Fixes (each at the root, one table or one clause):**
+  - `SANITIZER_BY_QUALIFIED` maps no Python call onto `trusted`. The HTML
+    escapers map to `htmlEscape`.
+  - `_Imports` keeps every candidate, and an ambiguous name resolves to a
+    sink candidate if one exists.
+  - `ArgRule.py_whole` refuses a frontend `shellArg` that is the whole
+    command.
+  - `_scan_one`'s parse clause covers only `py_to_ir`.
+- **Measured non-breaking:** `check-py --json` over `bench tests tools
+  playground demos` before and after on the same tree. The framework corpus
+  (4,946 files) gives 676 → 676, and the rest (208 files) gives 110 → 110.
+  Keys (file, line, code) are identical, with 0 unreadable and 0 errors.
+  None of the four shapes occurs in either corpus.
+- **Residuals (pushed to q1):**
+  - (a) When both ambiguous candidates are sinks, the text names the first
+    one bound.
+  - (b) `"ls " + shlex.quote(p)` is still flagged. It over-flags the
+    documented fix (audit C1) and is deferred to 0.4.2 because the fix
+    moves the corpus finding set.
+  - (c) Open and Aether-side: `for`/`match` binders re-bind a name that the
+    safe/stable/authorized passes proved (audit A5). Five of six fixpoints
+    ignore them.
+- **TYPE gap surfaced for next iter:** Wave 1 of the plan, which is gate
+  integrity, not a detector. The ratchet compares against HEAD (the commit
+  under test, in CI), and 21 of 78 Python sink rows have no test. Until a
+  mutation of each goes red, a closed row is a claim the gate cannot keep.
+- **Suite:** exit 0.
+
+---
+
 ## Next-iteration checklist (for the loop)
 
 1. Read the previous report's "TYPE gap for next iter".

@@ -1,5 +1,18 @@
 # Operation Log (append-only — newest on top)
 
+## [2026-09-24] Q1 corrected + residual added | the whole-repo audit: the Python table stood in for `trusted`; `for`/`match` re-bind safe names
+- **Two q1 rows added.** The first records that the Python sanitizer table
+  mapped five calls onto `trusted` (BUG-032), which made an assertion into
+  a sanitizer on Python and left E0719/E0720/E0731 open. It also records
+  BUG-033 (an ambiguous import silenced its sinks) and BUG-034 (a
+  whole-command `shlex.quote` counted as the exit), all fixed for 0.4.1.
+  The second records an open, probe-confirmed Aether-side MISS: five of
+  the six binding fixpoints ignore `for` and `match` binders.
+- **Lesson carried:** the closed design point ("`trusted` is an assertion")
+  held in the Aether rules and was undone one layer up, in a mapping table
+  no rule reads as a rule. A closed point has to be re-probed wherever a
+  table can stand in for it, not only in the pass that states it.
+
 ## [2026-09-15] Q1 corrected | E0727's ElementTree "never" held only without a parser (BUG-031)
 - **The iteration-53 entry below says ElementTree/expatbuilder never fetch
   a SYSTEM entity; for ElementTree that is true only of a call with no

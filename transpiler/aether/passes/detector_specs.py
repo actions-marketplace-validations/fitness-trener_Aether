@@ -512,6 +512,12 @@ class ArgRule:
     pinning slot: `trusted(x)` takes the dynamic value itself. A Call the
     Python frontend emitted (`py`) is exempt — `shlex.quote(x)` and a
     SQLAlchemy expression arrive as wrapper calls with no template slot.
+
+    `py_whole` is the reason returned when such a frontend wrapper call is
+    the WHOLE argument rather than a piece of it. `shlex.quote(cmd)` as
+    the entire shell command quotes it into one word, and the input still
+    chooses the program that runs (BUG-034). None: the frontend wrapper
+    is accepted whole, as `sqlBind` for a SQLAlchemy expression is.
     """
     wrappers: Tuple[str, ...]
     not_a_node: str
@@ -521,6 +527,7 @@ class ArgRule:
     literal_bans: Tuple[Tuple[str, str], ...] = ()
     fixpoint: bool = True
     pin: Optional[str] = None
+    py_whole: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -692,6 +699,7 @@ _SHELL_RULE = ArgRule(
     concat="command is built by string concatenation - use shellArg(...)",
     default="command is a dynamic expression - use shellArg(template, value)",
     pin="shellArg template is not a fixed literal - quoting cannot protect the command line itself",
+    py_whole="the whole command is one quoted word - the input still chooses the program; pass an argv list",
 )
 
 _REDIRECT_RULE = ArgRule(
@@ -1141,6 +1149,8 @@ def _arg_reason(node: Any, safe_names: Set[str], rule: ArgRule) -> Optional[str]
         return None
     if kind == "Call":
         if callee_name(node) in rule.wrappers:
+            if node.get("py") and rule.py_whole is not None:
+                return rule.py_whole
             if rule.pin is None or node.get("py"):
                 return None
             # The wrapper pins everything to its first argument; that

@@ -1547,6 +1547,100 @@ def test_file_too_deep_for_python_is_unparseable_not_a_crash():
     print("BUG-029: a file too deep for Python's own parser is unparseable, not an analyzer crash")
 
 
+# --- Wave 0 (audits/audit_2026-09-24_plan.md): BUG-032..035 --------------
+
+def _sinks(src: str):
+    """`_codes` without E0701, the capability inventory `check-py` shows
+    only under --strict."""
+    return [c for c in _codes(src) if c != "E0701"]
+
+
+def test_html_escapers_are_not_trusted():
+    """BUG-032: an HTML escaper leaves `{{7*7}}` and `__import__('os')`
+    intact. Mapped onto `trusted`, it cleared the template, code and
+    deserialization rules, whose one exit that is."""
+    for esc_imp, esc in (("import html", "html.escape"),
+                         ("import markupsafe", "markupsafe.escape"),
+                         ("import urllib.parse", "urllib.parse.quote"),
+                         ("import urllib.parse", "urllib.parse.quote_plus")):
+        for sink_imp, sink, code in (
+                ("from flask import render_template_string", "render_template_string", "E0719"),
+                ("import jinja2", "jinja2.Template", "E0719"),
+                ("", "eval", "E0731"),
+                ("", "exec", "E0731"),
+                ("import pickle", "pickle.loads", "E0720")):
+            src = f"{esc_imp}\n{sink_imp}\ndef f(x):\n    return {sink}({esc}(x))\n"
+            assert _sinks(src) == [code], (esc, sink, _sinks(src))
+    src = ("from flask import render_template, render_template_string\n"
+           "def f(x):\n    return render_template_string(render_template('a.html', n=x))\n")
+    assert _sinks(src) == ["E0719"], _sinks(src)
+    from aether.py_frontend import SANITIZER_BY_QUALIFIED
+    assert "trusted" not in SANITIZER_BY_QUALIFIED.values(), \
+        "no Python call may map onto the trusted(...) assertion"
+    print("BUG-032: HTML/URL escapers clear no template, code or deserialization sink")
+
+
+def test_ambiguous_import_is_a_sink_if_any_candidate_is():
+    """BUG-033: the py2/lxml fallback idiom bound a name two ways, it
+    resolved to nothing, and every sink behind it was silent."""
+    cases = [
+        ("try:\n    import cPickle as pickle\nexcept ImportError:\n    import pickle\n",
+         "pickle.loads(b)", "E0720"),
+        ("try:\n    from lxml import etree\nexcept ImportError:\n"
+         "    import xml.etree.ElementTree as etree\n", "etree.fromstring(b)", "E0727"),
+        ("try:\n    import subprocess32 as subprocess\nexcept ImportError:\n"
+         "    import subprocess\n", "subprocess.call(b, shell=True)", "E0714"),
+        ("try:\n    from flask import redirect\nexcept ImportError:\n"
+         "    from werkzeug.utils import redirect\n", "redirect(b)", "E0718"),
+        # a function-local `import json as pickle` elsewhere in the file
+        ("import pickle\ndef g():\n    import json as pickle\n    return pickle.dumps(1)\n",
+         "pickle.loads(b)", "E0720"),
+    ]
+    for head, call, code in cases:
+        src = f"{head}def f(b):\n    return {call}\n"
+        assert _sinks(src) == [code], (head, call, _sinks(src))
+    # all candidates safe or non-sinks: still nothing
+    src = ("try:\n    import ujson as json\nexcept ImportError:\n    import json\n"
+           "def f(s):\n    return json.loads(s)\n")
+    assert _sinks(src) == [], _sinks(src)
+    print("BUG-033: an ambiguous import is a sink if any candidate is one")
+
+
+def test_whole_command_shlex_quote_is_not_the_exit():
+    """BUG-034: `shlex.quote(cmd)` as the WHOLE shell command quotes it
+    into one word; the input still chooses the program."""
+    head = "import subprocess, shlex, os\n"
+    for body in ("subprocess.run(shlex.quote(p), shell=True)",
+                 "c = shlex.quote(p)\n    os.system(c)",
+                 "subprocess.run(['bash', '-c', shlex.quote(p)])"):
+        assert _sinks(f"{head}def f(p):\n    {body}\n") == ["E0714"], body
+    assert _sinks(f"{head}def f(p):\n    subprocess.run(['ls', p])\n") == []
+    print("BUG-034: a whole-command shlex.quote is not the shell exit")
+
+
+def test_detector_value_error_is_a_crash_not_unreadable():
+    """BUG-035: a ValueError raised inside a DETECTOR was caught with the
+    parse errors, reported as 'could not parse', exit 0, findings lost."""
+    import tempfile
+    from aether import cli
+    import aether.passes as passes
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "v.py")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("import os\ndef f(c):\n    os.system(c)\n")
+        real = passes.analyze_flat
+
+        def boom(*_a, **_k):
+            raise ValueError("detector bug")
+        passes.analyze_flat = boom
+        try:
+            res = cli._scan_one((p, ("effects", "semantic"), False))
+        finally:
+            passes.analyze_flat = real
+    assert res[0] == "crashed" and "ValueError" in res[2], res
+    print("BUG-035: a detector ValueError is an analyzer crash, not an unreadable file")
+
+
 if __name__ == "__main__":
     test_body_is_no_longer_discarded()
     test_assign_becomes_let()
@@ -1638,4 +1732,8 @@ if __name__ == "__main__":
     test_unreadable_and_skipped_are_visible_in_every_mode()
     test_exec_of_compile_rates_as_exec()
     test_file_too_deep_for_python_is_unparseable_not_a_crash()
+    test_html_escapers_are_not_trusted()
+    test_ambiguous_import_is_a_sink_if_any_candidate_is()
+    test_whole_command_shlex_quote_is_not_the_exit()
+    test_detector_value_error_is_a_crash_not_unreadable()
     print("PY FRONTEND: ALL TESTS PASS")

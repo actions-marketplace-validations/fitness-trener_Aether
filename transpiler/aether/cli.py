@@ -335,12 +335,17 @@ def _scan_one(job):
         # `tokenize.open` raises SyntaxError for an unknown cookie.
         return ("unreadable", path, type(e).__name__, str(e))
     try:
-        ast, unprovable, meta = py_to_ir(src)
+        # Only the frontend's parse can make a file "unreadable". A
+        # ValueError raised by a detector is an analyzer crash; caught
+        # here with the parse errors it was reported as "could not parse",
+        # exit 0, its findings lost (BUG-035).
+        try:
+            ast, unprovable, meta = py_to_ir(src)
+        except (SyntaxError, ValueError) as e:
+            # py2 sources, templates and test fixtures are normal in a real
+            # tree; they are counted, not fatal.
+            return ("unreadable", path, type(e).__name__, str(e))
         diags = analyze_flat(ast, skip=skip)
-    except (SyntaxError, ValueError) as e:
-        # py2 sources, templates and test fixtures are normal in a real
-        # tree; they are counted, not fatal.
-        return ("unreadable", path, type(e).__name__, str(e))
     except RecursionError as e:
         # The frontend catches this per scope and reports an `unprovable`
         # region; one that still escapes is the analyzer's limit, not the
