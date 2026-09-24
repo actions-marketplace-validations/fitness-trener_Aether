@@ -1161,7 +1161,7 @@ on Expat 2.7.4 a positional lxml or `feature_external_ges` parser still read
 the file. Detection, confidence and the DoS clause are unchanged.
 
 
-### BUG-032  HTML/URL escapers were mapped onto `trusted`, clearing SSTI, code-injection and deserialization sinks (false accept)  [OPEN]
+### BUG-032  HTML/URL escapers were mapped onto `trusted`, clearing SSTI, code-injection and deserialization sinks (false accept)  [FIXED 3ccf848]
 test: tests/test_py_frontend_sinks.py
 (`::test_html_escapers_are_not_trusted`)
 
@@ -1193,7 +1193,7 @@ is `trusted`. Measured non-breaking: the framework corpus (4,946 files) gives
 repo's bench/tests/tools/playground/demos (208 files) gives 110 before and
 after.
 
-### BUG-033  an import bound two ways resolved to nothing, so every sink behind the fallback idiom was silent (false accept)  [OPEN]
+### BUG-033  an import bound two ways resolved to nothing, so every sink behind the fallback idiom was silent (false accept)  [FIXED 3ccf848]
 test: tests/test_py_frontend_sinks.py
 (`::test_ambiguous_import_is_a_sink_if_any_candidate_is`)
 
@@ -1221,7 +1221,7 @@ its `update` is not a sink. Where both candidates are sinks, the message
 names the first one bound. Measured non-breaking on the same two corpora as
 BUG-032.
 
-### BUG-034  `shlex.quote(cmd)` as the WHOLE shell command was read as the safe exit (false accept)  [OPEN]
+### BUG-034  `shlex.quote(cmd)` as the WHOLE shell command was read as the safe exit (false accept)  [FIXED 3ccf848]
 test: tests/test_py_frontend_sinks.py
 (`::test_whole_command_shlex_quote_is_not_the_exit`)
 
@@ -1245,7 +1245,7 @@ the audit row, that `"ls " + shlex.quote(p)` is still flagged (C1, a false
 positive), is left for 0.4.2 because it moves the corpus finding set.
 Measured non-breaking on the same two corpora.
 
-### BUG-035  a ValueError inside a detector was reported as "could not parse", exit 0, findings lost  [OPEN]
+### BUG-035  a ValueError inside a detector was reported as "could not parse", exit 0, findings lost  [FIXED 3ccf848]
 test: tests/test_py_frontend_sinks.py
 (`::test_detector_value_error_is_a_crash_not_unreadable`)
 
