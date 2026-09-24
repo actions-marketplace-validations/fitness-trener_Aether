@@ -271,23 +271,24 @@ def _reference_commits() -> list:
 
     HEAD catches an uncommitted edit. The merge-base with origin/main
     catches a lowering COMMITTED on the branch — in CI, HEAD is the commit
-    under test, so HEAD alone compared the change against itself. On main
-    itself the merge-base is HEAD, so the parent stands in for it."""
+    under test, so HEAD alone compared the change against itself. The
+    parent catches it on main itself (merge-base == HEAD there) and for a
+    floor key the branch introduced, which main does not have yet."""
     head = _git("rev-parse", "HEAD")
     if head is None:
         return []
     refs = {head}
+    parent = _git("rev-parse", "--verify", "--quiet", "HEAD~1")
+    if parent:
+        refs.add(parent)
     base = _git("merge-base", "HEAD", "origin/main")
     if base is None:
         print("  WARNING: no origin/main ref (shallow clone or no remote) — "
-              "comparing against HEAD only; a lowering committed on this "
-              "branch is NOT caught. CI must check out with fetch-depth: 0.")
-    elif base != head:
-        refs.add(base)
+              "comparing against HEAD and its parent only; a lowering "
+              "committed earlier on this branch is NOT caught. CI must "
+              "check out with fetch-depth: 0.")
     else:
-        parent = _git("rev-parse", "--verify", "--quiet", "HEAD~1")
-        if parent:
-            refs.add(parent)
+        refs.add(base)
     return sorted(refs)
 
 
