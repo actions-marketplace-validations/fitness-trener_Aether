@@ -200,13 +200,25 @@ def _asserted_codes_in(src: str) -> set:
     """Exxxx codes in string constants inside the TEST of an `assert` —
     `assert codes == ["E0713"]`, `assert "E0714" in got`. Not comments,
     not docstrings, not an assert's message: text that asserts nothing
-    proves nothing (audit F1: any substring of any test file counted)."""
+    proves nothing (audit F1: any substring of any test file counted).
+    A NEGATIVE comparison (`not in`, `!=`, `is not`, `not ...`) asserts
+    the code is absent, which proves nothing about it firing: skipped."""
+    neg = (ast.NotIn, ast.NotEq, ast.IsNot)
+
+    def positive(node):
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return
+        if isinstance(node, ast.Compare) and any(isinstance(o, neg) for o in node.ops):
+            return
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            out.update(re.findall(r'E\d{4}', node.value))
+        for child in ast.iter_child_nodes(node):
+            positive(child)
+
     out = set()
     for node in ast.walk(ast.parse(src)):
         if isinstance(node, ast.Assert):
-            for c in ast.walk(node.test):
-                if isinstance(c, ast.Constant) and isinstance(c.value, str):
-                    out.update(re.findall(r'E\d{4}', c.value))
+            positive(node.test)
     return out
 
 
@@ -225,9 +237,11 @@ def test_legitimacy_counts_assertions_only():
         '    """E0002 in a docstring"""\n'
         '    note = "E0003"\n'
         '    assert codes == ["E0004"], "E0005 in the message"\n'
-        '    assert "E0006" in got\n')
+        '    assert "E0006" in got\n'
+        '    assert "E0007" not in got and got != ["E0008"]\n'
+        '    assert not ("E0009" in got)\n')
     assert got == {"E0004", "E0006"}, got
-    print("legitimacy: only a code inside an assert's test counts")
+    print("legitimacy: only a code inside an assert's (positive) test counts")
 
 
 def test_detectors_legitimately_checked():
