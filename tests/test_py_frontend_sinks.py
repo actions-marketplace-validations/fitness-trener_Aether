@@ -29,14 +29,9 @@ def _fn(src: str, name: str):
     raise AssertionError(f"no FunctionDecl named {name!r}")
 
 
-# Stages that do not apply to Python, skipped here and by `check-py`:
-#   effects  — E0801 compares a call site against a DECLARED effects
-#              clause. Python has none, so there is nothing to compare.
-#   semantic — E0202-E0207 are checks about Aether language constructs
-#              (match exhaustiveness, dead `let` stores, ignored Results).
-#              On translated Python they describe the translation, not
-#              the program: `cur = conn.cursor()` read as a dead store.
-PY_SKIP_STAGES = ("effects", "semantic")
+# Stages that do not apply to Python, skipped here and by `check-py` —
+# the one definition, with its rationale, is in py_frontend.py.
+from aether.py_frontend import PY_SKIP_STAGES              # noqa: E402
 
 
 def _codes(src: str):
@@ -1634,7 +1629,7 @@ def test_detector_value_error_is_a_crash_not_unreadable():
             raise ValueError("detector bug")
         passes.analyze_flat = boom
         try:
-            res = cli._scan_one((p, ("effects", "semantic"), False))
+            res = cli._scan_one((p, PY_SKIP_STAGES, False))
         finally:
             passes.analyze_flat = real
     assert res[0] == "crashed" and "ValueError" in res[2], res

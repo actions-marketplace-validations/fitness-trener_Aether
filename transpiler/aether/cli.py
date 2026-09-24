@@ -250,7 +250,9 @@ def _run_smt_check(ast, as_json, timeout_ms):
 #              exhaustiveness, dead `let` stores, ignored Results). On
 #              translated Python they describe the translation rather
 #              than the program.
-_PY_SKIP_STAGES = ("effects", "semantic")
+# Defined once in py_frontend.py (with the strict-only codes below) and
+# imported here, by both benches and by the tests.
+from .py_frontend import PY_SKIP_STAGES as _PY_SKIP_STAGES  # noqa: E402
 
 # Rows held back from the DEFAULT Python output, by measurement, not by
 # taste. `bench/py_frontend/run_bench.py` over 76 benign modules
@@ -271,7 +273,7 @@ _PY_SKIP_STAGES = ("effects", "semantic")
 # module policy is empty by construction, so every I/O call yields
 # E0701. That is an inventory, which `tools/py_surface.py` already
 # reports properly — not a security verdict.
-_PY_STRICT_ONLY_CODES = ("E0711",)
+from .py_frontend import PY_STRICT_ONLY_CODES as _PY_STRICT_ONLY_CODES  # noqa: E402
 
 
 # Directories that are never the user's own source. Walking `.venv` or

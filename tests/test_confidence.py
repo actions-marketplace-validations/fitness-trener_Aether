@@ -31,9 +31,11 @@ from aether.parser import parse                                    # noqa: E402
 
 FRONTEND = os.path.join(ROOT, "transpiler", "aether", "py_frontend.py")
 
-# Everything the security stage needs; the Python skips (`_PY_SKIP_STAGES`
-# + capability) are what `check-py` itself runs.
-_PY_SKIP = ("effects", "smt", "modules", "imports", "capability")
+# Exactly what `check-py` runs by default: the one Python skip list +
+# capability. The literal copy here had drifted (it skipped `smt` and
+# `imports`, which are not stages, and ran `semantic`).
+from aether.py_frontend import PY_SKIP_STAGES                      # noqa: E402
+_PY_SKIP = PY_SKIP_STAGES + ("capability",)
 
 
 def _emitted_match_kinds() -> set:

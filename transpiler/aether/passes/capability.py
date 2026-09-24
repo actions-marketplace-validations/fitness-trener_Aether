@@ -56,6 +56,7 @@ from typing import Any, Dict, List, Set, Tuple, Optional
 from ..diagnostics import Diagnostic, Position
 from .ast_walk import walk, callee_name
 from .detector_specs import _fn_aliases
+from .effects import _STDLIB_EFFECTS
 
 
 # Effects that require no capability.
@@ -94,18 +95,9 @@ def collect_declared_capabilities(ast: Dict[str, Any]) -> Set[str]:
 # Stdlib effects (paths only — capability mapping ignores args)
 # ----------------------------------------------------------------------
 
+# Derived from the one stdlib effect table (it was a verbatim copy).
 _STDLIB_EFFECT_PATHS: Dict[str, Set[Tuple[str, ...]]] = {
-    "print":      {("log",)},
-    "readLine":   {("log",)},
-    "readFile":   {("fs", "read")},
-    "writeFile":  {("fs", "write")},
-    "now":        {("time", "now")},
-    "sqlQuery":   {("db", "query")},
-    "sqlExec":    {("db", "exec")},
-    "sqlByOwner": {("db", "exec")},
-    "shellExec":  {("exec", "run")},
-    "redirect":   {("net", "redirect")},
-}
+    name: {path for path, _scope in effs} for name, effs in _STDLIB_EFFECTS.items()}
 
 
 def _direct_effect_paths(fn_decl: Dict[str, Any]) -> Set[Tuple[str, ...]]:
