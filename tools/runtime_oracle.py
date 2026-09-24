@@ -20,6 +20,7 @@ net/process signals as high-confidence.
 from __future__ import annotations
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,7 +33,22 @@ _SYS_PREFIXES = ("/usr", "/lib", "/lib64", "/proc", "/sys", "/dev", "/etc/ld",
                  "/opt/python", "/tmp/aether", "site-packages", "__pycache__")
 
 
+class OracleUnavailable(RuntimeError):
+    """The oracle cannot observe anything on this machine."""
+
+
+def available() -> bool:
+    """Linux strace only. Git-for-Windows ships a Cygwin `strace` whose
+    output none of the patterns below match: there the oracle observed
+    nothing, reported `soundness_ok: True`, and so certified as sound a
+    change whose effect it never saw (test_mining.py, unrun, was red on it)."""
+    return sys.platform.startswith("linux") and shutil.which("strace") is not None
+
+
 def _trace(script_path: str, argv: Optional[List[str]] = None) -> List[str]:
+    if not available():
+        raise OracleUnavailable("the runtime oracle needs Linux strace; observing "
+                                "nothing is not observing no effects")
     with tempfile.NamedTemporaryFile("r", suffix=".strace", delete=False) as tf:
         trace_file = tf.name
     cmd = ["strace", "-f", "-qq", "-y",
