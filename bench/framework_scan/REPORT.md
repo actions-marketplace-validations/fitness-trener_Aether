@@ -133,6 +133,10 @@ unknown case defaulted to "not a sink".
 Imports are now collected from the whole module. A local name bound by
 two imports to *different* targets is ambiguous and resolves to nothing:
 it clears no query and sanctions no builder. Never pick a winner.
+(Corrected 2026-09-24, BUG-033: "resolves to nothing" also silenced every
+sink behind the fallback idiom. An ambiguous name now resolves to a
+candidate that is a sink if any is, and otherwise to nothing. On this
+corpus the finding set did not move: 676 before and after, same keys.)
 
 **What surfaced on this corpus once imports resolved — four sinks that
 were silent on 2026-09-01:**

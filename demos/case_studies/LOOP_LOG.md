@@ -2252,6 +2252,133 @@ State carried forward: the full gate suite must stay green
   `render_template_string` user; `callee_text` is the mechanism, each
   row needs its own probe-confirmed facts first.
 - **Suite:** exit 0.
+- **Correction 2026-09-15 (BUGS.md BUG-031; the record above is left as
+  measured).** "ElementTree/expatbuilder (never expand external entities,
+  any Expat)" was measured only on calls WITHOUT a parser. Re-probed on
+  the same stack (CPython 3.11.15, Expat 2.7.4, lxml 6.1.1 / libxml2
+  2.11.9, a local HTTP server): `inspect.signature` gives
+  `ElementTree.parse(source, parser=None)` and `fromstring(text,
+  parser=None)`, and `xml.etree.cElementTree` still imports on 3.11 as
+  `from xml.etree.ElementTree import *` (the same function objects). A
+  caller's parser is used as given, keyword or positional: an lxml
+  `XMLParser(resolve_entities=True)` returned the secret file's contents
+  through `ET.fromstring`, `ET.XML`, `ET.parse` (both slots) and
+  `cElementTree.fromstring`, and with `no_network=False` made 1 request
+  each through `ET.parse` and `ET.fromstring` (`resolve_entities=True`
+  alone: 0); a `make_parser()` with `feature_external_ges` handed the
+  file's contents to its handler through `ET.parse` (both slots) and
+  `ET.fromstring`, and made 1 request through `ET.parse`. Without a parser,
+  `ET` still raised `undefined entity` with 0 requests. expatbuilder is
+  exact as recorded: `parse(file, namespaces=True)` / `parseString(string,
+  namespaces=True)`, `parser=` is a TypeError, the entity was dropped with 0
+  requests. E0727 fired on every parser-passing shape (0.95 `qualified`);
+  only the text was wrong. Also corrected in the same rows: the lxml
+  clause now makes the file read conditional (lxml 6.1.1's default parser
+  raised `Entity 'e' not defined` and read nothing), and minidom/pulldom's
+  text drops "(since Python 3.7.1)", which is the `xml.sax`
+  `feature_external_ges` default. E0727 now has thirteen rows: the two
+  `xml.` fallbacks became `xml.etree.ElementTree.` ×2 and
+  `xml.dom.expatbuilder.` ×2, and a test requires all 20 callees mapped to
+  `parseXml` to match one. Measured non-breaking: `check-py --json` over
+  `bench tests tools playground demos` (208 files, 110 findings) with
+  11efc72's code and with the fix, on the same tree — identical by (file,
+  line, code, confidence, severity), text changed on 2 E0727 findings
+  (`xml.dom.minidom.parse`, `lxml.etree.fromstring`); over the 4,946-file
+  framework corpus — 676 findings, identical keys, text changed on 6
+  E0727 findings (4 `ElementTree.fromstring`, 2 `lxml.etree.parse`). Gate
+  exit 0.
+
+---
+
+## Iteration 54 — Wave 0 of the 2026-09-24 audit: four silent Python misses, closed before 0.4.1 (no new detector)
+
+- **Target:** not a backlog row. A six-lens audit of `dcd824d`
+  (`audits/audit_2026-09-24_plan.md`) found about 60 probe-confirmed flaws
+  that the green gate does not see. The owner chose to fold the four Python
+  false accepts that were already in 0.4.0 on PyPI into 0.4.1, before the
+  tag (plan: Wave 0, option b). The rest waits for Waves 1-7.
+- **Probe-confirmed first (exit 0, no finding, on `dcd824d`):**
+  - `eval(html.escape(x))` and `render_template_string(html.escape(x))`:
+    B1, BUG-032.
+  - `pickle.loads(b)` behind `try: import cPickle as pickle / except
+    ImportError: import pickle`, with the lxml, subprocess32 and
+    flask/werkzeug fallbacks the same: B2, BUG-033.
+  - `subprocess.run(shlex.quote(p), shell=True)`: B3, BUG-034.
+  - A detector raising `ValueError`, reported as "could not parse" with
+    exit 0 and its 3 findings lost: B7, BUG-035.
+  - Each regression test was run against the pre-fix code with the source
+    stashed. All four were red.
+- **Fixes (each at the root, one table or one clause):**
+  - `SANITIZER_BY_QUALIFIED` maps no Python call onto `trusted`. The HTML
+    escapers map to `htmlEscape`.
+  - `_Imports` keeps every candidate, and an ambiguous name resolves to a
+    sink candidate if one exists.
+  - `ArgRule.py_whole` refuses a frontend `shellArg` that is the whole
+    command.
+  - `_scan_one`'s parse clause covers only `py_to_ir`.
+- **Measured non-breaking:** `check-py --json` over `bench tests tools
+  playground demos` before and after on the same tree. The framework corpus
+  (4,946 files) gives 676 → 676, and the rest (208 files) gives 110 → 110.
+  Keys (file, line, code) are identical, with 0 unreadable and 0 errors.
+  None of the four shapes occurs in either corpus.
+- **Residuals (pushed to q1):**
+  - (a) When both ambiguous candidates are sinks, the text names the first
+    one bound.
+  - (b) `"ls " + shlex.quote(p)` is still flagged. It over-flags the
+    documented fix (audit C1) and is deferred to 0.4.2 because the fix
+    moves the corpus finding set.
+  - (c) Open and Aether-side: `for`/`match` binders re-bind a name that the
+    safe/stable/authorized passes proved (audit A5). Five of six fixpoints
+    ignore them.
+- **TYPE gap surfaced for next iter:** Wave 1 of the plan, which is gate
+  integrity, not a detector. The ratchet compares against HEAD (the commit
+  under test, in CI), and 21 of 78 Python sink rows have no test. Until a
+  mutation of each goes red, a closed row is a claim the gate cannot keep.
+- **Suite:** exit 0.
+
+---
+
+## Iteration 55 — Wave 1 of the 2026-09-24 audit: the gate can see what matters (no new detector)
+
+- **Target:** not a backlog row. Plan Wave 1 (F1–F4, F6, E8's gate half):
+  every later wave is only trustworthy if the gate goes red on its
+  reversal.
+- **Probe-confirmed first (on `99f09cc`, gate exit 0):**
+  - A committed baseline lowering passed `test_baseline_never_lowered`
+    (it compared against HEAD). BUG-036.
+  - Deleting `mogrify`, `os.popen`, `executemany`, `pandas.read_pickle`
+    or `HttpResponseRedirect` left the suite green (the rows had no test).
+  - `test_cause_b.py`, `test_phase1.py`, `test_mining.py` never ran;
+    `test_mining.py` was red on a vacuous oracle verdict. BUG-037.
+  - `analyze(skip=("smt",))` silently ran every stage; one test ran a
+    different stage set than check-py. BUG-038.
+  - `smt: PASS` printed with z3 absent.
+- **Fixes (each once, where every caller routes through):**
+  - `run_all.py` discovers `tests/test_*.py` (explicit `EXCLUDE`, empty);
+    `test_ratchet.py` reads the same discovery for legitimacy.
+  - Ratchet: baseline vs HEAD, HEAD~1 and the merge-base with
+    `origin/main`; recall floor (117 claimed corpus findings, 93 table
+    rows); legitimacy = a positive `assert`, not a substring.
+  - `tests/test_sink_rows.py`: every sink/guard/sanitizer row pinned to its
+    codes and generated as a snippet; pins equal the live tables both ways.
+  - One Python skip list; `analyze()` rejects unknown stages;
+    `_STDLIB_EFFECT_PATHS` derived.
+  - `smt` reported SKIP (not PASS) without z3; `gate.yml` gains an `smt`
+    job with `z3-solver` that fails on a skip.
+- **Mutations, each red:** the five audit row deletions (red in
+  `test_sink_rows.py` and `test_ratchet.py`; `test_py_frontend_sinks.py`
+  stays green on all five, confirming the audit), a value change
+  (`mogrify` → `renderTemplate`, red in `test_sink_rows.py`), a committed
+  lowering of an old key and of a new key.
+- **Measured non-breaking:** no detector or frontend table changed. See
+  Measurements for the check-py comparison.
+- **Residuals (pushed to q1):** see q1 rows below.
+- **TYPE gap surfaced for next iter:** BUG-039 (E0711 flags the Werkzeug
+  `os.path.join(base, secure_filename(x))` idiom) joins C1 as a
+  "flags the fix" row for Wave 5; the table pins now make every Python row
+  change visible, so Wave 4/5 row edits must update `test_sink_rows.py`.
+- **Suite:** exit 0: 41 PASS suites; `smt` reported SKIP (z3 not installed
+  locally), no longer counted as PASS.
 
 ---
 

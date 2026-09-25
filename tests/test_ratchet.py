@@ -18,10 +18,23 @@ improvement one-directional:
      a regression test that still exists, so a repaired bug cannot quietly
      reappear.
 
-Run: python3 tests/test_ratchet.py   (exit 0 = pass)
+  4. Recall never drops. A detector that still EXISTS can stop finding
+     things (a `return []` counts as a detector). The floor also covers
+     what the detectors are proven to find: every finding the `.aeth`
+     corpus claims in its `// expect:` headers (test_corpus.py holds each
+     file to its claim, so the sum can only shrink by editing claims
+     down), and every Python sink/sanitizer table row (tests/
+     test_sink_rows.py makes each row fire).
+
+The baseline is compared against the merge-base with origin/main, not
+only HEAD: in CI, HEAD *is* the commit under test, so lowering the floor
+and deleting a detector in one commit used to pass (audit 2026-09-24 F1).
+
+Run: python -B tests/test_ratchet.py   (exit 0 = pass)
 """
 from __future__ import annotations
-import glob
+import ast
+import importlib.util
 import json
 import os
 import re
@@ -111,6 +124,58 @@ def test_detector_count_ratchet():
           f"{dets} detectors >= floor {floor_d}")
 
 
+# The tables tests/test_sink_rows.py pins, row for row.
+_PY_TABLES = ("SINK_BY_QUALIFIED", "SINK_BY_METHOD", "SINK_BY_BUILTIN",
+              "SINK_GUARDS", "SANITIZER_BY_QUALIFIED")
+
+
+def _corpus_claimed_findings() -> int:
+    from tools.expectations import corpus_files, parse_header
+    total = 0
+    for path in corpus_files(ROOT):
+        with open(path, encoding="utf-8") as f:
+            want, _run = parse_header(f.read(), path)
+        total += sum((want or {}).values())
+    return total
+
+
+def _py_table_rows() -> int:
+    sys.path.insert(0, os.path.join(ROOT, "transpiler"))
+    from aether import py_frontend
+    return sum(len(getattr(py_frontend, t)) for t in _PY_TABLES)
+
+
+def test_recall_floor():
+    base = _baseline()
+    now = {"min_corpus_claimed_findings": _corpus_claimed_findings(),
+           "min_py_table_rows": _py_table_rows()}
+    low = [f"{k}: {now[k]} < floor {base[k]}" for k in now if now[k] < base[k]]
+    assert not low, (
+        "RATCHET REGRESSION (recall): " + "; ".join(low) + ". Corpus claims "
+        "only shrink when a header is edited down to match a detector that "
+        "stopped firing; table rows only shrink when a sink spelling is "
+        "deleted. Restore it.")
+    gain = {k: v for k, v in now.items() if v > base[k]}
+    if gain:
+        print("  NOTE: recall gain not locked — raise ratchet_baseline.json to "
+              + ", ".join(f"{k}={v}" for k, v in gain.items()))
+    print("ratchet: recall " + ", ".join(f"{k.removeprefix('min_')} {v} >= "
+                                          f"{base[k]}" for k, v in now.items()))
+
+
+def test_skip_names_are_stages():
+    """`analyze(skip=...)` refuses a name that is not a stage — a misspelt
+    skip used to be ignored, silently running the stage (audit F4)."""
+    sys.path.insert(0, os.path.join(ROOT, "transpiler"))
+    from aether.passes import analyze
+    try:
+        analyze({"decls": []}, skip=("smt",))
+    except ValueError:
+        print("registry: an unknown skip name is an error")
+        return
+    raise AssertionError("analyze(skip=('smt',)) must raise: 'smt' is not a stage")
+
+
 def _detector_codes() -> list:
     """Documented codes the self-teaching loop owns: the security range
     (E07xx) and the static-semantic range (E02xx, excluding the parse code
@@ -122,12 +187,61 @@ def _detector_codes() -> list:
                   if c.startswith("E07") or (c.startswith("E02") and c != "E0201"))
 
 
-def _tests_text() -> str:
-    out = []
-    for f in glob.glob(os.path.join(ROOT, "tests", "**", "*.py"), recursive=True):
+def _gate_suites() -> list:
+    """The suites scripts/run_all.py runs — one discovery, read from there."""
+    spec = importlib.util.spec_from_file_location(
+        "_run_all", os.path.join(ROOT, "scripts", "run_all.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.test_files()
+
+
+def _asserted_codes_in(src: str) -> set:
+    """Exxxx codes in string constants inside the TEST of an `assert` —
+    `assert codes == ["E0713"]`, `assert "E0714" in got`. Not comments,
+    not docstrings, not an assert's message: text that asserts nothing
+    proves nothing (audit F1: any substring of any test file counted).
+    A NEGATIVE comparison (`not in`, `!=`, `is not`, `not ...`) asserts
+    the code is absent, which proves nothing about it firing: skipped."""
+    neg = (ast.NotIn, ast.NotEq, ast.IsNot)
+
+    def positive(node):
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return
+        if isinstance(node, ast.Compare) and any(isinstance(o, neg) for o in node.ops):
+            return
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            out.update(re.findall(r'E\d{4}', node.value))
+        for child in ast.iter_child_nodes(node):
+            positive(child)
+
+    out = set()
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Assert):
+            positive(node.test)
+    return out
+
+
+def _asserted_codes() -> set:
+    out = set()
+    for f in _gate_suites():
         with open(f, encoding="utf-8") as fh:
-            out.append(fh.read())
-    return "\n".join(out)
+            out |= _asserted_codes_in(fh.read())
+    return out
+
+
+def test_legitimacy_counts_assertions_only():
+    got = _asserted_codes_in(
+        '# E0001 in a comment\n'
+        'def t():\n'
+        '    """E0002 in a docstring"""\n'
+        '    note = "E0003"\n'
+        '    assert codes == ["E0004"], "E0005 in the message"\n'
+        '    assert "E0006" in got\n'
+        '    assert "E0007" not in got and got != ["E0008"]\n'
+        '    assert not ("E0009" in got)\n')
+    assert got == {"E0004", "E0006"}, got
+    print("legitimacy: only a code inside an assert's (positive) test counts")
 
 
 def test_detectors_legitimately_checked():
@@ -138,7 +252,7 @@ def test_detectors_legitimately_checked():
     detector: to raise the count you must ship a wired, tested detector."""
     detector = _detector_codes()
     emitted = _emitted_codes()
-    tests_text = _tests_text()
+    asserted = _asserted_codes()
 
     not_emitted = [c for c in detector if c not in emitted]
     assert not not_emitted, (
@@ -146,46 +260,76 @@ def test_detectors_legitimately_checked():
         "transpiler pass (a doc row without a real detector):\n  "
         + ", ".join(not_emitted))
 
-    not_tested = [c for c in detector if c not in tests_text]
+    not_tested = [c for c in detector if c not in asserted]
     assert not not_tested, (
-        "LEGITIMACY: these detector codes have no test asserting they fire "
-        "(an untested/unverifiable detector cannot count toward the "
-        "ratchet — add a test that triggers it):\n  " + ", ".join(not_tested))
+        "LEGITIMACY: these detector codes appear in no `assert` of any suite "
+        "the gate runs (a mention in a comment, docstring or message proves "
+        "nothing — add a test that asserts the code fires):\n  "
+        + ", ".join(not_tested))
 
     print(f"legitimacy: all {len(detector)} detector codes are emitted AND "
           f"proven by a test")
 
 
-def _git_show(ref: str) -> str | None:
+def _git(*args) -> str | None:
     try:
-        r = subprocess.run(["git", "show", ref], cwd=ROOT,
+        r = subprocess.run(["git", *args], cwd=ROOT,
                            capture_output=True, text=True)
-        return r.stdout if r.returncode == 0 else None
+        return r.stdout.strip() if r.returncode == 0 else None
     except (FileNotFoundError, OSError):
         return None
 
 
+def _reference_commits() -> list:
+    """Commits whose baseline the working tree must meet or exceed.
+
+    HEAD catches an uncommitted edit. The merge-base with origin/main
+    catches a lowering COMMITTED on the branch — in CI, HEAD is the commit
+    under test, so HEAD alone compared the change against itself. The
+    parent catches it on main itself (merge-base == HEAD there) and for a
+    floor key the branch introduced, which main does not have yet."""
+    head = _git("rev-parse", "HEAD")
+    if head is None:
+        return []
+    refs = {head}
+    parent = _git("rev-parse", "--verify", "--quiet", "HEAD~1")
+    if parent:
+        refs.add(parent)
+    base = _git("merge-base", "HEAD", "origin/main")
+    if base is None:
+        print("  WARNING: no origin/main ref (shallow clone or no remote) — "
+              "comparing against HEAD and its parent only; a lowering "
+              "committed earlier on this branch is NOT caught. CI must "
+              "check out with fetch-depth: 0.")
+    else:
+        refs.add(base)
+    return sorted(refs)
+
+
 def test_baseline_never_lowered():
     """The one edit the count-floor can't catch itself: lowering a number
-    in the baseline. Compare the working-tree baseline against the last
-    COMMITTED baseline; every number must be >= its committed value. This
-    makes the ratchet monotonic across git history — you can raise the
-    floor, never lower it. Skips cleanly if there is no committed baseline
-    yet (first commit) or git is unavailable."""
-    committed = _git_show(f"HEAD:{BASELINE_REL}")
-    if committed is None:
+    in the baseline. Every number must be >= its value at each reference
+    commit (`_reference_commits`) — you can raise the floor, never lower
+    it. Skips cleanly without git or before the first committed baseline."""
+    cur = _baseline()
+    checked = []
+    for ref in _reference_commits():
+        committed = _git("show", f"{ref}:{BASELINE_REL}")
+        if committed is None:
+            continue
+        prev = json.loads(committed)
+        lowered = [k for k, v in prev.items()
+                   if isinstance(v, int) and cur.get(k, 0) < v]
+        assert not lowered, (
+            f"RATCHET REGRESSION: the baseline was LOWERED against {ref[:10]} for "
+            + ", ".join(f"{k} ({prev[k]} -> {cur.get(k)})" for k in lowered)
+            + ". The ratchet is one-directional — a baseline number may only "
+              "be raised. Restore it; Aether does not lose ground.")
+        checked.append(ref[:10])
+    if not checked:
         print("ratchet: no committed baseline to compare (first commit / no git)")
         return
-    prev = json.loads(committed)
-    cur = _baseline()
-    lowered = [k for k in ("min_emitted_codes", "min_gated_detectors")
-               if k in prev and cur.get(k, 0) < prev[k]]
-    assert not lowered, (
-        "RATCHET REGRESSION: the baseline was LOWERED for "
-        + ", ".join(f"{k} ({prev[k]} -> {cur[k]})" for k in lowered)
-        + ". The ratchet is one-directional — a baseline number may only be "
-          "raised. Restore it; Aether does not lose ground.")
-    print("ratchet: baseline >= last committed (never lowered)")
+    print(f"ratchet: baseline >= every reference commit ({', '.join(checked)})")
 
 
 def test_fixed_bugs_stay_fixed():
@@ -227,7 +371,10 @@ def test_fixed_bugs_stay_fixed():
 
 if __name__ == "__main__":
     test_detector_count_ratchet()
+    test_recall_floor()
     test_analysis_routes_through_registry()
+    test_skip_names_are_stages()
+    test_legitimacy_counts_assertions_only()
     test_detectors_legitimately_checked()
     test_baseline_never_lowered()
     test_fixed_bugs_stay_fixed()

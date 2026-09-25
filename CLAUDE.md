@@ -32,7 +32,9 @@ coverage: `vault/wiki/clusters/violation-taxonomy.md`.
    membership is spelled out; every caller (CLI, SDK, LSP, `tools/scan.py`,
    the tests) crosses `analyze()` and picks it up automatically; any new stdlib
    sink/guard in `runtime.py` (+ register effects in `passes/effects.py`
-   `_STDLIB_EFFECTS` and `passes/capability.py` `_STDLIB_EFFECT_PATHS`,
+   `_STDLIB_EFFECTS` — `passes/capability.py` derives its path table from it;
+   a new Python sink/guard/sanitizer row in `py_frontend.py` needs its pin in
+   `tests/test_sink_rows.py` and a raised `min_py_table_rows`,
    + `_KNOWN_CAPABILITIES` in `passes/modules.py` if a new capability);
    **doc row in `grammar/diagnostics.md`** (REQUIRED — the D.2 catalog test
    greps every `code="Exxxx"`); stdlib doc; tests in

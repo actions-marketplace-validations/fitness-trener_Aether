@@ -28,9 +28,10 @@ credential, E0727 XXE, and since 0.4.0 E0731 code injection
 | Family | Why it cannot run on Python |
 |---|---|
 | E0801 effect composition | compares a call site against a **declared** `effects` clause; Python has none |
-| E0712/E0715/E0724 taint markers | need `Secret<T>`/`PII<T>`/`Untrusted<T>` on a signature; Python has no annotation-free equivalent |
-| E0716/E0717 authorization | need `Authorized<T>`, same reason |
-| E0710/E0721/E0722 SSRF, cleartext | read the **declared** `net.fetch` annotation |
+| E0712/E0715/E0724/E0725/E0726/E0728 taint markers | need `Secret<T>`/`PII<T>`/`Untrusted<T>` on a signature; Python has no annotation-free equivalent |
+| E0729/E0730 marker laundering | same markers, at a parameter or return type |
+| E0716/E0717 authorization | need `Authorized<T>`, same reason. Exception: `executescript` maps to `sqlExec`, so E0716 fires on every `.executescript(...)` method call, literal scripts included, and no Python spelling tried (an `authorize(...)` second argument, an `Authorized` annotation) clears it (measured 2026-09-15) |
+| E0710/E0721/E0722 SSRF, cleartext | read the **declared** `net.fetch` annotation. The frontend synthesizes `[capability, method name]` effects, so a mapped network call named `fetch` (`httpx.fetch(url)`) does reach them; `requests.get`/`post` and `urlopen` do not (measured 2026-09-15) |
 | E0202–E0207 semantic | check Aether language constructs; on translated Python they describe the translation, not the program (E0205 read `cur = conn.cursor()` as a dead store) |
 
 The `requests_repro`, `capitalone_repro` and `pyjwt_repro` files therefore
@@ -131,7 +132,11 @@ findings); the 3 is measured with the CLI's default set.
 **At 0.4.0** `run_bench.py` runs this comparison over all 14 labelled
 files, and Aether models 9 rows on Python (E0731 code injection joined in
 0.4.0; bandit reports B102/B307 on `code_injection_repro.py`, and
-`run_bench.py --json` has the per-line comparison). The table and the
+`run_bench.py --json` has the per-line comparison). bandit 1.9.4 registers
+75 test ids: 42 plugins plus 33 blacklisted calls and imports, counted
+from `bandit.core.extension_loader.MANAGER` (`plugins`, `blacklist_by_id`;
+counted again 2026-09-15). The "~70 plugins" below is the 2026-07-26
+wording. The 9 rows are E0711 plus the 8 default-on codes. The table and the
 narrow claim below are the 2026-07-26 run over the first 8 files, kept as
 written.
 
@@ -280,7 +285,10 @@ translated as `py:load`, which every detector looks past. Confirmed by
 execution before the fix. Imports are now collected from the whole
 module; a local name bound by two imports to different targets is
 ambiguous and resolves to nothing — it clears no query and sanctions no
-builder. `bench/py_frontend/corpus/guarded_import_repro.py` pins both
+builder. (Since 2026-09-24, BUG-033: it resolves to a candidate that is a
+sink if any is, because resolving to nothing silenced every sink behind
+the `try: import cPickle as pickle / except ImportError: import pickle`
+idiom. It still clears nothing.) `bench/py_frontend/corpus/guarded_import_repro.py` pins both
 directions. The bench's own slicer had the same bug (a column-0
 `import`/`from` header) and was fixed alongside.
 

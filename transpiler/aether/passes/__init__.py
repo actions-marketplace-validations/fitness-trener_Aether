@@ -73,7 +73,15 @@ def analyze(ast, skip=()):
     can short-circuit on the first non-empty stage.
 
     `skip` names stages not to run — the CLI's `--no-scope-check` family.
-    A skipped stage is absent from the result, not reported empty."""
+    A skipped stage is absent from the result, not reported empty.
+
+    An unknown name is an error: a misspelled skip used to be ignored, so
+    a caller believed it had turned a stage off (a test's copy skipped
+    `smt` and `imports`, which are not stages, and ran `semantic`)."""
+    unknown = set(skip) - {name for name, _fns in STAGES}
+    if unknown:
+        raise ValueError(f"analyze(skip=...): unknown stage(s) {sorted(unknown)}; "
+                         f"stages are {[name for name, _fns in STAGES]}")
     return [(name, [d for fn in fns for d in fn(ast)])
             for name, fns in STAGES if name not in skip]
 
