@@ -370,9 +370,13 @@ SANITIZER_BY_QUALIFIED: Dict[str, str] = {
     "yaml.safe_load": "schemaDecode", "yaml.safe_load_all": "schemaDecode",
     "json.loads": "schemaDecode", "json.load": "schemaDecode",
     "werkzeug.utils.secure_filename": "safeJoin",
-    "flask.render_template": "trusted",
-    "urllib.parse.quote": "trusted", "urllib.parse.quote_plus": "trusted",
-    "html.escape": "trusted", "markupsafe.escape": "trusted",
+    # HTML escaping is HTML-context-specific: Aether's `htmlEscape`, which
+    # clears only the HTML sink. No Python call maps onto `trusted` — that
+    # is the one exit of the template, code and deserialization rules, and
+    # an escaper leaves `{{7*7}}` and `__import__('os')` intact, so
+    # `eval(html.escape(x))` was silent (BUG-032). `urllib.parse.quote`
+    # and `flask.render_template` stay unmapped for the same reason.
+    "html.escape": "htmlEscape", "markupsafe.escape": "htmlEscape",
 }
 
 
@@ -855,12 +859,16 @@ class _Imports:
         self.alias_to_path: Dict[str, str] = {}    # local name -> dotted path
         self.fromimport: Dict[str, str] = {}       # local name -> module.attr
         # A local name bound by two imports to DIFFERENT targets
-        # (`try: import ujson as json` / `except: import json`) resolves to
-        # nothing: a sink reached through it is missed exactly as it was
-        # before imports were collected from the whole module, and a
-        # builder or sanitizer reached through it clears nothing. Never
-        # pick a winner — the direction of that error is a false accept.
+        # (`try: import cPickle as pickle` / `except: import pickle`) is
+        # ambiguous. It resolves to a candidate that is a SINK if any
+        # candidate is one, and otherwise to nothing, so a builder or
+        # sanitizer reached through it clears nothing: a sink if ANY
+        # candidate is a sink, sanctioned only if ALL are. Resolving it to
+        # nothing outright silenced every sink behind the py2/lxml
+        # fallback idiom (BUG-033).
         self.ambiguous: Set[str] = set()
+        # local name -> every (is_from_import, target) bound to it, in order
+        self.candidates: Dict[str, List[Tuple[bool, str]]] = {}
 
     def _bind(self, table: Dict[str, str], local: str, target: str):
         prev = table.get(local)
@@ -869,6 +877,17 @@ class _Imports:
         if (prev is not None and prev != target) or other is not None:
             self.ambiguous.add(local)
         table[local] = target
+        cand = (table is self.fromimport, target)
+        seen = self.candidates.setdefault(local, [])
+        if cand not in seen:
+            seen.append(cand)
+
+    @staticmethod
+    def _first_sink(dotted: List[str]) -> Optional[str]:
+        for d in dotted:
+            if d in SINK_BY_QUALIFIED or d in SINK_GUARDS:
+                return d
+        return None
 
     def add_import(self, node: _pyast.Import):
         for a in node.names:
@@ -883,7 +902,8 @@ class _Imports:
     def resolve_attr(self, value_name: str, attr: str) -> Optional[str]:
         """`value_name.attr` -> dotted path using import aliases."""
         if value_name in self.ambiguous:
-            return None
+            return self._first_sink([t + "." + attr for _f, t
+                                     in self.candidates[value_name]])
         base = self.alias_to_path.get(value_name)
         if base is not None:
             return base + "." + attr
@@ -894,7 +914,8 @@ class _Imports:
     def resolve_name(self, name: str) -> Optional[str]:
         """bare `name(...)` -> dotted path if it came from a `from` import."""
         if name in self.ambiguous:
-            return None
+            return self._first_sink([t for is_from, t
+                                     in self.candidates[name] if is_from])
         return self.fromimport.get(name)
 
 
@@ -1367,12 +1388,16 @@ def _call_expr(node: _pyast.Call, imp: "_Imports",
         if dotted:
             # WHICH Python callee it was: the spelling `_callee_spelling`
             # resolved — a dotted import path on a `qualified`/`guard`/
-            # `argv` match, the builtin name on `builtin`, the attribute
-            # path as written (possibly chained) on a `method` match. The Aether
+            # `argv` match, the builtin name on `builtin`; on a `method`
+            # match, the bare method name for a plain-variable receiver
+            # (`execute` for `cur.execute`), the attribute path as written
+            # for a chained one (`self.conn.execute`), and the resolved
+            # dotted path for an imported receiver. The Aether
             # name is one sink for every spelling that maps to it, and
             # for E0727 the spellings are not one hazard: ElementTree
-            # never expands an external entity, `lxml.etree` before 5.0
-            # did by default. The spec row picks its wording by this
+            # without a parser argument never expands an external entity
+            # (a caller's parser is used as given, BUG-031), `lxml.etree`
+            # before 5.0 did by default. The spec row picks its wording by this
             # (`LiteralOrWrapperSpec.callee_text`) and puts it in
             # `extra.callee`; detection never reads it.
             out["callee"] = dotted

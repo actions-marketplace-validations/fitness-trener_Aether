@@ -250,7 +250,9 @@ def _run_smt_check(ast, as_json, timeout_ms):
 #              exhaustiveness, dead `let` stores, ignored Results). On
 #              translated Python they describe the translation rather
 #              than the program.
-_PY_SKIP_STAGES = ("effects", "semantic")
+# Defined once in py_frontend.py (with the strict-only codes below) and
+# imported here, by both benches and by the tests.
+from .py_frontend import PY_SKIP_STAGES as _PY_SKIP_STAGES  # noqa: E402
 
 # Rows held back from the DEFAULT Python output, by measurement, not by
 # taste. `bench/py_frontend/run_bench.py` over 76 benign modules
@@ -271,7 +273,7 @@ _PY_SKIP_STAGES = ("effects", "semantic")
 # module policy is empty by construction, so every I/O call yields
 # E0701. That is an inventory, which `tools/py_surface.py` already
 # reports properly — not a security verdict.
-_PY_STRICT_ONLY_CODES = ("E0711",)
+from .py_frontend import PY_STRICT_ONLY_CODES as _PY_STRICT_ONLY_CODES  # noqa: E402
 
 
 # Directories that are never the user's own source. Walking `.venv` or
@@ -335,12 +337,17 @@ def _scan_one(job):
         # `tokenize.open` raises SyntaxError for an unknown cookie.
         return ("unreadable", path, type(e).__name__, str(e))
     try:
-        ast, unprovable, meta = py_to_ir(src)
+        # Only the frontend's parse can make a file "unreadable". A
+        # ValueError raised by a detector is an analyzer crash; caught
+        # here with the parse errors it was reported as "could not parse",
+        # exit 0, its findings lost (BUG-035).
+        try:
+            ast, unprovable, meta = py_to_ir(src)
+        except (SyntaxError, ValueError) as e:
+            # py2 sources, templates and test fixtures are normal in a real
+            # tree; they are counted, not fatal.
+            return ("unreadable", path, type(e).__name__, str(e))
         diags = analyze_flat(ast, skip=skip)
-    except (SyntaxError, ValueError) as e:
-        # py2 sources, templates and test fixtures are normal in a real
-        # tree; they are counted, not fatal.
-        return ("unreadable", path, type(e).__name__, str(e))
     except RecursionError as e:
         # The frontend catches this per scope and reports an `unprovable`
         # region; one that still escapes is the analyzer's limit, not the
@@ -538,9 +545,19 @@ def cmd_check_py(args) -> int:
                 f"{c}x{n}" for c, n in sorted(by_code.items())))
     print(f"{n_find} finding(s) in {n_func} function(s); "
           f"{n_unp} unprovable region(s) in {n_unp_fns} function(s).")
+    # The net.fetch rows read effects the frontend synthesizes as
+    # [capability, method name], so a mapped network call named `fetch`
+    # does reach them; requests.get / urlopen do not (measured 2026-09-15).
+    # E0716 is absent from the list: `executescript` maps to sqlExec, which
+    # requires an authorization proof; no Python spelling tried supplies one
+    # (an authorize(...) second argument, an Authorized annotation; measured).
     print("NOT checked on Python (no declared effects clause, no marker "
-          "types): E0801 effect composition, and the taint-marker family "
-          "(E0712/E0715/E0716/E0717/E0724).")
+          "types): E0801 effect composition; the net.fetch scope rows "
+          "(E0710/E0721/E0722), except on a network call named fetch; the "
+          "marker rows (E0712/E0715/E0717/E0724/E0725/E0726/E0728/"
+          "E0729/E0730); and the semantic family (E0202-E0207). E0716 "
+          "fires on every .executescript method call; no Python spelling tried "
+          "clears it.")
     if not strict:
         print("NOT checked by default (--strict adds both): E0711 dynamic "
               "filesystem paths, and the capability inventory (E0701). "

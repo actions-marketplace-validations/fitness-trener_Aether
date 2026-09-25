@@ -62,7 +62,11 @@ Bundled test suites deliberately contain unsafe shapes, so they are
 counted separately rather than dropped — 131 of the 170 are in test
 directories.
 
-**E0711 fires 12× more often than the entire default set combined.** The
+**E0711 fires 2.8× more often than the entire default set combined**
+(476 against 170, both counted over every file, tests included). *Corrected
+2026-09-15:* this sentence first said 12×, which set the all-files 476
+against the 39 non-test findings; `run_scan.py` filters neither count by
+test directory, and this report has no non-test E0711 count. The
 decision to demote it, taken in `bench/py_frontend/REPORT.md` on a
 76-module corpus, holds at 15× the scale.
 

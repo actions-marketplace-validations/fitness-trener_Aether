@@ -1110,3 +1110,261 @@ Introduced by iteration 52, never released.
 Fix: `_call_expr` re-rates the inner compile to `builtin` when a builtin,
 unshadowed `exec`/`eval` wraps it. A `compile()` on its own, or one under a
 local `def exec`, stays at the floor.
+
+### BUG-031  E0727 told ElementTree users a caller's parser "never" expands external entities (false reassurance)  [FIXED fbec07c]
+test: tests/test_py_frontend_sinks.py
+(`::test_xxe_elementtree_text_is_scoped_to_calls_without_a_parser`; the
+detection shapes the same audit found untested are in
+`::test_xxe_guard_and_parser_binding_shapes`)
+
+
+Found 2026-09-15 by a skeptic review of iteration 53's commit `11efc72`,
+confirmed twice by measurement. The `xml.etree.cElementTree.` rows and the
+`xml.` fallback rows (ElementTree, expatbuilder) printed "this parser never
+expands external entities, so there is no XXE file read or SSRF through
+entities on any Expat". That holds only for a call with no parser:
+`ET.parse(source, parser=None)` and `ET.fromstring`/`ET.XML(text,
+parser=None)` use a caller's parser as given, keyword or positional, and
+`xml.etree.cElementTree` is still importable on 3.11 as the same function
+objects. Measured on CPython 3.11.15 / Expat 2.7.4 / lxml 6.1.1 with a
+local HTTP server: an lxml `XMLParser(resolve_entities=True)` returned a
+local file's contents through `ET.fromstring`, `ET.XML`, `ET.parse` (both
+slots) and `cElementTree.fromstring`, and with `no_network=False` made 1
+request through `ET.parse` and `ET.fromstring`; a `make_parser()` with
+`feature_external_ges` delivered the file's contents to its handler through
+`ET.parse` (both slots) and `ET.fromstring`, and made 1 request through
+`ET.parse`. E0727 fired on every one of those calls (a `qualified` match,
+0.95); only the text was falsely reassuring, and it steered a reader away
+from the one argument that made the call an XXE. The claim was copied into
+`grammar/diagnostics.md`, q1 and the violation taxonomy. Two smaller
+wording defects in the same rows: `_LXML_MSG` ended "so a crafted
+<!ENTITY SYSTEM ...> reads local files", which read as unconditional
+(lxml 6.1.1's default parser raises `Entity 'x' not defined` and reads
+nothing), and `_DOM_MSG` dated minidom's default to "Python 3.7.1", which
+is the `xml.sax` `feature_external_ges` change (minidom without a parser
+goes through expatbuilder, which never resolved them). Introduced by
+iteration 53, never released.
+
+Fix: ElementTree and cElementTree get their own message (`_ET_MSG`): "never"
+is scoped to a call without a parser argument, and a parser passed in is
+said to be used as given, with the two measured consequences. expatbuilder
+keeps an exact "never" (`_EXPATBUILDER_MSG`): its second positional is
+`namespaces`, `parser=` is a TypeError, and it dropped the entity with 0
+requests. The `xml.` fallback rows become explicit `xml.etree.ElementTree.`
+and `xml.dom.expatbuilder.` rows, and the test requires every one of the 20
+callees mapped to `parseXml` to match a Python row. The lxml file-read
+clause is conditional; the minidom/pulldom text drops the date. The stdlib
+hint says "no parser argument, parser= or positional", and its fallback
+("otherwise pass no parser argument and check pyexpat.version_info >= (2, 7,
+2)") keeps that condition: the version check covers only the DoS clause, and
+on Expat 2.7.4 a positional lxml or `feature_external_ges` parser still read
+the file. Detection, confidence and the DoS clause are unchanged.
+
+
+### BUG-032  HTML/URL escapers were mapped onto `trusted`, clearing SSTI, code-injection and deserialization sinks (false accept)  [FIXED 3ccf848]
+test: tests/test_py_frontend_sinks.py
+(`::test_html_escapers_are_not_trusted`)
+
+Found 2026-09-24 by the whole-repo audit (`audits/audit_2026-09-24_plan.md`
+B1), confirmed by execution. `render_template_string(html.escape(x))`,
+`jinja2.Template(markupsafe.escape(x))`, `eval(html.escape(x))`,
+`exec(urllib.parse.quote(x))` and `pickle.loads(html.escape(x))` all
+checked clean (exit 0), as did `render_template_string(render_template(...))`
+(a rendered page rendered again as a template). `html.escape` leaves
+`{{7*7}}` intact (`jinja2.Template(html.escape('{{7*7}}')).render()` returns
+`49`) and leaves `__import__(chr(111)+chr(115)).getcwd()` runnable.
+
+Root cause: `SANITIZER_BY_QUALIFIED` (`py_frontend.py`) mapped `html.escape`,
+`markupsafe.escape`, `urllib.parse.quote`, `urllib.parse.quote_plus` and
+`flask.render_template` to `trusted`, which is the only wrapper of
+`_TEMPLATE_RULE`, `_CODE_RULE` and `_DESERIALIZE_RULE`. The rows date from
+`2f72c71` (2026-07-26), so 0.3.x and 0.4.0 carry the miss. `trusted` is an
+assertion, not a sanitizer (vault closed design point), and no Python call
+may stand for it. E0718 was not affected: its only wrapper is
+`safeRedirect`.
+
+Fix: the two HTML escapers map to Aether's `htmlEscape`, the HTML-context
+sanitizer that clears only the HTML sink (E0725, which does not run on
+Python). `urllib.parse.quote(_plus)` and `flask.render_template` are
+unmapped, so they are ordinary unknown calls. The test crosses 4 escapers
+with 5 trusted-only sinks and asserts that no `SANITIZER_BY_QUALIFIED` value
+is `trusted`. Measured non-breaking: the framework corpus (4,946 files) gives
+676 findings before and after with identical (file, line, code) keys, and the
+repo's bench/tests/tools/playground/demos (208 files) gives 110 before and
+after.
+
+### BUG-033  an import bound two ways resolved to nothing, so every sink behind the fallback idiom was silent (false accept)  [FIXED 3ccf848]
+test: tests/test_py_frontend_sinks.py
+(`::test_ambiguous_import_is_a_sink_if_any_candidate_is`)
+
+Found 2026-09-24 by the whole-repo audit (B2), confirmed by execution.
+`try: import cPickle as pickle / except ImportError: import pickle` then
+`pickle.loads(b)` checked clean. So did the lxml/ElementTree fallback before
+`etree.fromstring(x)`, `subprocess32` before `subprocess.call(cmd,
+shell=True)`, the flask/werkzeug fallback before `redirect(u)`, and one
+function-local `import json as pickle` elsewhere in the file before
+`pickle.loads(b)`.
+
+Root cause: `_Imports` put a name bound to two different targets into
+`ambiguous`, and `resolve_attr` / `resolve_name` returned None for it. Its
+own comment admitted that "a sink reached through it is missed". The README
+did not say so. Resolving to nothing is right for the clearing direction (a
+builder or sanitizer must not clear anything on a guess). In the sink
+direction it is a false accept.
+
+Fix: `_Imports` keeps every candidate target. An ambiguous name resolves to
+the first candidate that is a sink (`SINK_BY_QUALIFIED` or `SINK_GUARDS`),
+and otherwise to nothing, as before. So the name is a sink if ANY candidate
+is one and sanctioned only if ALL are. The existing
+`test_ambiguous_import_clears_nothing_and_sinks_nothing_new` still passes:
+its `update` is not a sink. Where both candidates are sinks, the message
+names the first one bound. Measured non-breaking on the same two corpora as
+BUG-032.
+
+### BUG-034  `shlex.quote(cmd)` as the WHOLE shell command was read as the safe exit (false accept)  [FIXED 3ccf848]
+test: tests/test_py_frontend_sinks.py
+(`::test_whole_command_shlex_quote_is_not_the_exit`)
+
+Found 2026-09-24 by the whole-repo audit (B3), confirmed by execution.
+`subprocess.run(shlex.quote(p), shell=True)`, `c = shlex.quote(p);
+os.system(c)` and `subprocess.run(["bash", "-c", shlex.quote(p)])` checked
+clean. Quoting the entire command turns it into one shell word, and the
+input still chooses which program runs.
+
+Root cause: `_arg_reason` accepted a frontend-emitted (`py`) wrapper call
+whole, exempt from the BUG-020 pin check, because `shlex.quote(x)` has no
+template slot. That is right when the quote is one piece of a command. It is
+wrong when the quote is the whole command.
+
+Fix: `ArgRule.py_whole` is the reason given when a frontend wrapper call is
+the entire judged argument. `_SHELL_RULE` sets it ("the whole command is
+one quoted word - the input still chooses the program; pass an argv list").
+Every other rule leaves it None, so a SQLAlchemy expression as `sqlBind`, or
+`json.loads` as `schemaDecode`, is still accepted whole. The other half of
+the audit row, that `"ls " + shlex.quote(p)` is still flagged (C1, a false
+positive), is left for 0.4.2 because it moves the corpus finding set.
+Measured non-breaking on the same two corpora.
+
+### BUG-035  a ValueError inside a detector was reported as "could not parse", exit 0, findings lost  [FIXED 3ccf848]
+test: tests/test_py_frontend_sinks.py
+(`::test_detector_value_error_is_a_crash_not_unreadable`)
+
+Found 2026-09-24 by the whole-repo audit (B7). A mutation that made one
+security detector raise `ValueError`, run on a file with 3 real findings,
+printed `aether: could not parse ...` and exited 0. A `KeyError` in the same
+place was correctly an ANALYZER ERROR, exit 2. `passes/__init__.py` says a
+crashing detector must go red.
+
+Root cause: `_scan_one` (`cli.py`) wrapped both `py_to_ir` and
+`analyze_flat` in `except (SyntaxError, ValueError)`, the clause meant for
+unparseable input such as py2 sources.
+
+Fix: only `py_to_ir` is inside that clause, so a detector exception of any
+type reaches the crash handlers.
+
+### BUG-036  the ratchet compared the baseline against the commit under test, counted detector existence only, and accepted any mention of a code as its proof  [FIXED e355774]
+test: tests/test_ratchet.py
+(`::test_baseline_never_lowered`, `::test_recall_floor`,
+`::test_legitimacy_counts_assertions_only`, `::test_detectors_legitimately_checked`)
+
+Found 2026-09-24 by the whole-repo audit (F1). Three holes in
+`tests/test_ratchet.py`, each probe-confirmed on `99f09cc`:
+- `test_baseline_never_lowered` diffed the working tree against `HEAD`. In
+  CI the checkout IS the commit under test, so a commit that lowers
+  `min_emitted_codes` and deletes a detector compares the lowered file
+  with itself and passes.
+- The floor counted detectors that exist. A detector reduced to
+  `return []` still counts; nothing measured what the detectors find.
+- Legitimacy (`test_detectors_legitimately_checked`) looked for the code
+  as a substring of the concatenated text of every file under `tests/`,
+  so a comment, a docstring or an assert message legitimised a code.
+
+Fix (`e355774`, `9991e52`, `8fb3d3c`):
+- The baseline must meet or exceed its value at `HEAD`, `HEAD~1` and the
+  merge-base with `origin/main` (warning printed when the ref is missing).
+  `gate.yml` checks out with `fetch-depth: 0`. Every integer key is
+  compared, not two named ones.
+- Recall floor added to `tests/ratchet_baseline.json`:
+  `min_corpus_claimed_findings` = 117 (the sum of every `// expect:`
+  header over the 93 corpus files `test_corpus.py` scans) and
+  `min_py_table_rows` = 93 (`SINK_BY_QUALIFIED` 48, `SINK_BY_METHOD` 14,
+  `SINK_BY_BUILTIN` 4, `SINK_GUARDS` 18, `SANITIZER_BY_QUALIFIED` 9).
+- A code is proven only when it appears in a string constant inside the
+  test expression of an `assert`, in a suite `scripts/run_all.py` runs,
+  and not under a negative comparison (`not in`, `!=`, `is not`, `not`).
+  All 34 protected codes still qualify.
+
+Proof it bites (scratch commits, dropped afterwards): a commit lowering
+`min_emitted_codes` 55 → 54 is red ("LOWERED against 11efc72ec6"); a
+commit lowering the new key `min_py_table_rows` 93 → 92 is red ("LOWERED
+against 9991e5217c", the parent). Deleting any of the five audit rows
+turns `test_ratchet.py` red through `min_py_table_rows`.
+
+### BUG-037  the runtime syscall oracle certified "sound" when it had observed nothing, and its test never ran  [FIXED d7732f9]
+test: tests/test_mining.py (`::test_runtime_oracle_catches_fn`)
+
+Found 2026-09-24 by the whole-repo audit (F3). `scripts/run_all.py` listed
+its suites by name; `test_cause_b.py`, `test_phase1.py` and
+`test_mining.py` never ran, and `test_mining.py` was red (6/7). Repro on
+`99f09cc`: `python -B tests/test_mining.py` → exit 1,
+`[FAIL] test_runtime_oracle_catches_fn`.
+
+Root cause: `tools/runtime_oracle.py` shells out to `strace` and parses
+Linux strace output. On Windows, Git for Windows puts a Cygwin `strace`
+(3.6.5) on PATH; it runs, none of the patterns match, the oracle observes
+no capability and returns `soundness_ok: True` for a change that writes a
+file — a vacuous "sound". The test caught it; nothing ran the test.
+
+Fix (`d7732f9`): `runtime_oracle.available()` (Linux and `strace` on
+PATH); `_trace` raises `OracleUnavailable` otherwise. The test asserts the
+refusal where the oracle is unavailable and runs the original check where
+it is. `tools/mining/swebench_harness.py` already records a raised error
+as `oracle_error` instead of an empty observation. `run_all.py` now globs
+`tests/test_*.py` with an explicit, commented `EXCLUDE` (empty); the
+three orphans run and pass (cause_b 3/3, phase1 5/5, mining 7/7 with the
+oracle case as a refusal check on Windows). `gate.yml` installs strace so
+CI runs the real oracle path.
+
+Not verified here: the Linux strace path (no Linux machine in this
+session). The first CI run of the suite job is its first execution.
+
+### BUG-038  `analyze(skip=...)` ignored unknown stage names; a test's copy of the Python skip list had drifted  [FIXED 032a639]
+test: tests/test_ratchet.py (`::test_skip_names_are_stages`)
+
+Found 2026-09-24 by the whole-repo audit (F4). The Python stage-skip list
+existed as literals in `cli.py`, `tests/test_py_frontend_sinks.py` (twice)
+and `tests/test_confidence.py` (plus the one in `py_frontend.py` the
+benches import). The `test_confidence.py` copy was
+`("effects", "smt", "modules", "imports", "capability")`: `smt` and
+`imports` are not stages, and `semantic`, which check-py never runs, ran.
+`analyze()` accepted it silently. Repro on `99f09cc`:
+`analyze(ast, skip=("smt",))` returns every stage, no error.
+
+Fix (`032a639`): `PY_SKIP_STAGES` / `PY_STRICT_ONLY_CODES` are defined only
+in `py_frontend.py` and imported by `cli.py` (as `_PY_SKIP_STAGES` /
+`_PY_STRICT_ONLY_CODES`, so existing references hold) and both tests;
+`test_confidence.py` uses `PY_SKIP_STAGES + ("capability",)`, exactly
+check-py's default. `analyze()` raises `ValueError` on a name that is not
+a stage. `capability._STDLIB_EFFECT_PATHS` is derived from
+`effects._STDLIB_EFFECTS` in one expression (verified equal first:
+10 entries, identical path sets).
+
+### BUG-039  E0711 (`--strict`) flags `os.path.join(base, secure_filename(name))`, the documented Werkzeug fix  [OPEN]
+test: none yet (deferred)
+
+Found 2026-09-24 while writing `tests/test_sink_rows.py` (F2 sanitizer
+half). `werkzeug.utils.secure_filename` maps to `safeJoin`, and
+`open(secure_filename(x))` is clean, but the idiom Werkzeug documents,
+`open(os.path.join(upload_dir, secure_filename(name)))`, fires E0711
+("path is a computed call") — with a parameter base and with a literal
+base alike. Repro: `check-py --strict` on the two-function file in the
+wave scratchpad `w1/sf.py` → 2 × E0711 (plus the expected `--strict`
+E0701 inventory).
+
+Root cause: E0711's Python mapping clears only when the whole path is the
+wrapper call; `os.path.join` is an unknown computed call. Not a table-only
+fix — mapping `os.path.join` to `safeJoin` would be wrong (`join(base,
+"../x")` escapes). Needs a frontend rule: `os.path.join(<any>, <sanitizer
+call>)` as the last argument ≡ `safeJoin`. Precision, strict-only row
+(E0711 is held back by default), so deferred to the precision wave
+(Wave 5, next to C1).

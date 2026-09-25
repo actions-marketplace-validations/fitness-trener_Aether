@@ -1,5 +1,50 @@
 # Operation Log (append-only — newest on top)
 
+## [2026-09-25] Q1 residuals added | iteration 55: the gate can see what matters
+- **Two q1 rows.** The first says what the new recall floor does not
+  measure: it counts claimed corpus findings and table rows, and each row
+  is exercised with one snippet shape, so a detector that stops judging
+  another shape (concatenation, f-string, a bound name) is still the shape
+  tests' job. The second is a new precision residual, BUG-039: E0711 under
+  `--strict` flags the Werkzeug `os.path.join(base, secure_filename(x))`
+  idiom. It is an over-flag, not a miss.
+- **Lesson carried:** a green gate had been certifying "sound" from a
+  syscall oracle that observed nothing on Windows (BUG-037), and the test
+  that caught it never ran. An oracle that cannot observe must refuse. It
+  must not return the empty observation as a verdict.
+
+## [2026-09-24] Q1 corrected + residual added | the whole-repo audit: the Python table stood in for `trusted`; `for`/`match` re-bind safe names
+- **Two q1 rows added.** The first records that the Python sanitizer table
+  mapped five calls onto `trusted` (BUG-032), which made an assertion into
+  a sanitizer on Python and left E0719/E0720/E0731 open. It also records
+  BUG-033 (an ambiguous import silenced its sinks) and BUG-034 (a
+  whole-command `shlex.quote` counted as the exit), all fixed for 0.4.1.
+  The second records an open, probe-confirmed Aether-side MISS: five of
+  the six binding fixpoints ignore `for` and `match` binders.
+- **Lesson carried:** the closed design point ("`trusted` is an assertion")
+  held in the Aether rules and was undone one layer up, in a mapping table
+  no rule reads as a rule. A closed point has to be re-probed wherever a
+  table can stand in for it, not only in the pass that states it.
+
+## [2026-09-15] Q1 corrected | E0727's ElementTree "never" held only without a parser (BUG-031)
+- **The iteration-53 entry below says ElementTree/expatbuilder never fetch
+  a SYSTEM entity; for ElementTree that is true only of a call with no
+  parser.** `ET.parse`/`ET.fromstring` (and cElementTree, still the same
+  functions on 3.11) use a caller's parser as given, `parser=` or
+  positional. Measured 2026-09-15 on the same stack as iteration 53: an
+  lxml `XMLParser(resolve_entities=True)` returned a local file's contents
+  through them (and fetched a URL with `no_network=False`), and a
+  `make_parser()` with `feature_external_ges` read the file and fetched
+  the URL. E0727 fired on those calls; only the text said "never".
+  expatbuilder takes no parser, so "never" stays exact there. q1's row 68
+  and the taxonomy's E0727 row now scope the claim; the entry below is
+  left as written.
+- **Lesson carried:** iteration 53's own lesson — probe each runtime the
+  frontend maps before the text says what it does — was applied to the
+  default call and not to the call's other arguments. A negative claim
+  ("never") about a function needs its whole signature probed, not its
+  one-argument spelling.
+
 ## [2026-09-11] Q1 residual added | iteration 53: E0727's Python text is per callee
 - **The text was the Aether parser's, not the Python parser's.** Every
   stdlib `xml.*` callee `check-py` maps to `parseXml` printed "reads local

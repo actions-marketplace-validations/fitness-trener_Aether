@@ -67,8 +67,11 @@ therefore scores as a miss.
 
 ## What the oracle actually caught
 
-Five confirmed false negatives — an independent tool flagged the shape and
-Aether said nothing:
+Four confirmed false negatives — an independent tool flagged the shape and
+Aether said nothing. *Corrected 2026-09-15:* this section and its commit
+(`8363e13`) first said five, but list four silent shapes; the table's last
+row, `ET.fromstring` through a module alias, was already reported before
+the fix and still is.
 
 | Shape | Was | Now |
 |---|---|---|
@@ -78,7 +81,8 @@ Aether said nothing:
 | `xml.sax.parseString(s, None)` | silent | E0727 |
 | `ET.fromstring(s)` via module alias | E0727 | unchanged |
 
-Four were missing table rows. The fifth was a **structural bug**:
+All four were missing table rows. `xml.sax.parseString` also exposed a
+**structural bug**:
 `import xml.sax` + `xml.sax.parseString(...)` arrives as
 `Attribute(Attribute(Name))`, and `_callee_spelling` resolved only one
 level, returning the bare method name so the dotted table never matched —
