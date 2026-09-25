@@ -1,5 +1,18 @@
 # Operation Log (append-only — newest on top)
 
+## [2026-09-25] Q1 residuals added | iteration 55: the gate can see what matters
+- **Two q1 rows.** The first says what the new recall floor does not
+  measure: it counts claimed corpus findings and table rows, and each row
+  is exercised with one snippet shape, so a detector that stops judging
+  another shape (concatenation, f-string, a bound name) is still the shape
+  tests' job. The second is a new precision residual, BUG-039: E0711 under
+  `--strict` flags the Werkzeug `os.path.join(base, secure_filename(x))`
+  idiom. It is an over-flag, not a miss.
+- **Lesson carried:** a green gate had been certifying "sound" from a
+  syscall oracle that observed nothing on Windows (BUG-037), and the test
+  that caught it never ran. An oracle that cannot observe must refuse. It
+  must not return the empty observation as a verdict.
+
 ## [2026-09-24] Q1 corrected + residual added | the whole-repo audit: the Python table stood in for `trusted`; `for`/`match` re-bind safe names
 - **Two q1 rows added.** The first records that the Python sanitizer table
   mapped five calls onto `trusted` (BUG-032), which made an assertion into

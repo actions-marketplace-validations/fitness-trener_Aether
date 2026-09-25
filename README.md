@@ -373,7 +373,8 @@ modeled surface", never as "sound".
     tests/          Integration tests and the monotonic ratchet
     scripts/        run_all.py — the full gate
 
-Full gate: `python -B scripts/run_all.py` (exit 0 = green; 38 PASS suites).
+Full gate: `python -B scripts/run_all.py` (exit 0 = green; 41 PASS suites, and `smt` reports SKIP
+when z3 is not installed).
 
 ## Documentation
 

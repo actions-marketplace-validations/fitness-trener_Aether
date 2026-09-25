@@ -204,7 +204,12 @@ call>)` as the last argument ≡ `safeJoin`. Precision, strict-only row
   10/10, bench 8/8, arch_bench, capability_fw, demos, fuzz;
   `smt: SKIP`, listed as "SKIPPED (not counted as PASS)".
 - check-py re-measure (99f09cc toolchain vs HEAD toolchain, same inputs):
-  MEASURE_PLACEHOLDER
+  `check-py --json` over the main checkout's `bench tests tools playground
+  demos` (5,154 files, the framework corpus included), with the `99f09cc`
+  toolchain and with the Wave 1 toolchain: 786 → 786 findings (676 → 676
+  on the framework corpus), identical by (file, line, code, confidence,
+  severity); 0 unreadable, 0 errors both sides. Measured 2026-09-25 by the
+  coordinator after the resume.
 
 ## Changed tests that pinned old behaviour
 

@@ -2338,6 +2338,50 @@ State carried forward: the full gate suite must stay green
 
 ---
 
+## Iteration 55 — Wave 1 of the 2026-09-24 audit: the gate can see what matters (no new detector)
+
+- **Target:** not a backlog row. Plan Wave 1 (F1–F4, F6, E8's gate half):
+  every later wave is only trustworthy if the gate goes red on its
+  reversal.
+- **Probe-confirmed first (on `99f09cc`, gate exit 0):**
+  - A committed baseline lowering passed `test_baseline_never_lowered`
+    (it compared against HEAD). BUG-036.
+  - Deleting `mogrify`, `os.popen`, `executemany`, `pandas.read_pickle`
+    or `HttpResponseRedirect` left the suite green (the rows had no test).
+  - `test_cause_b.py`, `test_phase1.py`, `test_mining.py` never ran;
+    `test_mining.py` was red on a vacuous oracle verdict. BUG-037.
+  - `analyze(skip=("smt",))` silently ran every stage; one test ran a
+    different stage set than check-py. BUG-038.
+  - `smt: PASS` printed with z3 absent.
+- **Fixes (each once, where every caller routes through):**
+  - `run_all.py` discovers `tests/test_*.py` (explicit `EXCLUDE`, empty);
+    `test_ratchet.py` reads the same discovery for legitimacy.
+  - Ratchet: baseline vs HEAD, HEAD~1 and the merge-base with
+    `origin/main`; recall floor (117 claimed corpus findings, 93 table
+    rows); legitimacy = a positive `assert`, not a substring.
+  - `tests/test_sink_rows.py`: every sink/guard/sanitizer row pinned to its
+    codes and generated as a snippet; pins equal the live tables both ways.
+  - One Python skip list; `analyze()` rejects unknown stages;
+    `_STDLIB_EFFECT_PATHS` derived.
+  - `smt` reported SKIP (not PASS) without z3; `gate.yml` gains an `smt`
+    job with `z3-solver` that fails on a skip.
+- **Mutations, each red:** the five audit row deletions (red in
+  `test_sink_rows.py` and `test_ratchet.py`; `test_py_frontend_sinks.py`
+  stays green on all five, confirming the audit), a value change
+  (`mogrify` → `renderTemplate`, red in `test_sink_rows.py`), a committed
+  lowering of an old key and of a new key.
+- **Measured non-breaking:** no detector or frontend table changed. See
+  Measurements for the check-py comparison.
+- **Residuals (pushed to q1):** see q1 rows below.
+- **TYPE gap surfaced for next iter:** BUG-039 (E0711 flags the Werkzeug
+  `os.path.join(base, secure_filename(x))` idiom) joins C1 as a
+  "flags the fix" row for Wave 5; the table pins now make every Python row
+  change visible, so Wave 4/5 row edits must update `test_sink_rows.py`.
+- **Suite:** exit 0: 41 PASS suites; `smt` reported SKIP (z3 not installed
+  locally), no longer counted as PASS.
+
+---
+
 ## Next-iteration checklist (for the loop)
 
 1. Read the previous report's "TYPE gap for next iter".

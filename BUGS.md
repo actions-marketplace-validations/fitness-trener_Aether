@@ -1261,3 +1261,110 @@ unparseable input such as py2 sources.
 
 Fix: only `py_to_ir` is inside that clause, so a detector exception of any
 type reaches the crash handlers.
+
+### BUG-036  the ratchet compared the baseline against the commit under test, counted detector existence only, and accepted any mention of a code as its proof  [OPEN]
+test: tests/test_ratchet.py
+(`::test_baseline_never_lowered`, `::test_recall_floor`,
+`::test_legitimacy_counts_assertions_only`, `::test_detectors_legitimately_checked`)
+
+Found 2026-09-24 by the whole-repo audit (F1). Three holes in
+`tests/test_ratchet.py`, each probe-confirmed on `99f09cc`:
+- `test_baseline_never_lowered` diffed the working tree against `HEAD`. In
+  CI the checkout IS the commit under test, so a commit that lowers
+  `min_emitted_codes` and deletes a detector compares the lowered file
+  with itself and passes.
+- The floor counted detectors that exist. A detector reduced to
+  `return []` still counts; nothing measured what the detectors find.
+- Legitimacy (`test_detectors_legitimately_checked`) looked for the code
+  as a substring of the concatenated text of every file under `tests/`,
+  so a comment, a docstring or an assert message legitimised a code.
+
+Fix (`e355774`, `9991e52`, `8fb3d3c`):
+- The baseline must meet or exceed its value at `HEAD`, `HEAD~1` and the
+  merge-base with `origin/main` (warning printed when the ref is missing).
+  `gate.yml` checks out with `fetch-depth: 0`. Every integer key is
+  compared, not two named ones.
+- Recall floor added to `tests/ratchet_baseline.json`:
+  `min_corpus_claimed_findings` = 117 (the sum of every `// expect:`
+  header over the 93 corpus files `test_corpus.py` scans) and
+  `min_py_table_rows` = 93 (`SINK_BY_QUALIFIED` 48, `SINK_BY_METHOD` 14,
+  `SINK_BY_BUILTIN` 4, `SINK_GUARDS` 18, `SANITIZER_BY_QUALIFIED` 9).
+- A code is proven only when it appears in a string constant inside the
+  test expression of an `assert`, in a suite `scripts/run_all.py` runs,
+  and not under a negative comparison (`not in`, `!=`, `is not`, `not`).
+  All 34 protected codes still qualify.
+
+Proof it bites (scratch commits, dropped afterwards): a commit lowering
+`min_emitted_codes` 55 → 54 is red ("LOWERED against 11efc72ec6"); a
+commit lowering the new key `min_py_table_rows` 93 → 92 is red ("LOWERED
+against 9991e5217c", the parent). Deleting any of the five audit rows
+turns `test_ratchet.py` red through `min_py_table_rows`.
+
+### BUG-037  the runtime syscall oracle certified "sound" when it had observed nothing, and its test never ran  [OPEN]
+test: tests/test_mining.py (`::test_runtime_oracle_catches_fn`)
+
+Found 2026-09-24 by the whole-repo audit (F3). `scripts/run_all.py` listed
+its suites by name; `test_cause_b.py`, `test_phase1.py` and
+`test_mining.py` never ran, and `test_mining.py` was red (6/7). Repro on
+`99f09cc`: `python -B tests/test_mining.py` → exit 1,
+`[FAIL] test_runtime_oracle_catches_fn`.
+
+Root cause: `tools/runtime_oracle.py` shells out to `strace` and parses
+Linux strace output. On Windows, Git for Windows puts a Cygwin `strace`
+(3.6.5) on PATH; it runs, none of the patterns match, the oracle observes
+no capability and returns `soundness_ok: True` for a change that writes a
+file — a vacuous "sound". The test caught it; nothing ran the test.
+
+Fix (`d7732f9`): `runtime_oracle.available()` (Linux and `strace` on
+PATH); `_trace` raises `OracleUnavailable` otherwise. The test asserts the
+refusal where the oracle is unavailable and runs the original check where
+it is. `tools/mining/swebench_harness.py` already records a raised error
+as `oracle_error` instead of an empty observation. `run_all.py` now globs
+`tests/test_*.py` with an explicit, commented `EXCLUDE` (empty); the
+three orphans run and pass (cause_b 3/3, phase1 5/5, mining 7/7 with the
+oracle case as a refusal check on Windows). `gate.yml` installs strace so
+CI runs the real oracle path.
+
+Not verified here: the Linux strace path (no Linux machine in this
+session). The first CI run of the suite job is its first execution.
+
+### BUG-038  `analyze(skip=...)` ignored unknown stage names; a test's copy of the Python skip list had drifted  [OPEN]
+test: tests/test_ratchet.py (`::test_skip_names_are_stages`)
+
+Found 2026-09-24 by the whole-repo audit (F4). The Python stage-skip list
+existed as literals in `cli.py`, `tests/test_py_frontend_sinks.py` (twice)
+and `tests/test_confidence.py` (plus the one in `py_frontend.py` the
+benches import). The `test_confidence.py` copy was
+`("effects", "smt", "modules", "imports", "capability")`: `smt` and
+`imports` are not stages, and `semantic`, which check-py never runs, ran.
+`analyze()` accepted it silently. Repro on `99f09cc`:
+`analyze(ast, skip=("smt",))` returns every stage, no error.
+
+Fix (`032a639`): `PY_SKIP_STAGES` / `PY_STRICT_ONLY_CODES` are defined only
+in `py_frontend.py` and imported by `cli.py` (as `_PY_SKIP_STAGES` /
+`_PY_STRICT_ONLY_CODES`, so existing references hold) and both tests;
+`test_confidence.py` uses `PY_SKIP_STAGES + ("capability",)`, exactly
+check-py's default. `analyze()` raises `ValueError` on a name that is not
+a stage. `capability._STDLIB_EFFECT_PATHS` is derived from
+`effects._STDLIB_EFFECTS` in one expression (verified equal first:
+10 entries, identical path sets).
+
+### BUG-039  E0711 (`--strict`) flags `os.path.join(base, secure_filename(name))`, the documented Werkzeug fix  [OPEN]
+test: none yet (deferred)
+
+Found 2026-09-24 while writing `tests/test_sink_rows.py` (F2 sanitizer
+half). `werkzeug.utils.secure_filename` maps to `safeJoin`, and
+`open(secure_filename(x))` is clean, but the idiom Werkzeug documents,
+`open(os.path.join(upload_dir, secure_filename(name)))`, fires E0711
+("path is a computed call") — with a parameter base and with a literal
+base alike. Repro: `check-py --strict` on the two-function file in the
+wave scratchpad `w1/sf.py` → 2 × E0711 (plus the expected `--strict`
+E0701 inventory).
+
+Root cause: E0711's Python mapping clears only when the whole path is the
+wrapper call; `os.path.join` is an unknown computed call. Not a table-only
+fix — mapping `os.path.join` to `safeJoin` would be wrong (`join(base,
+"../x")` escapes). Needs a frontend rule: `os.path.join(<any>, <sanitizer
+call>)` as the last argument ≡ `safeJoin`. Precision, strict-only row
+(E0711 is held back by default), so deferred to the precision wave
+(Wave 5, next to C1).
