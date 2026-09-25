@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(ROOT,"transpiler")); sys.path.insert(0, ROOT)
 from tools.diff_shape import classify_file_change, path_bucket, classify_changeset
 from tools.rw_metrics import wilson, aggregate
 from tools.breakeven import breakeven, rw_unprovable, from_metrics
+from tools import runtime_oracle
 from tools.runtime_oracle import check_against_aether
 
 
@@ -79,6 +80,15 @@ def test_decision_clear_fail_when_modify_path_bad():
 
 
 def test_runtime_oracle_catches_fn():
+    if not runtime_oracle.available():
+        # Off Linux the oracle must refuse, not report an empty observation
+        # as "sound" — that vacuous pass is what this test was red on.
+        try:
+            check_against_aether("def f(x):\n    return x\n", "def f(x):\n    return x\n")
+        except runtime_oracle.OracleUnavailable:
+            print("  [skip] runtime oracle: no Linux strace here (refuses, as it must)")
+            return
+        raise AssertionError("oracle without Linux strace returned a verdict")
     # head Aether clears, but exercised entrypoint writes a file -> confirmed FN
     r = check_against_aether("def f(x):\n    return x\n", "def f(x):\n    return x+1\n",
                              entrypoint_src="open('/tmp/_t.out','w').write('z')\n")

@@ -45,20 +45,54 @@ jobs:
         # tests/test_packaging.py, since 3.11+ takes the tomllib path.
         python-version: ["3.10", "3.12"]
     steps:
+      # Full history: tests/test_ratchet.py compares the baseline against
+      # the merge-base with origin/main. A shallow clone has no such ref,
+      # and HEAD alone is the commit under test — lowering the floor and
+      # deleting a detector in one commit would pass (audit F1).
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      # No dependencies to install: the core toolchain is stdlib-only.
-      # z3 is deliberately NOT installed, so this matches the local gate
-      # exactly (tests/test_smt.py skips cleanly without it). Installing
-      # the [smt] extra would exercise the --prove path, but it also
-      # flips --prove default-on, which changes what other suites check;
-      # that belongs in its own job, measured first.
+      # strace is what tools/runtime_oracle.py observes syscalls with;
+      # without it tests/test_mining.py checks only that the oracle refuses.
+      - name: Install strace
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq strace
+
+      # No Python dependencies: the core toolchain is stdlib-only. z3 is
+      # deliberately NOT installed here, so this matches the local gate
+      # (tests/test_smt.py prints SKIP, and run_all reports it as SKIP,
+      # not PASS). Installing the [smt] extra flips --prove default-on,
+      # which changes what other suites check — the `smt` job below runs
+      # the SMT suite alone, with z3.
       - name: Run the gate
         run: python -B scripts/run_all.py
+
+  smt:
+    name: --prove with z3 (tests/test_smt.py)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install z3
+        run: python -m pip install --quiet z3-solver
+
+      # The suite no-ops without z3 and says `SKIP:`; here that is a failure.
+      - name: Run the SMT suite
+        run: |
+          python -B tests/test_smt.py | tee /tmp/smt.out
+          test "${PIPESTATUS[0]}" -eq 0
+          if grep -q '^SKIP:' /tmp/smt.out; then
+            echo "::error::z3 is installed but test_smt.py skipped"; exit 1
+          fi
 
   wheel:
     name: wheel installs and works
