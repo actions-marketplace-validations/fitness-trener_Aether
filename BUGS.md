@@ -1262,7 +1262,7 @@ unparseable input such as py2 sources.
 Fix: only `py_to_ir` is inside that clause, so a detector exception of any
 type reaches the crash handlers.
 
-### BUG-036  the ratchet compared the baseline against the commit under test, counted detector existence only, and accepted any mention of a code as its proof  [OPEN]
+### BUG-036  the ratchet compared the baseline against the commit under test, counted detector existence only, and accepted any mention of a code as its proof  [FIXED e355774]
 test: tests/test_ratchet.py
 (`::test_baseline_never_lowered`, `::test_recall_floor`,
 `::test_legitimacy_counts_assertions_only`, `::test_detectors_legitimately_checked`)
@@ -1300,7 +1300,7 @@ commit lowering the new key `min_py_table_rows` 93 → 92 is red ("LOWERED
 against 9991e5217c", the parent). Deleting any of the five audit rows
 turns `test_ratchet.py` red through `min_py_table_rows`.
 
-### BUG-037  the runtime syscall oracle certified "sound" when it had observed nothing, and its test never ran  [OPEN]
+### BUG-037  the runtime syscall oracle certified "sound" when it had observed nothing, and its test never ran  [FIXED d7732f9]
 test: tests/test_mining.py (`::test_runtime_oracle_catches_fn`)
 
 Found 2026-09-24 by the whole-repo audit (F3). `scripts/run_all.py` listed
@@ -1328,7 +1328,7 @@ CI runs the real oracle path.
 Not verified here: the Linux strace path (no Linux machine in this
 session). The first CI run of the suite job is its first execution.
 
-### BUG-038  `analyze(skip=...)` ignored unknown stage names; a test's copy of the Python skip list had drifted  [OPEN]
+### BUG-038  `analyze(skip=...)` ignored unknown stage names; a test's copy of the Python skip list had drifted  [FIXED 032a639]
 test: tests/test_ratchet.py (`::test_skip_names_are_stages`)
 
 Found 2026-09-24 by the whole-repo audit (F4). The Python stage-skip list
