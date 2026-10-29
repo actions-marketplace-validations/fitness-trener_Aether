@@ -2,7 +2,7 @@
   "id": "T05_analytics_wrong_host",
   "axis": "B.2",
   "summary": "vendor-X adapter forwards data to vendor-Y URL",
-  "naive_aether": {"stage": "check", "expected_exit_code": 2,
+  "naive_aether": {"stage": "check", "expected_exit_code": 1,
                    "expected_diagnostic_code": "E0801",
                    "expected_stderr_pattern": "E0801.*uploadMetrics.*vendor-y"},
   "naive_python": {"stage": "run", "expected_exit_code": 0,

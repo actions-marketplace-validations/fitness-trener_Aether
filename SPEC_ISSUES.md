@@ -1,11 +1,13 @@
-# SPEC_ISSUES — v0.2+ backlog
+# SPEC_ISSUES — where the spec and the implementation disagree
 
-Anything discovered while building v0.1 that should be fixed in v0.2 lands here.
-Do not edit the v0.1 grammar/spec to address these — work around them in v0.1
-and resolve them in a single revision pass.
+Every entry is a place where `grammar/*.md` and the code disagreed, or a
+spec'd feature the implementation lacks. **Open** entries are still true;
+**Resolved** entries say how and when they closed. Defects in the
+implementation itself go to `BUGS.md`.
 
-This log was audited against the actual implementation on 2026-05-03 after an
-independent review. Resolved entries reflect the post-audit state.
+Audited against the implementation on 2026-05-03 and again on 2026-09-25
+(audit `audits/audit_2026-09-24_plan.md`, E11: S-002 and S-008 had been
+listed under both Open and Resolved; they are resolved).
 
 **See also**: the v2 roadmap (kept outside the public repo) — the strategic, feature-level scope ledger
 for v0.4+. The roadmap document explains the *categories* of deferred work
@@ -16,17 +18,17 @@ granular bug log; the roadmap is the strategy.
 
 ## Open
 
-### S-002 · Refinement types are not runtime-checked at boundary crossings
-`type Email = String where matches?(self, ...)` parses, but no runtime check
-runs when a `String` is passed to a parameter typed `Email`. Fix: emit a
-`_ae_check_refinement(value, predicate, name)` call at the start of the
-callee, parameterised by the refinement predicate.
-
 ### S-004 · No effect-prefix subset checking
 A function declaring `effects net.fetch` cannot, in the strict-effect runtime,
 satisfy a check for `net.fetch("https://api.x/*")`. v0.1 compares whole tuples
 of strings. Fix: implement glob-aware prefix matching in
 `runtime.EffectTracker._prefix_match`.
+
+*Status 2026-09-25:* the **static** check does this — `E0801` lets an
+argument-less caller effect cover any argument and matches a glob argument
+against the callee's (`grammar/effects.md`, "Composition rule"). The
+runtime tracker still compares path prefixes without arguments; no stdlib
+function performs `net.fetch`, so nothing at runtime records one.
 
 ### S-005 · Pattern-match expressions allocate a helper function per use site
 `match ... do ... end` in expression position lowers to a generated
@@ -48,12 +50,18 @@ delete it from `types.md`.
 `function map<T, U>(...)` parses; `T`, `U` flow through emission unmangled
 because they appear only in type positions. v0.2 should add a type-check pass
 that at least confirms the generic parameters are used consistently.
+(Nothing else is type-checked either — see S-020.)
 
-### S-008 · No fuzzer or negative reference set
-The plan called for property-based fuzzing of the parser plus a
-"deliberately wrong" set for negative tests. v0.2 should add `bench/fuzz/`
-using Hypothesis to confirm the parser never crashes and never silently
-accepts malformed input.
+### S-020 · The spec claimed static type checking; there is no type checker
+`grammar/types.md` said "everything else is checked statically" and
+`effects.md` said "the type checker rejects it". There is no type checker
+and no name resolution: `returns Int` with `return "x"`, an argument of
+the wrong type, wrong arity and a call to an undeclared name all pass
+`check` (the last two fail at `run` with a Python `TypeError`/`NameError`).
+Spec side resolved 2026-09-25: `types.md` now opens with what is checked
+statically, at runtime, and not at all. The implementation side (an
+unresolved-name pass, any type checking) is a language-scope decision,
+still open.
 
 ### S-009 · `time.now`, `random` not yet seedable for deterministic mode
 The runtime calls Python's wall clock directly. v0.2 should add a
@@ -87,14 +95,20 @@ extremely common identifier. Fix in v0.2: contextually reserve `result`
 only inside an `ensures` expression (the parser knows the context). v0.1
 workaround: documented in `prompt/system_prompt.md` under common mistakes.
 
-### S-016 · Mangling collision between `foo?` / `foo_q` (and `foo!` / `foo_e`)
-`empty?` mangles to `_ae_empty_q`, and a user-defined `empty_q` would also
-mangle to `_ae_empty_q`. Latent — the v0.1 stdlib doesn't trigger it, and a
-user identifier ending in `_q` or `_e` is unusual but not impossible. Fix:
-use a non-identifier separator like `__pred__` / `__bang__`, or reject any
-user identifier that already ends in `_q` / `_e`.
-
 ## Resolved
+
+### S-016 · Mangling collision between `foo?` / `foo_q` (and `foo!` / `foo_e`)  *(fixed 2026-09-25)*
+`empty?` and a user-defined `empty_q` both mangled to `_ae_empty_q`, so the
+checker and the runtime could run different functions. Fixed by `8722ce6`
+(injective mangling; the scheme is in `runtime.mangle`'s docstring).
+
+### S-021 · `stdlib.md` documented Instant arithmetic the runtime never had  *(resolved 2026-09-25)*
+`plus(t: Instant, d: Duration)` and `minus(a: Instant, b: Instant)` were
+spec'd; `runtime.py` has neither, so a call passed `check` and `run` failed
+with `NameError`. Resolved in the spec: the rows are removed and
+`stdlib.md` says so. `tests/test_spec_docs.py` now fails if `stdlib.md`
+documents a function the runtime lacks, or the runtime exposes one
+`stdlib.md` does not document.
 
 ### S-019 · Int spec/runtime divergence resolved: arbitrary precision  *(resolved 2026-07-06)*
 `grammar/types.md` said "64-bit signed integer" while the transpiled
@@ -151,7 +165,7 @@ sits *inside* this floor at corpus size ≥ 20, producing many false positives.
 The structural metric is fine as a Layer-1 *filter* but should not be used as
 a verdict; pair it with a Layer-2 problem-signature check (LLM-judged or
 hand-written one-line task descriptions) to actually answer "are these
-informational duplicates?". See `PHASE_A_AUDIT.md` for the resolved-flags
+informational duplicates?". See `docs/history/PHASE_A_AUDIT.md` for the resolved-flags
 table. v0.2 work that grows the grammar (records-as-keys, refinements, more
 control constructs) will widen the structural floor's gap to true
 near-clones, making the metric more useful — but Layer 2 should remain the
@@ -181,6 +195,10 @@ the dotted path (so `fs.read` → `fs`, `net.fetch` → `net`); `pure`,
 category `capability`. Default mode (without `--capability-strict`) is
 unchanged from v0.1 so existing programs still run. Regression tests in
 `tests/test_regressions.py::test_capability_*`.
+*Since then* the pass is default-on whenever the file declares a module
+(`--no-capability-check` opts out); a file with no module is granted every
+capability. It is a static check only — the runtime does not consult the
+capability list (`grammar/effects.md`, "Capability gating").
 
 ### S-008 · Parser fuzzer added  *(resolved 2026-05-03)*
 `scripts/fuzz_parser.py` generates random / mutated / token-perturbed

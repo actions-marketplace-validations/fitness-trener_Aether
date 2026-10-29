@@ -41,18 +41,12 @@ def check(path: str) -> tuple[int, list[str]]:
         [sys.executable, "-B", "-m", "transpiler.aether.cli", "--json", "check", path],
         cwd=ROOT, capture_output=True, text=True,
     )
-    codes: list[str] = []
-    for line in (p.stdout + "\n" + p.stderr).splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        d = obj.get("diagnostic") or obj
-        if isinstance(d, dict) and d.get("code"):
-            codes.append(d["code"])
+    # One JSON document on stdout (0.5.0; it was JSONL on stderr).
+    try:
+        doc = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        doc = {}
+    codes: list[str] = [d["code"] for d in doc.get("diagnostics", [])]
     return p.returncode, codes
 
 

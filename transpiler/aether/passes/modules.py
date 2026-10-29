@@ -11,7 +11,9 @@ enforces the smaller, surface-level structural invariants:
          composition is reserved for v0.4).
   E0704: a module declares a capability the runtime doesn't recognise
          (i.e. not one of {log, fs, net, db, exec, time, random, panic,
-         mutate}).
+         mutate}) — or a function declares an effect whose capability
+         (its first path segment) is not one of them, which no module
+         could ever grant (audit 2026-09-24 A11).
 
 Default-on; opt out with `aether check --no-module-check` (added
 alongside the existing `--no-static-effects` / `--no-capability-check`
@@ -37,6 +39,38 @@ _KNOWN_CAPABILITIES: Set[str] = {
 def check_modules(ast: Dict[str, Any]) -> List[Diagnostic]:
     diags: List[Diagnostic] = []
     decls = ast.get("decls", [])
+
+    # E0704 on a declared effect. Python has no effects clause: the
+    # frontend's paths (`env`, `process`) are inferred, not declared.
+    for d in decls if ast.get("lang") != "python" else ():
+        if d.get("kind") != "FunctionDecl":
+            continue
+        for eff in d.get("effects") or []:
+            path = eff.get("path") or []
+            if not path or path == ["pure"] or path[0] in _KNOWN_CAPABILITIES:
+                continue
+            pos = d.get("pos") or {"line": 0, "column": 0}
+            name = ".".join(path)
+            diags.append(Diagnostic(
+                code="E0704",
+                category="module",
+                severity="error",
+                message=(
+                    f"function {d['name']!r} declares effect {name!r}, whose "
+                    f"capability {path[0]!r} is not a known capability; no "
+                    f"module can grant it"
+                ),
+                position=Position(pos.get("line", 0), pos.get("column", 0)),
+                suggestion=(
+                    f"declare an effect of a known capability "
+                    f"({', '.join(sorted(_KNOWN_CAPABILITIES))}), or remove "
+                    f"{name!r}"
+                ),
+                confidence=1.0,
+                extra={"function": d["name"], "effect": name,
+                       "capability": path[0],
+                       "known": sorted(_KNOWN_CAPABILITIES)},
+            ))
 
     # E0703: more than one ModuleDecl.
     modules = [d for d in decls if d.get("kind") == "ModuleDecl"]

@@ -1,15 +1,25 @@
 """Aether v0.1 runtime — the Python implementation of stdlib functions
 and the constructors for Result/Option/Unions.
 
-All Aether identifiers are mangled to avoid colliding with Python builtins:
+All Aether identifiers are mangled so they cannot collide with Python
+builtins, with each other, or with this runtime's own helpers:
 
     foo       -> _ae_foo
-    foo?      -> _ae_foo_q
-    foo!      -> _ae_foo_e
+    foo?      -> _ae_foo__q
+    foo!      -> _ae_foo__e
+    foo__q    -> _aex_foo__q      (a plain name that ends like a suffix)
 
-The emitter rewrites every identifier through `mangle()`. The runtime
-exposes its functions under their mangled names so the emitted code
-just calls them directly.
+`mangle()` is injective (see its docstring). Runtime HELPERS the emitter
+calls (`_aert_assert_contract`, `_aert_check_refinement`, the hoisted
+`_aert_refn_<T>` predicates, match/old temporaries) live under `_aert_`,
+which no mangled user identifier can start with — a user function named
+`assert_contract` used to replace the contract checker and silently
+disable every `requires` (audit 2026-09-24 A4). `_ae_result` and
+`_ae_self` are deliberately the mangled spellings of `result` (in
+`ensures`) and `self` (in a refinement predicate): those ARE the user's
+names. The emitter rewrites every identifier through `mangle()`; the
+runtime exposes stdlib functions under their mangled names so emitted
+code calls them directly.
 """
 
 from __future__ import annotations
@@ -30,14 +40,49 @@ PY_RESERVED = {
 }
 
 
+# Prefix of every runtime helper the emitter calls. No output of
+# `mangle()` starts with it (mangled names start `_ae_` or `_aex_`).
+HELPER_PREFIX = "_aert_"
+
+
 def mangle(name: str) -> str:
-    base = name
-    suffix = ""
-    if base.endswith("?"):
-        base, suffix = base[:-1], "_q"
-    elif base.endswith("!"):
-        base, suffix = base[:-1], "_e"
-    return f"_ae_{base}{suffix}"
+    """Aether identifier -> Python identifier, injectively.
+
+    A lexer identifier is `[alnum_]+` with an optional trailing `?` or
+    `!`. `foo?` -> `_ae_foo__q`, `foo!` -> `_ae_foo__e`, a plain `foo`
+    -> `_ae_foo`. A plain name that itself ends in `__q` / `__e` would
+    meet a suffixed one there, so it moves to the `_aex_` prefix. Proof:
+    under `_ae_`, an output ends in `__q`/`__e` iff it came from a
+    suffixed name; under `_aex_` only plain names land; each branch is
+    the identity on the base name. The old scheme mapped `valid?` and
+    `valid_q` both to `_ae_valid_q`, so the checker and the runtime ran
+    different functions (audit 2026-09-24 A4, SPEC_ISSUES S-016)."""
+    if name.endswith("?"):
+        return f"_ae_{name[:-1]}__q"
+    if name.endswith("!"):
+        return f"_ae_{name[:-1]}__e"
+    if name.endswith(("__q", "__e")):
+        return f"_aex_{name}"
+    return f"_ae_{name}"
+
+
+def unmangle(py_name: str) -> Optional[str]:
+    """The Aether identifier `mangle()` maps to `py_name`, or None if no
+    identifier does. `tests/test_compiler_refuses.py` uses this to prove
+    every runtime helper is unreachable from user code."""
+    if py_name.startswith("_aex_"):
+        base = py_name[len("_aex_"):]
+        cand = base
+    elif py_name.startswith("_ae_"):
+        base = py_name[len("_ae_"):]
+        cand = (base[:-3] + "?" if base.endswith("__q") else
+                base[:-3] + "!" if base.endswith("__e") else base)
+    else:
+        return None
+    ident = cand.rstrip("?!")
+    if not ident or not all(c.isalnum() or c == "_" for c in ident)             or ident[0].isdigit():
+        return None
+    return cand if mangle(cand) == py_name else None
 
 
 # ----------------------------------------------------------------------
@@ -51,15 +96,31 @@ class EffectTracker:
         self.strict = strict
         self.allowed: List[Tuple[str, ...]] = []
         self.observed: List[Tuple[str, ...]] = []
+        # Capability grant of each active frame's program (None = the
+        # implicit all-grant of a program without a module).
+        self.grants: List[Optional[frozenset]] = []
 
-    def push_frame(self, declared: List[Tuple[str, ...]]):
+    def push_frame(self, declared: List[Tuple[str, ...]],
+                   grant: Optional[frozenset] = None):
+        if grant is not None:
+            # A function whose DECLARED effects exceed the module grant is
+            # refused when invoked, before its body runs — a declared
+            # effect with no stdlib call behind it (`net.fetch`) is still
+            # a reach the module never granted.
+            for path in declared:
+                _check_grant(tuple(path), grant)
         self.allowed.append(declared)
+        self.grants.append(grant)
 
     def pop_frame(self):
         self.allowed.pop()
+        self.grants.pop()
 
     def record(self, path: Tuple[str, ...]):
         self.observed.append(path)
+        grant = self.grants[-1] if self.grants else _GRANT
+        if grant is not None:
+            _check_grant(path, grant)
         if self.strict and self.allowed:
             top = self.allowed[-1]
             if ("pure",) in top:
@@ -93,13 +154,57 @@ class EffectTracker:
 
 _TRACKER = EffectTracker(strict=False)
 
+# The grant of top-level code (const initializers) and of `--release`
+# code, which pushes no frames. Set by the emitted program when it
+# declares a module; reset by `build_namespace()`.
+_GRANT: Optional[frozenset] = None
+
+
+def set_capability_grant(caps) -> None:
+    """RUNTIME capability enforcement (audit 2026-09-24 A3). A program
+    that declares a `module ... requires capability ...` runs under
+    exactly that grant: an effect whose capability is outside it raises
+    a structured E0701 at the moment the stdlib performs it, whatever the
+    static passes were told to skip (`--no-capability-check`,
+    `--no-static-effects`). A program with no module keeps the implicit
+    all-capability grant, as the static pass does. This is a runtime
+    guarantee about effects the stdlib performs, not a static proof.
+
+    Ceiling: `--release` code pushes no frames, so there the grant is
+    this one process-wide value — two `aether pack`-ed modules imported
+    into one process share the last one set. Non-release code carries
+    its program's grant on every frame and is exact."""
+    global _GRANT
+    _GRANT = None if caps is None else frozenset(caps)
+
+
+def _check_grant(path: Tuple[str, ...], grant: frozenset) -> None:
+    from .passes.capability import effect_capability
+    cap = effect_capability(path)
+    if cap and cap not in grant:
+        from .diagnostics import AetherError, Diagnostic, Position
+        eff = ".".join(path)
+        raise AetherError(Diagnostic(
+            code="E0701", category="capability", severity="error",
+            message=(f"effect {eff!r} requires capability {cap!r}, which "
+                     f"this program's module does not grant (runtime "
+                     f"capability check; grants: "
+                     f"{', '.join(sorted(grant)) or 'none'})"),
+            position=Position(0, 0),
+            suggestion=(f"add `requires capability {cap}` to the module "
+                        f"declaration, or do not perform {eff!r}"),
+            confidence=1.0,
+            extra={"effect": eff, "required_capability": cap,
+                   "declared_capabilities": sorted(grant), "runtime": True},
+        ))
+
 
 def set_effect_strict(strict: bool):
     _TRACKER.strict = strict
 
 
-def push_effect_frame(declared):
-    _TRACKER.push_frame(declared)
+def push_effect_frame(declared, grant=None):
+    _TRACKER.push_frame(declared, grant)
 
 
 def pop_effect_frame():
@@ -135,7 +240,7 @@ def _ae_length(xs):
         return len(xs)
     return len(xs)
 
-def _ae_empty_q(xs):                   return len(xs) == 0
+def _ae_empty__q(xs):                   return len(xs) == 0
 def _ae_head(xs):                      return _ae_Some(xs[0]) if xs else _ae_None()
 def _ae_tail(xs):
     if not xs:
@@ -186,11 +291,15 @@ def _ae_set(m, k, v):
     return new
 
 def _ae_remove(m, k):
+    # stdlib.md documents remove on Map<K,V> AND Set<T>; `dict(m)` on a
+    # frozenset raised a Python TypeError (BUGS.md BUG-050).
+    if isinstance(m, (set, frozenset)):
+        return frozenset(m) - {k}
     new = dict(m)
     new.pop(k, None)
     return new
 
-def _ae_has_q(m, k):                   return k in m
+def _ae_has__q(m, k):                   return k in m
 def _ae_keys(m):                       return list(m.keys())
 def _ae_values(m):                     return list(m.values())
 
@@ -200,7 +309,7 @@ def _ae_values(m):                     return list(m.values())
 # ----------------------------------------------------------------------
 
 def _ae_add(s, x):                     return frozenset(s | {x})
-def _ae_contains_q(s, x):              return x in s
+def _ae_contains__q(s, x):              return x in s
 
 
 # ----------------------------------------------------------------------
@@ -214,8 +323,8 @@ def _ae_trim(s):                       return s.strip()
 def _ae_toLower(s):                    return s.lower()
 def _ae_toUpper(s):                    return s.upper()
 def _ae_replace(s, frm, to):           return s.replace(frm, to)
-def _ae_startsWith_q(s, p):            return s.startswith(p)
-def _ae_endsWith_q(s, p):              return s.endswith(p)
+def _ae_startsWith__q(s, prefix):       return s.startswith(prefix)
+def _ae_endsWith__q(s, suffix):         return s.endswith(suffix)
 
 def _ae_parseInt(s):
     try:
@@ -386,11 +495,11 @@ def _ae_shellArg(template, value):
     quoted = "'" + str(value).replace("'", "'\\''") + "'"
     return template.replace("?", quoted, 1)
 
-def _ae_redirect(url):
+def _ae_redirect(target):
     # Models an HTTP redirect — carries the `net.redirect` effect. E0718
     # refuses a target steerable by untrusted input (open redirect).
     record_effect("net", "redirect")
-    return "REDIRECT(" + url + ")"
+    return "REDIRECT(" + target + ")"
 
 def _ae_safeRedirect(host, path):
     # Pure. Build a redirect target pinned to `host`: strip any scheme,
@@ -439,11 +548,11 @@ def _ae_csvCell(v):
     # Returns the value; the point is the static E0728 refusal.
     return str(v)
 
-def _ae_csvEscape(v):
+def _ae_csvEscape(x):
     # Pure. Neutralize a leading formula trigger (= + - @, tab, CR) by
     # prefixing a single quote so a spreadsheet treats the cell as text.
     # The sanctioned exit for E0728.
-    s = str(v)
+    s = str(x)
     return ("'" + s) if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
 
 def _ae_setHeader(name, value):
@@ -475,11 +584,11 @@ def _ae_classify(x):
     # auditable exit.
     return x
 
-def _ae_reveal(x):
+def _ae_reveal(s):
     # Pure. Unwrap a Secret<T> to its T. This is the ONLY sanctioned way
     # to expose a secret; E0712 treats a reveal(...) subtree as an
     # intentional, code-reviewed disclosure and does not flag it.
-    return x
+    return s
 
 def _ae_safeJoin(base, rel):
     # Pure. Join `rel` under `base`, discarding any component that would
@@ -618,7 +727,7 @@ def _ae_min(a, b):                     return min(a, b)
 def _ae_max(a, b):                     return max(a, b)
 def _ae_floor(x):                      import math; return math.floor(x)
 def _ae_ceil(x):                       import math; return math.ceil(x)
-def _ae_pow(a, b):                     return a ** b
+def _ae_pow(base, exp):                return base ** exp
 
 def _ae_sqrt(x):
     if x < 0:
@@ -717,12 +826,12 @@ def _ae_lcm(a, b):
 # Result / Option helpers
 # ----------------------------------------------------------------------
 
-def _ae_isOk_q(r):                     return r[0] == "Ok"
-def _ae_isErr_q(r):                    return r[0] == "Err"
+def _ae_isOk__q(r):                     return r[0] == "Ok"
+def _ae_isErr__q(r):                    return r[0] == "Err"
 def _ae_unwrapOr(r, default):          return r[1] if r[0] == "Ok" else default
 
-def _ae_isSome_q(o):                   return o[0] == "Some"
-def _ae_isNone_q(o):                   return o[0] == "None"
+def _ae_isSome__q(o):                   return o[0] == "Some"
+def _ae_isNone__q(o):                   return o[0] == "None"
 def _ae_unwrapOrElse(o, default):      return o[1] if o[0] == "Some" else default
 
 
@@ -730,7 +839,7 @@ def _ae_unwrapOrElse(o, default):      return o[1] if o[0] == "Some" else defaul
 # Contract assertion helper
 # ----------------------------------------------------------------------
 
-def _ae_assert_contract(cond: bool, kind: str, expr: str, fn: str, args=None):
+def _aert_assert_contract(cond: bool, kind: str, expr: str, fn: str, args=None):
     """Raise a structured contract error if `cond` is False.
 
     D.2 split: `requires` failures use E0301, `ensures` failures use
@@ -761,13 +870,13 @@ def _ae_assert_contract(cond: bool, kind: str, expr: str, fn: str, args=None):
 
 
 
-def _ae_check_refinement(value, predicate_fn, type_name: str,
+def _aert_check_refinement(value, predicate_fn, type_name: str,
                           binding_name: str, predicate_text: str = ""):
     """Boundary-crossing check for a refinement type (B.4 polished).
 
     Called at function entry for any parameter whose declared type is a
     refinement (e.g. `type PositiveInt = Int where self > 0`). The
-    `predicate_fn` is a hoisted module-level `_ae_refn_<TypeName>` helper
+    `predicate_fn` is a hoisted module-level `_aert_refn_<TypeName>` helper
     emitted by the compiler. `predicate_text` is the source-rendered
     predicate ("self > 0") used in the diagnostic message and `extra`
     field so an agent fix-loop can see *why* the value was rejected,
@@ -816,14 +925,18 @@ def _ae_check_refinement(value, predicate_fn, type_name: str,
 # ----------------------------------------------------------------------
 
 def build_namespace() -> Dict[str, Any]:
+    # A fresh program starts with no module grant; one that declares a
+    # module sets its own at the top of the emitted code.
+    set_capability_grant(None)
     g: Dict[str, Any] = {}
     EXPORTS = {
         "_make_union", "_TRACKER",
         "push_effect_frame", "pop_effect_frame",
         "record_effect", "set_effect_strict",
         "set_deterministic", "is_deterministic",
+        "set_capability_grant",
     }
     for name, val in globals().items():
-        if name.startswith("_ae_") or name in EXPORTS:
+        if name.startswith(("_ae_", HELPER_PREFIX)) or name in EXPORTS:
             g[name] = val
     return g

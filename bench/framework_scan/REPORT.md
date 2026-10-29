@@ -346,3 +346,54 @@ has (PEM headers). The by-name rows carry their measured cost with them:
 `from_string` at roughly one non-template hit in three, `fetch_all` at
 four HTTP loaders — both the direction q5 sanctions, both now numbers
 rather than predictions.
+
+## 9. Re-measured 2026-09-25, after iteration 59 (Wave 4): 676 → 707
+
+Same 4,946 files, same interpreter. +31, −0; no kept finding changed
+confidence. E0713 600 → 629: 5 raw `text()` entries outside any executor
+(agno partial-index `postgresql_where=text(cfg["where"])` ×4,
+langchain-community `sa.text(self.query)` into a private `_execute`), 15
+`.sql`/`.execute_sql` executors (duckdb/csv agent tools, spark, snowflake,
+rockset, manticore, ODPS), 4 f-string LanceDB `.where(...)` filters
+(agno, crewai), and 5 over-flags of the any-receiver `.text` row
+(streamlit, outlines, LanceDB full-text) at 0.6. E0731 8 → 10:
+`runpy.run_path` in agno's Python tool. 26 of 31 true by rule. The Stripe `rk_live_` credential row was added by the coordinator after this measurement (no corpus site).
+
+## 10. Re-measured 2026-09-25, after iteration 60 (Wave 5a): 707 → 683
+
+Same 4,946 files, same interpreter. −24, +0. Each removal was read at
+source and is a documented safe idiom (file:line list in
+`audits/waves/wave5a_record.md`):
+- E0713 629 → 608:
+  - 6 SQLAlchemy Table forms on an attribute receiver
+    (`self.table.delete()`);
+  - 2 literal + literal queries;
+  - 13 psycopg `sql.SQL(...).format(sql.Identifier(...))` compositions.
+- E0719 26 → 24: a same-file class's own `from_string`, and one
+  `SandboxedEnvironment().from_string`. The sandbox is Jinja's control
+  for untrusted templates; its escapes are a q1 residual.
+- E0731 10 → 9: `compile(..., ast.PyCF_ONLY_AST)`.
+
+Four stdlib ElementTree calls without a parser argument move from 0.95 to
+0.6 and stay reported. `--min-confidence 0.9` hides 632 of 683 (it hid
+652 of 707). Iterations 61-62 (the exit-code table, then the performance
+wave) do not change this finding set: 683 at `c721635`, re-measured by
+the coordinator.
+
+## 11. Re-measured 2026-09-29, after iteration 65 (gaps round, Agent C): 683 → 684
+
+Same 4,946 files, same interpreter. The frontend change of this round
+(one walk per scope) left the finding set byte-identical. Measured on a
+machine shared with two other agents: frontend 76.1 s → 46.2 s in-process,
+serial `check-py` about 67 s of CPU, default jobs 20–24 s wall. The
+argument-injection rows (E0714 on an argv list whose program is git, ssh,
+tar, find, rsync or zip, handed a non-literal word before a literal `--`)
+add one finding, +1 / −0: agno's `git <args>` runner
+(`context/wiki/git_ops.py:119`, `asyncio.create_subprocess_exec("git",
+*args)`), where `-c core.pager=...` or `--upload-pack=...` in `args` runs a
+command. It is true by rule and rated 0.9 (`argv`). `--min-confidence 0.9`
+keeps 52. Only one corpus argv call with a non-literal word names one of
+the six programs, so the rows are sized for the shape, not for this corpus
+(`audits/gaps/C_record.md`). A per-class attribute summary for receivers
+(`self.x = Ctor(...)`) was measured and not built: 25 by-method sink calls
+would resolve, and none would change its finding or rating.

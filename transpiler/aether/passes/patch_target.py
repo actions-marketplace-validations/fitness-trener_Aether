@@ -14,10 +14,12 @@ use the index. Example:
 
 Path semantics by diagnostic code
 ---------------------------------
-* E0801 (effect not covered) -> FunctionDecl containing the offending
-  call site. Path ends at the FunctionDecl's `effects` field:
-      [("decls", i), ("effects", None)]
-  The fix-loop appends the missing effect there.
+* E0801 (effect not covered) -> the offending Call inside the caller:
+      [("decls", i), ("body", j), ..., ]
+  Removing or replacing that call keeps the declared effects; adding the
+  effect to the clause WIDENS it, and the fix-loop will not do that
+  unless told to (`--allow-widen`). Falls back to
+  [("decls", i), ("effects", None)] when the call cannot be located.
 * E0701 (capability not declared) -> ModuleDecl's `capabilities` field:
       [("decls", i), ("capabilities", None)]
 * E0301 (requires violation) -> the offending argument expression at the
@@ -43,8 +45,9 @@ node — `effects` is a *field* on FunctionDecl carrying the parsed
 effect list. Likewise the ModuleDecl's capability clause is the
 `capabilities` field. The patch-target path therefore terminates at
 those fields by name, which is what a structural fix-loop needs to
-splice into. The corpus uses `patch_target_kind = "FunctionDecl"` /
-`"ModuleDecl"` because the resolved leaf is the parent decl node.
+splice into. The corpus uses `patch_target_kind = "ModuleDecl"` for
+E0701 because the resolved leaf is the parent decl node; E0801 resolves
+to `"Call"`.
 
 This pass is read-only and side-effect free.
 """
@@ -141,10 +144,40 @@ def _walk_returns_with_path(stmts: List[Any], prefix: Path):
 # ---------------------------------------------------------------------
 
 def _patch_E0801(ast: Dict[str, Any], diag) -> Optional[Path]:
-    caller = (diag.extra or {}).get("caller")
-    idx = _find_decl_index(ast, "FunctionDecl", caller)
+    """The offending CALL inside the caller: removing or replacing it is
+    the repair that keeps the declared constraint. The declaration's
+    `effects` field used to be the only target, which made widening the
+    one mechanical repair on offer (audit 2026-09-24 D1).
+
+    The diagnostic is positioned at the call (audit D10), so the call at
+    that position is the target — the one whose callee is `callee` when a
+    call chain shares that start. With no call at the position (an AST
+    edited since the check, a call in a contract clause) it picks the
+    caller's first call to `callee`, else the first call passing `callee`
+    as a value (`extra.via == "function_value"`). Falls back to the
+    effects clause when none is found (a call through an alias)."""
+    extra = diag.extra or {}
+    idx = _find_decl_index(ast, "FunctionDecl", extra.get("caller"))
     if idx is None:
         return None
+    callee = extra.get("callee")
+    # Body only: check_effects never reads the contract clauses.
+    calls = [c for j, stmt in enumerate(ast["decls"][idx].get("body") or [])
+             for c in _walk_calls_with_path(stmt, [("body", j)])]
+    pos = getattr(diag, "position", None)
+    at = [(path, call) for path, call in calls if pos is not None
+          and (call.get("pos") or {}).get("line") == pos.line
+          and (call.get("pos") or {}).get("column") == pos.column]
+    named = [pc for pc in at if _callee_name(pc[1]) == callee]
+    if at:
+        return [("decls", idx)] + (named or at)[0][0]
+    for path, call in calls:
+        if _callee_name(call) == callee:
+            return [("decls", idx)] + path
+    for path, call in calls:
+        if any(isinstance(a, dict) and a.get("kind") == "Ident"
+               and a.get("name") == callee for a in call.get("args") or []):
+            return [("decls", idx)] + path
     return [("decls", idx), ("effects", None)]
 
 

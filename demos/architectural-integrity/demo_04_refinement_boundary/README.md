@@ -24,7 +24,7 @@ refined type appears, and every caller automatically benefits.
 ## How to reproduce
 
 ```sh
-# Aether: rejected at run time, exit 2 with structured diagnostic
+# Aether: rejected at run time, exit 1 with structured diagnostic
 python3 -B -m transpiler.aether.cli run \
     demos/architectural-integrity/demo_04_refinement_boundary/aether/main.aeth
 

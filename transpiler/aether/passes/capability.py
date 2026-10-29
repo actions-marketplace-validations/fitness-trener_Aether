@@ -42,9 +42,12 @@ Limits / known gaps (v1 scope):
   - "Transitive" here means "via direct function calls within this
      program file" — a single AST. Cross-file module composition is
      Phase D.3 work.
-  - HOFs / function-typed parameters / let-bound function values are
-    treated as pure for the call-graph build. Effect leakage through
-    a HOF is caught by B.1 at the call site that passes the function in.
+  - A function value handed to a call is an edge from the caller (the
+    HOF runs it); a call through a function-typed parameter is charged
+    where the function is passed. A callee the pass cannot name (an
+    indexed element, a call result, an opaque local) is an edge to every
+    function the program uses as a value — a closed-world over-approx-
+    imation (audit 2026-09-24 A2), shared with E0801.
   - A program with no module declarations is treated as having an
     implicit all-capability grant. Surface this in the audit if a YC
     partner asks "what does this enforce on a script without a module?"
@@ -54,9 +57,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Set, Tuple, Optional
 
 from ..diagnostics import Diagnostic, Position
-from .ast_walk import walk, callee_name
-from .detector_specs import _fn_aliases
-from .effects import _STDLIB_EFFECTS
+from .ast_walk import callee_name, contexts, fn_calls
+from .effects import _STDLIB_EFFECTS, program_callables, context_names, resolve_call
 
 
 # Effects that require no capability.
@@ -163,27 +165,45 @@ def check_capabilities(ast: Dict[str, Any]) -> List[Diagnostic]:
     # target — resolution only ADDS edges (BUGS.md BUG-015).
     fn_names = frozenset(d["name"] for d in ast.get("decls", [])
                          if d.get("kind") == "FunctionDecl")
-    alias_targets = fn_names | frozenset(_STDLIB_EFFECT_PATHS)
+    # Every evaluation context: functions (body AND contracts), refinement
+    # predicates and const initializers (audit 2026-09-24 A1) — a const
+    # that writes a file at module load needs `fs` like any function.
+    ctxs = list(contexts(ast))
+    # The same call resolution E0801 uses (passes/effects.py): function
+    # values handed to a call are edges (BUG-022), and a callee the pass
+    # cannot name is an edge to EVERY function the program uses as a
+    # value — the closed-world bound (audit 2026-09-24 A2). Treating it
+    # as pure let `ws[0](p, s)` write a file under a module granting only
+    # `log`.
+    prog = program_callables(ast)
     direct_effects: Dict[str, Set[Tuple[str, ...]]] = {}
     call_graph: Dict[str, Set[str]] = {}
-    for d in ast.get("decls", []):
-        if d.get("kind") != "FunctionDecl":
-            continue
+    for d in ctxs:
         name = d["name"]
         direct_effects[name] = _direct_effect_paths(d)
-        al = _fn_aliases(d, alias_targets)
+        cx = context_names(d, prog)
         callees: Set[str] = set()
-        for call in walk(d.get("body", []), "Call"):
+        for call in fn_calls(d):
             n = callee_name(call)
             if n is not None:
                 callees.add(n)
-                callees |= al.get(n, set())
+            if call.get("py"):
+                # Translated Python keeps the pre-A2 edges (callee +
+                # aliases). The closed-world bound needs Aether's "no
+                # lambdas, one file" world, and the frontend reports an
+                # unresolved callee as `unprovable` instead. Measured:
+                # without this, `check-py --strict` gained 39 E0701 on
+                # the framework corpus (audit wave 2 record).
+                callees |= cx["al"].get(n, set())
+                continue
+            targets, unknown = resolve_call(call, cx, prog)
+            callees |= {t for t, _as_value in targets}
+            if unknown is not None:
+                callees |= set(prog["escaping"])
         call_graph[name] = callees
 
     diags: List[Diagnostic] = []
-    for d in ast.get("decls", []):
-        if d.get("kind") != "FunctionDecl":
-            continue
+    for d in ctxs:
         fn_name = d["name"]
         pos = d.get("pos") or {"line": 0, "column": 0}
         eff_paths = _transitive_effect_paths(fn_name, direct_effects, call_graph)

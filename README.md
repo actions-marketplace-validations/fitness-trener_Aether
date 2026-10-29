@@ -3,6 +3,13 @@
 **A security checker for Python, aimed at the code AI agents write and
 run.**
 
+Aether is a security checker for Python, built on the typed intermediate
+representation of the Aether language. `aether check-py` translates an
+unmodified Python file into that IR and runs the security rules on it;
+Aether source (`.aeth`) is checked by the same rules plus the language's
+effect, capability and marker-type checks, which Python code has no
+declarations for.
+
 Point it at a Python file. It finds SQL injection, command injection, code
 injection through `exec`/`eval`, open redirect, SSTI, insecure
 deserialization, hardcoded credentials and untrusted XML parsing (XXE
@@ -14,23 +21,24 @@ Sample output on this page is wrapped to fit and trimmed; `...` marks
 elided text.
 
     $ aether check-py bench/py_frontend/corpus/sqli_repro.py
-    [E0713] error (capability) at line 20, col 12: function 'find_user' builds a SQL query for
-    'sqlQuery' unsafely (query is built by string concatenation - use sqlBind(...)); untrusted
-    input concatenated into a query is an injection
-      hint: use a fixed literal, or parameterize with sqlBind("... ? ...", value) which escapes
-      the value so it cannot break out of the query
-    [E0713] error (capability) at line 26, col 12: function 'find_user_fstring' builds a SQL
-    query for 'sqlQuery' unsafely ...
+    [E0713] error (security) at line 20, col 12: function 'find_user' builds a SQL query for
+    execute unsafely (query is built by string concatenation); untrusted input concatenated into
+    a query is an injection
+      hint: keep the query text fixed and pass the values separately: cursor.execute("SELECT *
+      FROM t WHERE id = %s", (value,)) (the placeholder is the driver's: %s, ? or :name), or
+      SQLAlchemy text("SELECT * FROM t WHERE id = :id").bindparams(id=value) / select(t)
+    [E0713] error (security) at line 26, col 12: function 'find_user_fstring' builds a SQL
+    query for execute unsafely ...
 
     2 finding(s) in 3 function(s); 3 unprovable region(s) in 3 function(s).
     NOT checked on Python (no declared effects clause, no marker types): ...
     ...
 
-`sqlBind` is Aether's name for a parameterized query; see the limits below
-for how to read Aether names in findings on Python.
 
-Exit `0` clean, `2` on findings or on an error (a missing path, an
-analyzer crash). Every command on this page that names a path in this
+Exit `0` clean, `1` findings, `2` usage error (a missing path), `3`
+analyzer crash, `4` incomplete (a file could not be parsed and nothing
+was found), the same table for `check`, `check-py`, `fix-loop` and
+`tools/scan.py` ([`docs/SCANNING.md`](https://github.com/fitness-trener/Aether/blob/main/docs/SCANNING.md)). Every command on this page that names a path in this
 repo runs from a fresh clone after `pip install .` (see Install); the two
 bandit comparisons and `run_recall.py` also need
 `pip install bandit==1.9.4` (without it `run_recall.py` still runs, with
@@ -59,8 +67,8 @@ form, no shell — on line 24.
     ...:24: B603[bandit]: LOW: subprocess call - check for execution of untrusted input.
 
     $ aether check-py bench/realworld_subprocess_cmdi/subprocess_repro.py
-    [E0714] error (capability) at line 18, col 12: function 'make_thumbnail' builds a shell
-    command for 'shellExec' unsafely ...
+    [E0714] error (security) at line 18, col 12: function 'make_thumbnail' builds a shell
+    command for subprocess.call unsafely ...
     ...
 
 Both find line 18. Only one of them also warns about the fix. A checker
@@ -74,7 +82,7 @@ value `AKIAIOSFODNN7EXAMPLE`, which has the shape of a real key):
     (no output, exit 0)
 
     $ aether check-py bench/py_frontend/corpus/hardcoded_secret_repro.py
-    [E0723] error (capability) at line 19, col 18: string literal contains a hardcoded AWS
+    [E0723] error (security) at line 19, col 18: string literal contains a hardcoded AWS
     access key id; a credential in source is committed to version control and shipped in
     every build
     ...
@@ -178,7 +186,7 @@ letting you assume otherwise:
 - The marker rows `E0712`, `E0715`, `E0717`, `E0724`, `E0725`, `E0726`,
   `E0728`, `E0729` and `E0730`, which need a
   `Secret`/`PII`/`Untrusted`/`Authorized` type.
-- The static-semantic family `E0202`–`E0207`: it checks Aether language
+- The static-semantic family `E0202`–`E0208`: it checks Aether language
   constructs, and on translated Python it would describe the translation,
   not the program.
 
@@ -198,23 +206,19 @@ unresolved type; those findings are rated 0.6 confidence, so they sort
 below the import-resolved findings of the same risk rating. Single file, no cross-module resolution, no control flow.
 Full list in [`bench/py_frontend/REPORT.md`](https://github.com/fitness-trener/Aether/blob/main/bench/py_frontend/REPORT.md) §4.
 
-Findings on Python still use Aether's names. Messages name the Aether sink
-(`sqlQuery`, `shellExec`, `deserialize`, `evalCode`, `renderTemplate`,
-`readFile`) rather than your call, and the messages or hints for `E0711`
-(`--strict`), `E0713`, `E0714`, `E0718`, `E0720`, `E0723` and `E0731` name
-functions Python does not have: `safeJoin`, `sqlBind`, `shellArg`,
-`safeRedirect`, `schemaDecode`, `getEnv`, `trusted`. `executescript` findings name `sqlExec`, and the
-`E0716` hint names `authorize` and `Authorized<String>`. Under `--strict`,
-the `E0701` hint suggests an Aether `module ... requires capability`
-declaration or `effects pure`; `E0710`/`E0721`/`E0722` say a function
-"declares effect 'net.fetch'" when a mapped `fetch` call fires them,
-though Python declares nothing. Read them as the
-Python fix they stand for: a parameterized query for `sqlBind`, an argv
-list or `shlex.quote` for `shellArg`, a resolved path checked to stay
-under a fixed base directory for `safeJoin`, a host allow-list for
-`safeRedirect`, a data-only format such as `json` validated against a
-schema for `schemaDecode`, `os.environ` for `getEnv`. The `E0727` hints
-name Python fixes; the `E0719` hint names no function.
+Findings on Python name your call and a Python fix: the message names
+the callee as the frontend spelled it (`execute`, `subprocess.call`,
+`lxml.etree.fromstring`), and the hints of the default-on codes and of
+`E0711` under `--strict` give the Python remedy (a parameterized
+`cursor.execute`, an argv list or `shlex.quote` per argument, `url_for` or
+an allow-list check, `json.loads`/`yaml.safe_load`, `os.environ`,
+`ast.literal_eval`, `werkzeug.utils.safe_join`). Python findings carry
+`category: "security"`. Three rows still speak Aether: `E0716` on
+`executescript` names `sqlExec`, `authorize` and `Authorized<String>`;
+under `--strict`, the `E0701` hint suggests an Aether `module ... requires
+capability` declaration or `effects pure`; and `E0710`/`E0721`/`E0722`
+say a function "declares effect 'net.fetch'" when a mapped `fetch` call
+fires them, though Python declares nothing.
 
 ## Install
 
@@ -246,11 +250,11 @@ the findings you can actually fix:
 
     $ aether check-py bench/realworld_subprocess_cmdi/ bench/realworld_xxe/
     bench/realworld_subprocess_cmdi/subprocess_repro.py
-    [E0714] error (capability) at line 18, col 12: function 'make_thumbnail' builds a shell
-    command for 'shellExec' unsafely ...
+    [E0714] error (security) at line 18, col 12: function 'make_thumbnail' builds a shell
+    command for subprocess.call unsafely ...
     ...
     bench/realworld_xxe/lxml_repro.py
-    [E0727] error (capability) at line 17, col 12: function 'load_config' parses untrusted
+    [E0727] error (security) at line 17, col 12: function 'load_config' parses untrusted
     XML via lxml.etree.fromstring ...
     ...
 
@@ -261,13 +265,18 @@ the findings you can actually fix:
 Findings sort worst-first by the per-code risk rating, then, within a
 rating, most-certain first: a callee resolved through the file's imports
 rates 0.95 confidence, a method matched only by its name on a receiver of
-unknown type 0.6. `--min-confidence 0.9` hides the 0.6 findings — 628 of
-676 on the 15-framework corpus. It is a filter, not a verdict on what it
+unknown type 0.6, and so does a finding whose argument already contains a
+sanitizer or an own-origin URL builder. `--min-confidence 0.9` hides the
+0.6 findings — 632 of 684 on the 15-framework corpus (re-scanned
+2026-09-29 on the 0.5.0 branch,
+[`bench/framework_scan/REPORT.md`](https://github.com/fitness-trener/Aether/blob/main/bench/framework_scan/REPORT.md);
+framework versions pinned in `bench/framework_scan/frameworks.lock.txt`). It is a filter, not a verdict on what it
 hides (those are what the rules flag, measured over-flags included), and
 it filters the exit code too: a run whose only findings are below the
 floor exits 0. On a multi-core machine, trees of more than 32 files are
-analysed in parallel; `--jobs N` overrides (1,024 files: 241 s serially,
-69 s on 8 workers, byte-identical output). Details in
+analysed in parallel; `--jobs N` overrides (measured 2026-09-25 on the
+4,946-file framework corpus, 8 logical cores: 85 s serially, 26 s on 8
+workers, byte-identical output). Details in
 [`docs/SCANNING.md`](https://github.com/fitness-trener/Aether/blob/main/docs/SCANNING.md).
 
 ## CI and GitHub Code Scanning
@@ -295,9 +304,9 @@ jobs:
           strict: 'false'        # adds E0711 + the E0701 inventory
 ```
 
-Inputs: `path`, `strict`, `fail-on-findings`, `upload-sarif`, `sarif-file`,
+Inputs: `path`, `strict`, `fail-on-findings`, `allow-incomplete`, `upload-sarif`, `sarif-file`,
 `category`, `setup-python`, `python-version`. Outputs: `findings`,
-`sarif-file`, `exit-code`. Full contract in [`action.yml`](https://github.com/fitness-trener/Aether/blob/main/action.yml).
+`sarif-file`, `exit-code`, `unparsed`. Full contract in [`action.yml`](https://github.com/fitness-trener/Aether/blob/main/action.yml).
 
 Or drive the CLI yourself:
 
@@ -329,28 +338,33 @@ for:
 - **`E0717` cross-tenant access / IDOR** (CWE-639) — an authorization proof
   that is not bound to the *same resource id* the sink mutates.
 
-Current surface: **55 diagnostic codes across 31 gated detectors**, held by
+Current surface: **56 diagnostic codes across 32 gated detectors**, held by
 a monotonic ratchet (`tests/ratchet_baseline.json`) that turns the build red
 if a detector is ever removed or weakened. Security family `E0710`–`E0731`;
-static-semantic family `E0202`–`E0207` (non-exhaustive match, unreachable
-arm, dead code, dead store, ignored `Result`, unsatisfiable refinement).
+static-semantic family `E0202`–`E0208` (non-exhaustive match, unreachable
+arm, dead code, dead store, ignored `Result`, unsatisfiable refinement,
+undeclared name).
 
 Working with the language directly:
 
     aether check demos/payment_workflow/aether/main.aeth
     aether run   demos/payment_workflow/aether/main.aeth
     aether fmt   demos/payment_workflow/aether/main.aeth
-    aether fix-loop demos/payment_workflow/broken.aeth       # deterministic AST repair
+    aether fix-loop demos/payment_workflow/broken.aeth       # deterministic repair; refuses to widen a declaration (ends not_repaired, exit 1)
+    aether fix-loop demos/payment_workflow/broken.aeth --allow-widen # applies widening repairs, tags each one, still exits 1
     aether fix-loop demos/payment_workflow/broken.aeth --live # LLM repair: source checkout + ANTHROPIC_API_KEY
 
 `aether --json <command> ...` (the flag goes before the command) emits
-structured output for an agent to consume; the Python SDK is
+structured output for an agent to consume: exactly one JSON document on
+stdout, every diagnostic as `Diagnostic.to_dict()` (`stage`,
+`patch_target` and `confidence` included); the Python SDK is
 `from aether import sdk` once installed (`pip install aether-lang`, or
 `pip install .` from a checkout).
 
 **Design principles.** One syntactic form per semantic operation · every
 public function declares its contracts and effects · modules declare their
-capabilities and the runtime grants only what is declared · the AST is
+capabilities and, in a program that declares a module, only what is
+declared is granted (a static E0701 check plus a runtime one) · the AST is
 canonical (`parse(print(ast)) == ast`) · errors are structured and
 suggestions are machine-readable.
 
@@ -373,7 +387,7 @@ modeled surface", never as "sound".
     tests/          Integration tests and the monotonic ratchet
     scripts/        run_all.py — the full gate
 
-Full gate: `python -B scripts/run_all.py` (exit 0 = green; 41 PASS suites, and `smt` reports SKIP
+Full gate: `python -B scripts/run_all.py` (exit 0 = green; 50 PASS suites, and `smt` reports SKIP
 when z3 is not installed).
 
 ## Documentation
@@ -383,6 +397,7 @@ when z3 is not installed).
 - [`grammar/diagnostics.md`](https://github.com/fitness-trener/Aether/blob/main/grammar/diagnostics.md) — every diagnostic code
 - [`demos/case_studies/LOOP_LOG.md`](https://github.com/fitness-trener/Aether/blob/main/demos/case_studies/LOOP_LOG.md) — how each detector was built and what it still misses
 - [`BUGS.md`](https://github.com/fitness-trener/Aether/blob/main/BUGS.md) — open and fixed defects in Aether itself
+- [`docs/history/`](https://github.com/fitness-trener/Aether/blob/main/docs/history/README.md) — superseded reports from earlier phases, dated and kept for the record
 
 ## License
 

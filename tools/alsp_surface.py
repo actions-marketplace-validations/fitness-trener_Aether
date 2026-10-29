@@ -49,6 +49,7 @@ sys.path.insert(0, ROOT)
 from aether.sdk import parse as _parse                       # noqa: E402
 from aether.sdk import check as _sdk_check                    # noqa: E402
 from aether.runtime import build_namespace as _runtime_ns    # noqa: E402
+from aether.runtime import unmangle as _unmangle              # noqa: E402
 from aether.passes.capability import (                       # noqa: E402
     effect_capability as _effect_capability,
     _STDLIB_EFFECT_PATHS,
@@ -68,15 +69,14 @@ _BUILTIN_CTORS = {"Some", "None", "Ok", "Err"}
 
 def _stdlib_names() -> Set[str]:
     """Every Aether-visible stdlib symbol (length, print, sqrt, ...).
-    Same derivation lsp.py uses for completion: strip the runtime's
-    `_ae_` prefix. These are RESOLVABLE callees (known effects), so they
-    are never UNPROVABLE."""
+    Same derivation lsp.py uses for completion: `runtime.unmangle` (so
+    `_ae_empty__q` is `empty?`). These are RESOLVABLE callees (known
+    effects), so they are never UNPROVABLE."""
     out: Set[str] = set()
     for n in _runtime_ns():
-        if n.startswith("_ae_"):
-            bare = n[len("_ae_"):]
-            if bare:
-                out.add(bare)
+        bare = _unmangle(n)
+        if bare:
+            out.add(bare)
     return out
 
 

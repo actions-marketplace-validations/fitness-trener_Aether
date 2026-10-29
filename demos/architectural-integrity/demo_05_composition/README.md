@@ -17,7 +17,7 @@ promises Aether checks:
 
 Aether refuses to compile. In the current run order, the effects pass
 fires first and surfaces (3) and (4) together as two `E0801`s with
-exit 2. Removing those static failures lets the refinement-boundary
+exit 1. Removing those static failures lets the refinement-boundary
 check (1) fire at runtime with `E0302`. The Python equivalent runs end
 to end, exits 0, and silently produces a negative price plus an
 admin-path HTTP call.
@@ -32,7 +32,7 @@ worked example of that claim.
 ## How to reproduce
 
 ```sh
-# Aether: rejected at check time with TWO structured E0801s, exit 2
+# Aether: rejected at check time with TWO structured E0801s, exit 1
 python3 -B -m transpiler.aether.cli check \
     demos/architectural-integrity/demo_05_composition/aether/main.aeth
 

@@ -42,7 +42,7 @@ def grade(demo_dir):
         grader = json.load(f)
     sub = "run" if name in RUN_INSTEAD_OF_CHECK else "check"
     a = _run([sys.executable, "-B", "-m", "transpiler.aether.cli", sub, aether_src])
-    expected_exit = grader.get("expected_exit_code", 2)
+    expected_exit = grader.get("expected_exit_code", 1)
     pattern = grader.get("expected_stderr_pattern", "")
     a_ok = (a.returncode == expected_exit)
     if pattern:

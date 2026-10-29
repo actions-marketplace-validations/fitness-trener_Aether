@@ -37,11 +37,19 @@ inputs:
     default: 'false'
   fail-on-findings:
     description: >-
-      Fail the job when the scan reports a finding. An analyzer crash always
-      fails the job regardless — that is a bug in Aether, not a property of
-      your code, and it must not pass silently.
+      Fail the job when the scan reports a finding. An analyzer crash
+      (`check-py` exit 3) always fails the job regardless — that is a bug in
+      Aether, not a property of your code, and it must not pass silently.
     required: false
     default: 'true'
+  allow-incomplete:
+    description: >-
+      Pass the job even when some .py files could not be parsed (py2
+      sources, templates, or 3.12+ syntax on an older python-version) and
+      were therefore not scanned. Off by default: a file that was not
+      parsed was not checked, so an incomplete scan fails the job.
+    required: false
+    default: 'false'
   upload-sarif:
     description: 'Upload the SARIF report to GitHub Code Scanning.'
     required: false
@@ -75,8 +83,13 @@ outputs:
     description: 'Path to the SARIF report that was written.'
     value: ${{ steps.scan.outputs.sarif-file }}
   exit-code:
-    description: 'Raw `aether check-py` exit code: 0 clean, 2 findings or crash.'
+    description: >-
+      Raw `aether check-py` exit code: 0 clean, 1 findings, 2 usage error,
+      3 analyzer crash, 4 incomplete (some file not parsed, no findings).
     value: ${{ steps.scan.outputs.exit-code }}
+  unparsed:
+    description: 'Number of files that could not be parsed and were not scanned.'
+    value: ${{ steps.scan.outputs.unparsed }}
 
 runs:
   using: 'composite'
@@ -106,6 +119,7 @@ runs:
         AETHER_PATH: ${{ inputs.path }}
         AETHER_STRICT: ${{ inputs.strict }}
         AETHER_SARIF: ${{ inputs.sarif-file }}
+        AETHER_ALLOW_INCOMPLETE: ${{ inputs.allow-incomplete }}
       run: |
         set -uo pipefail
         # `${a[@]:+"${a[@]}"}` is the expansion that is safe for an EMPTY
@@ -129,28 +143,52 @@ runs:
           fi
         done
 
+        # ONE run. Its stderr (unparseable files, analyzer errors) goes to
+        # the log as it happens; the report below is read back from the
+        # SARIF, so the log and Code Scanning cannot disagree.
         aether check-py "${targets[@]}" ${flags[@]:+"${flags[@]}"} --sarif > "$AETHER_SARIF"
         rc=$?
-
-        findings=$(python -c "import json,sys;print(len(json.load(open(sys.argv[1]))['runs'][0]['results']))" "$AETHER_SARIF")
         {
-          echo "findings=$findings"
           echo "sarif-file=$AETHER_SARIF"
           echo "exit-code=$rc"
         } >> "$GITHUB_OUTPUT"
 
-        # The human-readable report, in the log next to the diff that caused
-        # it. A second pass over the same tree is cheap: Aether is
-        # stdlib-only and does 230 files in about six seconds.
-        aether check-py "${targets[@]}" ${flags[@]:+"${flags[@]}"} || true
-
-        if [ "$rc" -eq 2 ] && [ "$findings" -eq 0 ]; then
-          echo "::error::Aether exited 2 with no findings — a detector crashed."
-          echo "That is a bug in Aether, not in your code. Please report it:"
+        # The exit-code table (docs/SCANNING.md): 0 clean, 1 findings,
+        # 2 usage, 3 analyzer crash, 4 incomplete.
+        if [ "$rc" -eq 3 ]; then
+          echo "::error::Aether's analyzer crashed (exit 3). That is a bug in Aether, not in your code. Please report it:"
           echo "https://github.com/fitness-trener/Aether/issues"
           exit 1
         fi
-        echo "aether: $findings finding(s)"
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ] && [ "$rc" -ne 4 ]; then
+          echo "::error::aether check-py exited $rc (usage error); see the message above."
+          exit 1
+        fi
+
+        report=$(python - "$AETHER_SARIF" <<'PY'
+        import json, sys
+        run = json.load(open(sys.argv[1], encoding="utf-8"))["runs"][0]
+        for r in run["results"]:
+            loc = r["locations"][0]["physicalLocation"]
+            print(f'{loc["artifactLocation"]["uri"]}:{loc["region"]["startLine"]}: '
+                  f'{r["ruleId"]} {r["message"]["text"]}', file=sys.stderr)
+        notes = run["invocations"][0]["toolExecutionNotifications"]
+        print(len(run["results"]), sum(1 for n in notes if n["level"] == "warning"))
+        PY
+        ) || { echo "::error::aether: could not read the SARIF report"; exit 1; }
+        read -r findings unparsed <<< "$report"
+        {
+          echo "findings=$findings"
+          echo "unparsed=$unparsed"
+        } >> "$GITHUB_OUTPUT"
+        echo "aether: $findings finding(s), $unparsed file(s) not parsed"
+
+        # Incomplete — whether or not there were findings (exit 1 hides
+        # it): a file that was not parsed was not checked.
+        if [ "$unparsed" -gt 0 ] && [ "$AETHER_ALLOW_INCOMPLETE" != "true" ]; then
+          echo "::error::Aether could not parse $unparsed file(s), so they were not scanned (listed above). Set allow-incomplete: true to accept that."
+          exit 1
+        fi
 
     - name: Upload SARIF to Code Scanning
       if: ${{ always() && inputs.upload-sarif == 'true' }}

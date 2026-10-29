@@ -18,6 +18,7 @@ deliberately short v0.1 feature set. Several ergonomic forms are parked.
 | Source | Section | Quote / Rule | Signal |
 |---|---|---|---|
 | types | (intro) | "gradually typed at function bodies, statically typed at function/module boundaries. v0.1 ships a working type checker — not a solver." | Scope of static guarantee |
+| types | What is checked, and when (2026-09-24) | There is no type checker and no name resolution; the v0.1 intro and the exhaustiveness line above are RETRACTED. Refinements are checked at runtime at function parameters only | CORRECTION: the static guarantee is the effect/capability/security passes, not types (audit E3) |
 | types | Parameterised types | "These are the only built-in collection and sum-type families. There is no `Array`, `Tuple`, `Either`, or `Maybe`." | Closed family set; records cover tuples |
 | types | Tagged unions | "Pattern matching is exhaustive — the type checker emits an error if any `case` is missing." | Exhaustiveness statically enforced |
 | types | Subtyping | "There is no subtyping. Refinement types are not subtypes of their base." | Conversions are explicit/asserted, never implicit widening |

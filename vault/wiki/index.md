@@ -11,7 +11,7 @@ query — start here, follow links.
 
 ## Sources (`wiki/sources/`)
 - [[sources/README|README]] — project front door, install, fix-loop split, design principles (v0.3)
-- [[sources/keywords|keywords]] — 47 reserved words, naming laws, LL(1) anchors (v0.1)
+- [[sources/keywords|keywords]] — 56 reserved words (lexer `KEYWORDS`, test-pinned since 2026-09-24), naming laws (not enforced), LL(1) anchors
 - [[sources/effects|effects]] — effect lattice, composition, capability gating (v0.1)
 - [[sources/types|types]] — primitives, records/unions, refinements, disallow list (v0.1)
 - [[sources/diagnostics|diagnostics]] — code ranges, `extra` dicts, caller/implementer split (v0.3)
@@ -34,6 +34,7 @@ query — start here, follow links.
 - [[questions/q5-sink-matching-vs-purity-matching|Q5]] — why matching SINKS by method name is legitimate where matching PURITY by name was unsound (the direction of the error), and the measured cost
 - [[questions/q6-risk-vs-severity-two-axes|Q6]] — why Aether carries two severity-like axes (gate vs triage) instead of one, and the unused per-finding confidence residual
 - [[questions/q7-frontend-totality-over-syntax|Q7]] — why the Python frontend must be TOTAL over statement positions and binding forms: a position it does not emit is a silent miss, not an over-flag (BUG-012, 411 → 628 on the framework corpus)
+- [[questions/q8-static-type-checking-after-name-resolution|Q8]] — what static type checking Aether should have now that names resolve (E0208): options, measured prevalence, and why it ranks below security work
 
 ## Concepts (`wiki/concepts/`)
 - _none yet — decisions beyond sources go here_

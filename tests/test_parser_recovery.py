@@ -145,7 +145,7 @@ def test_cli_collect_errors_flag():
             [sys.executable, "-B", "-m", "transpiler.aether.cli", "check", src_path],
             cwd=ROOT, capture_output=True, text=True,
         )
-        assert strict.returncode == 2, strict
+        assert strict.returncode == 4, strict   # 4 = unparsed (Wave 5b D5; was 2)
         strict_count = strict.stderr.count("[E0201]")
         assert strict_count == 1, f"strict mode should bail on first, got {strict_count} E0201s"
         # Then — collect mode surfaces every recoverable error.
@@ -154,7 +154,7 @@ def test_cli_collect_errors_flag():
              "check", "--collect-errors", src_path],
             cwd=ROOT, capture_output=True, text=True,
         )
-        assert collect.returncode == 2, collect
+        assert collect.returncode == 4, collect
         collect_count = collect.stderr.count("[E0201]")
         assert collect_count >= 3, f"collect mode should surface >=3 errors, got {collect_count}"
         print(f"C.6 cli --collect-errors: strict={strict_count}, collect={collect_count}")

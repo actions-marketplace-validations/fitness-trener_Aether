@@ -7,7 +7,7 @@
 // what the model emits — and exec()/eval()/compile() run it with the
 // process's full privileges. That is remote code execution.
 //
-// Each function type-checks and every unit test on the happy path
+// Each function passes check and every unit test on the happy path
 // passes. The lie is that `modelOutput` reaches the SOURCE position of
 // the interpreter. Aether refuses it with E0731 — run `aether check`.
 // There is no sanitizer for attacker-authored code: the source must be a

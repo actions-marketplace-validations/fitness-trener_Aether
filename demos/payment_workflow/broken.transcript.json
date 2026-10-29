@@ -1,42 +1,100 @@
 [
   {
     "iteration": 0,
-    "diagnostic": {
-      "code": "E0801",
-      "message": "function 'validateOrder' (effects 'pure') calls 'print' which has effect 'log' not covered by the caller",
-      "extra": {
-        "caller": "validateOrder",
-        "callee": "print",
-        "caller_effects": [],
-        "missing_effect": [
+    "status": "not_repaired",
+    "blocked": [
+      {
+        "code": "E0801",
+        "message": "function 'validateOrder' (effects 'pure') calls 'print' which has effect 'log' not covered by the caller",
+        "extra": {
+          "caller": "validateOrder",
+          "callee": "print",
+          "caller_effects": [],
+          "missing_effect": [
+            [
+              "log"
+            ],
+            null
+          ]
+        },
+        "would_widen": [
+          "function validateOrder: effects + 'log'"
+        ],
+        "reason": "not repaired: fixing this would widen validateOrder's declared effects (function validateOrder: effects + 'log'); remove or replace the call to 'print'",
+        "patch_target": [
           [
+            "decls",
+            1
+          ],
+          [
+            "body",
+            0
+          ],
+          [
+            "expr",
+            null
+          ]
+        ]
+      },
+      {
+        "code": "E0701",
+        "message": "function 'persistRow' directly performs effect 'fs.write' which requires capability 'fs', but no module in this program declares it",
+        "extra": {
+          "function": "persistRow",
+          "effect": "fs.write",
+          "required_capability": "fs",
+          "declared_capabilities": [
             "log"
           ],
-          null
+          "via_transitive": false
+        },
+        "would_widen": [
+          "module: requires capability + 'fs'"
+        ],
+        "reason": "not repaired: fixing this would widen the module's declared capabilities (module: requires capability + 'fs'); remove or replace the call in 'persistRow' that needs 'fs'",
+        "patch_target": [
+          [
+            "decls",
+            0
+          ],
+          [
+            "capabilities",
+            null
+          ]
+        ]
+      },
+      {
+        "code": "E0701",
+        "message": "function 'main' directly performs effect 'fs.write' which requires capability 'fs', but no module in this program declares it",
+        "extra": {
+          "function": "main",
+          "effect": "fs.write",
+          "required_capability": "fs",
+          "declared_capabilities": [
+            "log"
+          ],
+          "via_transitive": false
+        },
+        "would_widen": [
+          "module: requires capability + 'fs'"
+        ],
+        "reason": "not repaired: fixing this would widen the module's declared capabilities (module: requires capability + 'fs'); remove or replace the call in 'main' that needs 'fs'",
+        "patch_target": [
+          [
+            "decls",
+            0
+          ],
+          [
+            "capabilities",
+            null
+          ]
         ]
       }
-    },
-    "transformer": "fix_E0801"
-  },
-  {
-    "iteration": 1,
-    "diagnostic": {
-      "code": "E0701",
-      "message": "function 'persistRow' directly performs effect 'fs.write' which requires capability 'fs', but no module in this program declares it",
-      "extra": {
-        "function": "persistRow",
-        "effect": "fs.write",
-        "required_capability": "fs",
-        "declared_capabilities": [
-          "log"
-        ],
-        "via_transitive": false
-      }
-    },
-    "transformer": "fix_E0701"
-  },
-  {
-    "iteration": 2,
-    "status": "clean"
+    ],
+    "remaining_codes": [
+      "E0701",
+      "E0801"
+    ],
+    "remaining_count": 3
   }
 ]

@@ -33,20 +33,27 @@ _SKIP = pf.PY_SKIP_STAGES + ("capability",)
 # the query text and E0716 for an unauthorized state change (documented).
 QUALIFIED = {
     ("E0713",): ("pandas.read_sql", "pandas.read_sql_query",
-                 "django.db.models.expressions.RawSQL", "django.db.models.RawSQL"),
+                 "django.db.models.expressions.RawSQL", "django.db.models.RawSQL",
+                 "duckdb.sql", "duckdb.execute", "duckdb.query"),
     ("E0714",): ("os.system", "os.popen", "subprocess.getoutput",
                  "subprocess.getstatusoutput", "asyncio.create_subprocess_shell",
                  "commands.getoutput"),
     ("E0718",): ("flask.redirect", "django.shortcuts.redirect",
                  "starlette.responses.RedirectResponse",
                  "fastapi.responses.RedirectResponse",
-                 "django.http.HttpResponseRedirect", "aiohttp.web.HTTPFound"),
+                 "django.http.HttpResponseRedirect", "aiohttp.web.HTTPFound",
+                 "werkzeug.utils.redirect", "quart.redirect",
+                 "django.http.HttpResponsePermanentRedirect",
+                 "aiohttp.web.HTTPSeeOther", "aiohttp.web.HTTPTemporaryRedirect",
+                 "aiohttp.web.HTTPPermanentRedirect", "aiohttp.web.HTTPMovedPermanently"),
     ("E0719",): ("flask.render_template_string", "jinja2.Template",
-                 "django.template.Template", "mako.template.Template"),
+                 "django.template.Template", "mako.template.Template",
+                 "jinja2.nativetypes.NativeTemplate", "tornado.template.Template"),
     ("E0720",): ("pickle.loads", "pickle.load", "marshal.loads", "shelve.open",
                  "marshal.load", "pickle.Unpickler", "joblib.load", "dill.load",
                  "dill.loads", "cloudpickle.load", "cloudpickle.loads",
-                 "pandas.read_pickle", "jsonpickle.decode"),
+                 "pandas.read_pickle", "jsonpickle.decode",
+                 "_pickle.loads", "_pickle.load"),
     ("E0727",): ("xml.dom.pulldom.parse", "xml.dom.pulldom.parseString",
                  "xml.sax.parse", "xml.sax.parseString",
                  "xml.dom.expatbuilder.parse", "xml.dom.expatbuilder.parseString",
@@ -54,11 +61,16 @@ QUALIFIED = {
                  "lxml.etree.fromstring", "lxml.etree.parse", "lxml.etree.XML",
                  "xml.etree.ElementTree.fromstring", "xml.etree.ElementTree.parse",
                  "xml.dom.minidom.parseString", "xml.dom.minidom.parse"),
+    # runpy runs the file/module named; code.* runs the source (E0731's
+    # class, not E0711's — see py_frontend.py).
+    ("E0731",): ("runpy.run_path", "runpy.run_module",
+                 "code.InteractiveInterpreter.runsource",
+                 "code.InteractiveConsole.runsource", "code.InteractiveConsole.push"),
 }
 METHOD = {
     ("E0713",): ("execute", "executemany", "raw", "exec_driver_sql", "exec",
                  "fetchrow", "fetchval", "fetch_all", "fetch_one", "fetch_val",
-                 "mogrify"),
+                 "mogrify", "execute_sql", "sql", "extra"),
     ("E0713", "E0716"): ("executescript",),
     ("E0714",): ("exec_command",),
     ("E0719",): ("from_string",),
@@ -72,34 +84,41 @@ GUARDS = {
                  "subprocess.check_output", "subprocess.Popen"),
     ("E0720",): ("yaml.load", "yaml.full_load", "yaml.unsafe_load", "yaml.load_all",
                  "yaml.full_load_all", "yaml.unsafe_load_all", "torch.load",
-                 "numpy.load"),
+                 "numpy.load", "ruamel.yaml.YAML.load", "ruamel.yaml.YAML.load_all"),
     ("E0727",): ("defusedxml.minidom.parse", "defusedxml.minidom.parseString",
                  "defusedxml.pulldom.parse", "defusedxml.pulldom.parseString",
                  "defusedxml.ElementTree.parse"),
+    ("E0719",): ("langchain_core.prompts.PromptTemplate.from_template",
+                 "langchain_core.prompts.ChatPromptTemplate.from_template",
+                 "langchain.prompts.PromptTemplate.from_template",
+                 "langchain.prompts.ChatPromptTemplate.from_template"),
 }
 # wrapper -> (rows, the documented-fix snippet using `{san}`)
 SANITIZERS = {
-    "shellArg": (("shlex.quote", "pipes.quote"),
+    "shellArg": (("shlex.quote", "pipes.quote", "shlex.join"),
                  "import os\ndef f(x):\n    return os.system('ls ' + {san}(x))\n"),
     "schemaDecode": (("yaml.safe_load", "yaml.safe_load_all", "json.loads", "json.load"),
                      "def f(x):\n    return {san}(x)\n"),
-    "safeJoin": (("werkzeug.utils.secure_filename",),
+    "safeJoin": (("werkzeug.utils.secure_filename", "werkzeug.utils.safe_join",
+                  "werkzeug.security.safe_join"),
                  "def f(x):\n    return open({san}(x))\n"),
+    # Own-origin URL builders (audit C2): the redirect the E0718 hint names.
+    "safeRedirect": (("flask.url_for", "quart.url_for", "django.urls.reverse",
+                      "django.urls.reverse_lazy"),
+                     "import flask\ndef f(x):\n    return flask.redirect({san}(x))\n"),
     "htmlEscape": (("html.escape", "markupsafe.escape"),
                    "def f(x):\n    return {san}(x)\n"),
 }
 
+# Argument injection (gaps round G6): program -> does a literal `--` before
+# the input clear it? (ssh runs the words after the host remotely; find
+# reads every word as its expression.) Plus the exec-form runners.
+ARGV_PROGRAMS = {"git": True, "tar": True, "rsync": True, "zip": True,
+                 "ssh": False, "find": False}
+ARGV_POSITIONAL_RUNNERS = ("asyncio.create_subprocess_exec",)
+
 # Rows a snippet cannot exercise: none today. An entry needs a reason.
 UNEXERCISABLE: dict = {}
-
-# Sanitizer rows whose documented fix is STILL flagged — a known defect,
-# not a pass. The assertion is inverted rather than dropped: the day the
-# fix goes clean this test goes red, so the entry cannot outlive the bug.
-#   shlex.quote / pipes.quote: `"ls " + shlex.quote(x)` fires E0714 at
-#   0.95 — the fix the hint names is flagged (audit 2026-09-24 C1,
-#   Wave 5). `os.system(shlex.quote(x))` alone fires too, correctly: the
-#   input still picks the program (py_whole).
-KNOWN_FLAGGED_FIX = {"shlex.quote": ["E0714"], "pipes.quote": ["E0714"]}
 
 
 def _codes(src: str) -> list:
@@ -188,20 +207,41 @@ def test_every_sanitizer_maps_and_its_fix_is_clean():
             if wrapper not in {callee_name(c) for c in walk(ir, "Call")}:
                 bad.append(f"{row}: not translated to {wrapper}")
             got = _codes(_import(row) + template.format(san=row))
-            want = KNOWN_FLAGGED_FIX.get(row, [])
-            if got != want:
-                bad.append(f"{row}: documented fix gives {got}, want {want}"
-                           + (" — the known defect is fixed; drop its "
-                              "KNOWN_FLAGGED_FIX entry" if row in KNOWN_FLAGGED_FIX else ""))
+            # Every documented fix is clean. `"ls " + shlex.quote(x)` was
+            # pinned here as a known-flagged fix until audit C1 (Wave 5a).
+            if got != []:
+                bad.append(f"{row}: documented fix gives {got}, want clean")
     # The one sanitizer with a Python sink it clears: prove it clears.
     assert _codes("def f(x):\n    return open(x)\n") == ["E0711"]
     assert not bad, "sanitizer rows:\n  " + "\n  ".join(bad)
-    print(f"rows: {n} sanitizer rows map to their wrapper; fixes clean "
-          f"({len(KNOWN_FLAGGED_FIX)} known-flagged, audit C1)")
+    print(f"rows: {n} sanitizer rows map to their wrapper; every documented fix is clean")
+
+
+def test_every_argv_program_flags_and_clears():
+    """Each code-option program: a non-literal argv word is E0714, all
+    literal words are clean, and a literal `--` before the word clears it
+    exactly where the pin says `--` ends the danger."""
+    bad = _check_pins("_ARGV_CODE_OPTIONS", pf._ARGV_CODE_OPTIONS,
+                      {p: 0 for p in ARGV_PROGRAMS})
+    if {p for p, clears in ARGV_PROGRAMS.items() if not clears} != set(pf._ARGV_NO_TERMINATOR):
+        bad.append(f"_ARGV_NO_TERMINATOR {sorted(pf._ARGV_NO_TERMINATOR)} != pins")
+    if set(ARGV_POSITIONAL_RUNNERS) != set(pf._ARGV_POSITIONAL_RUNNERS):
+        bad.append(f"_ARGV_POSITIONAL_RUNNERS {sorted(pf._ARGV_POSITIONAL_RUNNERS)} != pins")
+    head = "import asyncio, subprocess\ndef f(x):\n    return "
+    for prog, clears in ARGV_PROGRAMS.items():
+        cases = [(f"subprocess.run(['{prog}', 'a', x])", ["E0714"]),
+                 (f"subprocess.run(['{prog}', 'a', 'b'])", []),
+                 (f"subprocess.run(['{prog}', '--', x])", [] if clears else ["E0714"])]
+        cases += [(f"{r}('{prog}', x)", ["E0714"]) for r in ARGV_POSITIONAL_RUNNERS]
+        bad += [f"{src}: want {want}, got {got}" for src, want in cases
+                if (got := _codes(head + src + "\n")) != want]
+    assert not bad, "argv program rows:\n  " + "\n  ".join(bad)
+    print(f"rows: {len(ARGV_PROGRAMS)} argv code-option programs flag, clear and honour `--` as pinned")
 
 
 if __name__ == "__main__":
     test_every_row_is_pinned()
+    test_every_argv_program_flags_and_clears()
     test_every_sink_row_fires_its_code()
     test_every_guard_flags_and_clears()
     test_every_sanitizer_maps_and_its_fix_is_clean()

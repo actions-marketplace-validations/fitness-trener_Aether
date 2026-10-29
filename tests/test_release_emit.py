@@ -54,7 +54,7 @@ def test_release_elides_frames_and_ensures():
     assert "'ensures'" not in py
     # boundary checks survive
     assert "'requires'" in py
-    assert "_ae_check_refinement" in py
+    assert "_aert_check_refinement" in py
 
 
 def test_release_same_output_as_debug():

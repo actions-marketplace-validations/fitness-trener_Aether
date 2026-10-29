@@ -88,13 +88,13 @@ def aether_check_json(path: str):
     if p.returncode == 0:
         return True, None
     out = (p.stdout or "") + "\n" + (p.stderr or "")
-    for line in out.splitlines():
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                return False, json.loads(line).get("diagnostic")
-            except json.JSONDecodeError:
-                pass
+    # One JSON document on stdout (0.5.0; it was JSONL on stderr).
+    try:
+        diags = json.loads(p.stdout).get("diagnostics") or []
+    except (json.JSONDecodeError, AttributeError):
+        diags = []
+    if diags:
+        return False, diags[0]
     # fallback: parse the classic "[Exxxx] ..." text form
     for line in out.splitlines():
         if line.startswith("[E"):

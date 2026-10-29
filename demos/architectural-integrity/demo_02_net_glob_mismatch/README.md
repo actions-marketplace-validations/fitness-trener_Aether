@@ -23,7 +23,7 @@ composition that would let that happen.
 ## How to reproduce
 
 ```sh
-# Aether: rejected at check time, exit 2 with structured diagnostic
+# Aether: rejected at check time, exit 1 with structured diagnostic
 python3 -B -m transpiler.aether.cli check \
     demos/architectural-integrity/demo_02_net_glob_mismatch/aether/main.aeth
 

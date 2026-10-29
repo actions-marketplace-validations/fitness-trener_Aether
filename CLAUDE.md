@@ -1,18 +1,28 @@
 # Aether — Project Guide for Claude
 
-Aether is a language whose compiler **refuses to compose components that
-violate declared architectural constraints** (effect locality, capability
-scope, refinement-typed boundaries) and emits structured, machine-readable
-diagnostics an agent fix-loop can act on. It transpiles to plain Python.
+Aether is a security checker for Python, built on the typed intermediate
+representation of the Aether language. `aether check-py` translates an
+unmodified Python file into that IR and runs the security rules on it;
+Aether source (`.aeth`) is checked by the same rules plus the language's
+effect, capability and marker-type checks, which Python code has no
+declarations for.
+
+The language's checker **refuses programs that violate declared
+constraints** (effect composition, module capability scope, the security
+markers) and emits structured, machine-readable diagnostics an agent
+fix-loop can act on; it transpiles to plain Python. Names are resolved
+statically (`E0208`), but there is no type checker (`grammar/types.md`,
+vault q8): refinement predicates and contracts are checked at runtime.
 
 ## Two things run here. Know which loop you are in.
 
 ### 1. The security-detector improvement loop (the main work)
-Aether grows by eliminating one *violation TYPE* per iteration. Ten
-detectors shipped: **E0710–E0719** (SSRF, path traversal, secret-log,
-SQLi, command-injection, PII egress, missing-auth, IDOR, open-redirect,
-SSTI). State of record: `demos/case_studies/LOOP_LOG.md`. Backlog +
-coverage: `vault/wiki/clusters/violation-taxonomy.md`.
+Aether grows by eliminating one *violation TYPE* per iteration. The
+security family is **22 codes, E0710–E0731** (table:
+`SECURITY_POSTURE.md`); the whole surface is **56 emitted codes across 32
+gated detectors**, the floor in `tests/ratchet_baseline.json`. State of
+record: `demos/case_studies/LOOP_LOG.md`. Backlog + coverage:
+`vault/wiki/clusters/violation-taxonomy.md`.
 
 **Method — follow exactly, every iteration:**
 1. **Pick the target** using the heuristic in
@@ -70,7 +80,10 @@ The method only compounds if you run its loops. Do:
   `vault/templates/page-contracts.md`). Answers become sources the next
   question builds on. Do NOT re-derive an answer that already has a
   question_page — read it, cite it, and extend it. Current: q1 (taint
-  soundness), q2 (runtime-vs-SMT), q3 (backlog heuristic).
+  soundness), q2 (runtime-vs-SMT), q3 (backlog heuristic), q4
+  (formal-methods adoption filter), q5 (sink matching vs purity
+  matching), q6 (risk vs confidence axes), q7 (frontend totality), q8 (static
+  type checking after name resolution).
 - **Curate loop.** `raw/sources/` are **read-only pointer stubs** to the
   canonical in-repo spec (`grammar/*.md`, `README.md`). Never edit them;
   add NEW source stubs only. Clusters cite source markers

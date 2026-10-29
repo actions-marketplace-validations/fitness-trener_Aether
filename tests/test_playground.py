@@ -136,10 +136,10 @@ def test_clean_check_and_run():
 def test_E0801_violation_surfaces():
     r = run_sandboxed(E0801_SRC, "check")
     assert not r.ok, r
-    assert r.exit_code == 2, r.exit_code
+    assert r.exit_code == 1, r.exit_code   # 1 = findings (Wave 5b D5; was 2)
     combined = r.stdout + "\n" + r.stderr
     assert "E0801" in combined, combined
-    print("H.B.2 E0801: violation surfaces with rc=2 + diagnostic")
+    print("H.B.2 E0801: violation surfaces with rc=1 + diagnostic")
 
 
 def test_runaway_program_is_killed():

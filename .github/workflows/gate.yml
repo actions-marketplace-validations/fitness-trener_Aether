@@ -159,17 +159,18 @@ jobs:
 
       - name: The console script finds a real vulnerability
         run: |
-          # Both invocations exit 2 on purpose -- that is the contract for
-          # "found something". `set -e` must stay off across BOTH of them,
-          # and each exit code is asserted rather than discarded.
+          # Both invocations exit 1 on purpose -- that is the contract for
+          # "found something" (0 clean, 1 findings, 2 usage, 3 crash,
+          # 4 incomplete; docs/SCANNING.md). `set -e` must stay off across
+          # BOTH of them, and each exit code is asserted rather than discarded.
           set +e
           /tmp/venv/bin/aether check-py bench/py_frontend/corpus/sqli_repro.py
           rc_text=$?
           /tmp/venv/bin/aether check-py bench/py_frontend/corpus/sqli_repro.py --sarif > /tmp/out.sarif
           rc_sarif=$?
           set -e
-          [ "$rc_text" -eq 2 ] || { echo "::error::a file with two E0713 must exit 2, got $rc_text"; exit 1; }
-          [ "$rc_sarif" -eq 2 ] || { echo "::error::--sarif must exit 2 the same way, got $rc_sarif"; exit 1; }
+          [ "$rc_text" -eq 1 ] || { echo "::error::a file with two E0713 must exit 1, got $rc_text"; exit 1; }
+          [ "$rc_sarif" -eq 1 ] || { echo "::error::--sarif must exit 1 the same way, got $rc_sarif"; exit 1; }
 
           python - <<'PY'
           import json
@@ -192,5 +193,13 @@ jobs:
         working-directory: /tmp
         run: |
           cp "$GITHUB_WORKSPACE/demos/payment_workflow/broken.aeth" /tmp/broken.aeth
-          /tmp/venv/bin/aether fix-loop /tmp/broken.aeth --out-source /tmp/fixed.aeth --out-transcript /tmp/fix.json --quiet
-          /tmp/venv/bin/aether check /tmp/fixed.aeth
+          # broken.aeth's only repairs widen a declaration, so the loop must
+          # refuse them (exit 1, not_repaired); --allow-widen applies them
+          # (still exit 1) and the widened program then checks clean.
+          rc=0; /tmp/venv/bin/aether fix-loop /tmp/broken.aeth --out-source /tmp/fixed.aeth --out-transcript /tmp/fix.json --quiet || rc=$?
+          test "$rc" = 1
+          grep -q '"status": "not_repaired"' /tmp/fix.json
+          rc=0; /tmp/venv/bin/aether fix-loop /tmp/broken.aeth --allow-widen --out-source /tmp/widened.aeth --out-transcript /tmp/widen.json --quiet || rc=$?
+          test "$rc" = 1
+          grep -q '"weakens_constraint": true' /tmp/widen.json
+          /tmp/venv/bin/aether check /tmp/widened.aeth

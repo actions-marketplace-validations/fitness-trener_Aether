@@ -2,7 +2,7 @@
   "id": "T06_audit_logger_capability_leak",
   "axis": "B.3",
   "summary": "log-only module transitively performs fs.write",
-  "naive_aether": {"stage": "check", "expected_exit_code": 2,
+  "naive_aether": {"stage": "check", "expected_exit_code": 1,
                    "expected_diagnostic_code": "E0701",
                    "expected_stderr_pattern": "E0701.*fs.write.*capability 'fs'"},
   "naive_python": {"stage": "run", "expected_exit_code": 0,

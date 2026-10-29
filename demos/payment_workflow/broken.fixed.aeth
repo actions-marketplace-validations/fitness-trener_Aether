@@ -1,14 +1,31 @@
+// expect: E0701x2, E0801
+// A deliberately-broken candidate for the F.2 fix-loop demo.
+//
+// Two architectural promises are violated:
+//
+// 1. (B.1) `validateOrder` is declared `pure`, but a debug `print`
+//    sneaks in. The static effect pass fires [E0801]: pure -> log.
+//
+// 2. (B.3) Module declares `requires capability log` only, but the
+//    helper `persistRow` performs `fs.write`. The capability pass
+//    fires [E0701]: needs `fs` capability.
+//
+// The only mechanical repair for either is to WIDEN a declaration
+// (drop `pure` for `log`; add `requires capability fs`), so the
+// deterministic fix-loop refuses both and ends `not_repaired`, naming
+// the calls to remove or replace. `--allow-widen` applies them, tags
+// each step `weakens_constraint`, and still exits non-zero.
+
 module PaymentService
   requires capability log
-  requires capability fs
   exports main
 end
 
 function validateOrder(orderId: String) returns Bool
-  effects log
+  effects pure
 do
-  print(("DEBUG validating " + orderId))
-  return (length(orderId) > 0)
+  print("DEBUG validating " + orderId)
+  return length(orderId) > 0
 end
 
 function persistRow(row: String) returns Unit

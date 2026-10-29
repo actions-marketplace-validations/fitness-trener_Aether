@@ -9,7 +9,7 @@ For each task we measure four cells:
     +---------------+-------------------------------+
     | variant       | expected behaviour            |
     +---------------+-------------------------------+
-    | naive Aether  | rejected (exit 2 + diag code) |
+    | naive Aether  | rejected (exit 1 + diag code) |
     | naive Python  | runs cleanly, wrong output    |
     | correct Aether| runs cleanly, expected stdout |
     | correct Python| runs cleanly, expected stdout |

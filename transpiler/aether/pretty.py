@@ -6,12 +6,14 @@ and emits Aether source. The contract is the round-trip property:
     parse(pretty(parse(src))) == parse(src)   # modulo position metadata
 
 The pretty-printer aggressively parenthesises binary expressions and
-emits effect args verbatim from their stored form. It does NOT try to
-preserve original whitespace or comment placement — that's a job for
-a dedicated formatter (C.4) which can decide on a house style.
+emits effect args verbatim from their stored form. It does not
+preserve original whitespace. Given the source (`pretty(ast, source)`),
+it keeps full-line `//` comments above declarations and statements —
+including a `// expect:` header; what is still lost is listed on
+`pretty`.
 
 Public API:
-    pretty(ast) -> str
+    pretty(ast, source=None) -> str
     pretty_normalized(src) -> str          # convenience: parse + pretty
     asts_equal_ignoring_pos(a, b) -> bool   # round-trip oracle
 """
@@ -24,10 +26,69 @@ from typing import Any, Dict, List, Optional
 # Top-level entry points
 # ----------------------------------------------------------------------
 
-def pretty(ast: Dict[str, Any]) -> str:
-    p = Pretty()
+def pretty(ast: Dict[str, Any], source: Optional[str] = None) -> str:
+    """Render `ast`. Pass the `source` it was parsed from to keep that
+    source's full-line `//` comments: each run of comment lines is
+    re-attached above the declaration or statement that followed it, and
+    the run after the last declaration is kept at the end. That covers
+    the leading block (so a `// expect:` header survives `fmt --write` and
+    the fix-loop), comments between declarations, and comments above a
+    statement. Nodes are matched by `pos.line`, so an AST edited in place
+    (sdk.edit) keeps them.
+
+    Still lost (documented, not silent): a comment above something that is
+    not a declaration or statement (a `case` arm, a clause line, a line
+    inside a multi-line expression), a comment right before a block's
+    `end`, trailing `code // comment` remarks, and `/* */` blocks. The
+    lexer drops comments, so only these line-anchored ones can be
+    recovered from the text."""
+    p = Pretty(_comment_blocks(source, ast) if source is not None else None)
     p.emit_program(ast)
     return p.render()
+
+
+def _comment_blocks(source: str, ast: Dict[str, Any]) -> Dict[Any, List[str]]:
+    """{node start line: [comment lines above it]}, plus key None for the
+    comments after the last code line. A block is the run of `//` and
+    blank lines directly above an anchor line, scanning up to the nearest
+    code line. Blank runs are collapsed to one line and leading blanks
+    dropped, so the output is a fixed point."""
+    lines = source.splitlines()
+    starts = sorted(_pos_lines(ast, set()))
+    out: Dict[Any, List[str]] = {}
+    for key, stop in [(s, s - 1) for s in starts] + [(None, len(lines))]:
+        i = stop
+        while i >= 1 and (not lines[i - 1].strip()
+                          or lines[i - 1].lstrip().startswith("//")):
+            i -= 1
+        block: List[str] = []
+        for ln in lines[i:stop]:
+            ln = ln.rstrip()
+            if ln or (block and block[-1]):
+                block.append(ln)
+        while block and not block[0]:
+            block.pop(0)
+        if key is None:
+            while block and not block[-1]:
+                block.pop()
+        if any(block):
+            out[key] = block
+    return out
+
+
+def _pos_lines(x: Any, acc: set) -> set:
+    """Every `pos.line` in the tree — the lines a comment block can be
+    anchored above. Only decls and statements consume their block."""
+    if isinstance(x, dict):
+        pos = x.get("pos")
+        if isinstance(pos, dict) and isinstance(pos.get("line"), int):
+            acc.add(pos["line"])
+        for v in x.values():
+            _pos_lines(v, acc)
+    elif isinstance(x, list):
+        for v in x:
+            _pos_lines(v, acc)
+    return acc
 
 
 def pretty_normalized(src: str) -> str:
@@ -55,9 +116,10 @@ def _strip_pos(x: Any) -> Any:
 # ----------------------------------------------------------------------
 
 class Pretty:
-    def __init__(self):
+    def __init__(self, comments: Optional[Dict[Any, List[str]]] = None):
         self.lines: List[str] = []
         self.indent_level = 0
+        self.comments = comments or {}
 
     def line(self, s: str = "") -> None:
         self.lines.append("" if s == "" else ("  " * self.indent_level + s))
@@ -74,7 +136,23 @@ class Pretty:
         for i, d in enumerate(n.get("decls", [])):
             if i > 0:
                 self.line("")
+            self.emit_comments(d)
             self.emit_decl(d)
+        tail = self.comments.get(None)
+        if tail:
+            if self.lines:
+                self.line("")
+            self.lines.extend(tail)
+
+    def emit_comments(self, n: Dict[str, Any]) -> None:
+        # pop: a statement sharing its line with its parent (`if c then
+        # return 1 end`) must not print the same block twice.
+        # A node without its own `pos` (ExprStmt) starts at its first
+        # positioned child.
+        if self.comments:
+            lines = _pos_lines(n, set())
+            if lines:
+                self.lines.extend(self.comments.pop(min(lines), []))
 
     def emit_decl(self, n: Dict[str, Any]) -> None:
         k = n["kind"]
@@ -172,6 +250,7 @@ class Pretty:
     # --- statements ----------------------------------------------------
 
     def emit_stmt(self, n: Dict[str, Any]) -> None:
+        self.emit_comments(n)
         k = n["kind"]
         m = getattr(self, "emit_stmt_" + k, None)
         if m is None:
@@ -370,6 +449,9 @@ class Pretty:
         if k == "GenericType":
             return f"{n['name']}<" + ", ".join(self.fmt_type(t) for t in n.get("args", [])) + ">"
         if k == "FunctionType":
-            args = ", ".join(self.fmt_type(t) for t in n.get("args", []))
-            return f"({args}) -> {self.fmt_type(n['ret'])}"
+            # The parser's keys are `params`/`returns` (parser.py
+            # parse_type_expr); this read `args`/`ret` and crashed on every
+            # function type (audit 2026-09-24 A9).
+            params = ", ".join(self.fmt_type(t) for t in n.get("params", []))
+            return f"function({params}) returns {self.fmt_type(n['returns'])}"
         raise NotImplementedError(f"pretty: no type handler for {k}")

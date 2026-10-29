@@ -5,7 +5,7 @@ Five paired demos that illustrate Aether's central claim:
 equivalent Python program accepts.**
 
 Each demo is a wedge: the Aether side is rejected at check time (or
-refinement-boundary time) with a structured diagnostic and exit 2; the
+refinement-boundary time) with a structured diagnostic and exit 1; the
 Python side runs to completion with exit 0 and silently breaks the
 intended architectural promise.
 

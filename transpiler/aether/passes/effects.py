@@ -38,15 +38,15 @@ import ipaddress
 import re
 from typing import Any, Dict, List, Set, Tuple, Iterable, Optional
 
+from ..confidence import FLOOR
 from ..diagnostics import Diagnostic, Position
-from .ast_walk import walk, callee_name
+from .ast_walk import walk, callee_name, binders, fn_exprs, contexts, fn_calls, all_nodes, names_in
 from .detector_specs import (
     build, boundary_markers, _is_marker_type, _type_carries_marker,
     _marker_source_fns, _marker_param_mask, _marker_field_names, _expr_leaks_marked,
     _fn_aliases, _aliased_mask, _marked_taint,
-    _marked_records, _record_fns, _sink_targets, _walk_binds, _bind_target,
-    marker_sink_sanitizers, param_sink_reach,
-    _BIND_KINDS,
+    _marked_records, _record_fns, _sink_targets, _walk_binds,
+    marker_sink_sanitizers, param_sink_reach, marker_absent,
 )
 
 
@@ -105,33 +105,48 @@ def _declared_effects(fn_decl: Dict[str, Any]) -> List[EffectEntry]:
 # Subsumption: does any caller effect cover this callee effect?
 # ----------------------------------------------------------------------
 
-_GLOB_REGEX_CACHE: Dict[str, re.Pattern] = {}
+_GLOB_REGEX_CACHE: Dict[Tuple[str, str], re.Pattern] = {}
 
 
-def _glob_to_regex(pattern: str) -> re.Pattern:
-    """Compile a glob pattern (`*` is wildcard) to a regex anchored start-to-end.
+def _glob_to_regex(pattern: str, star: str = ".*") -> re.Pattern:
+    """Compile a glob pattern (`*` is wildcard, spelled `star` in the
+    regex) to a regex anchored start-to-end.
 
     Cached because compilation is hot-path inside the subsumption check.
     """
-    cached = _GLOB_REGEX_CACHE.get(pattern)
+    cached = _GLOB_REGEX_CACHE.get((pattern, star))
     if cached is not None:
         return cached
     parts = ["^"]
     for c in pattern:
         if c == "*":
-            parts.append(".*")
+            parts.append(star)
         elif c in r".+?^$()[]{}|\\":
             parts.append("\\" + c)
         else:
             parts.append(c)
     parts.append("$")
     rx = re.compile("".join(parts))
-    _GLOB_REGEX_CACHE[pattern] = rx
+    _GLOB_REGEX_CACHE[(pattern, star)] = rx
     return rx
 
 
+def _url_split(url: str) -> Tuple[str, str, str]:
+    """`scheme://AUTHORITY/rest` -> (scheme, authority, rest)."""
+    scheme, rest = url.split("://", 1)
+    authority = _scope_authority(url)
+    return scheme, authority, rest[len(authority):]
+
+
 def _arg_covers(caller_arg: Optional[str], callee_arg: Optional[str]) -> bool:
-    """Does the caller's arg permission cover the callee's arg requirement?"""
+    """Does the caller's arg permission cover the callee's arg requirement?
+
+    For a URL glob the cover is decided PART BY PART on the parsed URL:
+    a `*` in the scheme or the authority matches no `/ @ : ? #`, so
+    `https://*.corp.example/*` no longer covers
+    `https://evil.com/.corp.example/x` (the `*` used to span the `/` and
+    the path, audit 2026-09-24 A7), and `https://api.example.com*` does
+    not cover a `@evil.com` userinfo trick."""
     if caller_arg is None:
         return True
     if callee_arg is None:
@@ -139,9 +154,13 @@ def _arg_covers(caller_arg: Optional[str], callee_arg: Optional[str]) -> bool:
         return False
     if caller_arg == callee_arg:
         return True
-    if "*" in caller_arg:
-        return bool(_glob_to_regex(caller_arg).match(callee_arg))
-    return False
+    if "*" not in caller_arg:
+        return False
+    if "://" in caller_arg and "://" in callee_arg:
+        pin = "[^/@:?#]*"
+        return all(_glob_to_regex(c, star).match(v) for c, v, star in zip(
+            _url_split(caller_arg), _url_split(callee_arg), (pin, pin, ".*")))
+    return bool(_glob_to_regex(caller_arg).match(callee_arg))
 
 
 def _effect_covered(caller_effects: List[EffectEntry],
@@ -587,12 +606,16 @@ _BOUNDARY_MARKERS = boundary_markers()
 def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
     """Return E0729 diagnostics for a marker-carrying value passed to a
     user-declared function parameter not typed with that marker."""
+    diags: List[Diagnostic] = []
+    present = [(m, u) for m, u in _BOUNDARY_MARKERS.items()
+               if not marker_absent(ast, m)]
+    if not present:
+        return diags   # no marker, nothing to launder (audit F5)
     decls = {d["name"]: d for d in ast.get("decls", [])
              if d.get("kind") == "FunctionDecl"}
     reach = param_sink_reach(ast)          # BUG-023: which sink a param feeds
     sink_san = marker_sink_sanitizers()    # marker -> sink -> its sanitizer
-    diags: List[Diagnostic] = []
-    for marker, unwraps in _BOUNDARY_MARKERS.items():
+    for marker, unwraps in present:
         row_san = sink_san.get(marker, {})
         sanitizers = frozenset(row_san.values())
         src_fns = _marker_source_fns(ast, marker)
@@ -604,7 +627,7 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
         # target here: an alias of a plain-param callee is exactly the
         # laundering shape (BUG-002).
         targets = src_fns | frozenset(decls) | frozenset(pmask)
-        for d in decls.values():
+        for d in contexts(ast):
             al = _fn_aliases(d, targets)
             src_l = src_fns | frozenset(a for a, ts in al.items() if ts & src_fns)
             pmask_l = _aliased_mask(pmask, al)
@@ -628,7 +651,7 @@ def check_marker_boundary(ast: Dict[str, Any]) -> List[Diagnostic]:
             ft_al = _fn_aliases(d, frozenset(ftparams)) if ftparams else {}
             leaks = lambda node, uw: _expr_leaks_marked(   # noqa: E731
                 node, tainted, uw, src_l, pmask_l, mfields, rec_names)
-            for call in walk(d.get("body", []), "Call"):
+            for call in fn_calls(d):
                 cname = callee_name(call)
                 direct = decls.get(cname)
                 cands = [direct] if direct is not None else \
@@ -765,6 +788,8 @@ def check_return_laundering(ast: Dict[str, Any]) -> List[Diagnostic]:
     at the return site. Authorized<T> excluded (proof marker)."""
     diags: List[Diagnostic] = []
     for marker, unwraps in _BOUNDARY_MARKERS.items():
+        if marker_absent(ast, marker):
+            continue   # nothing can carry it (audit F5)
         src_fns = _marker_source_fns(ast, marker)
         pmask = _marker_param_mask(ast, marker)
         mfields = _marker_field_names(ast, marker)
@@ -884,7 +909,7 @@ def check_exhaustiveness(ast: Dict[str, Any]) -> List[Diagnostic]:
                 if tn:
                     types[n["name"]] = tn
 
-        for m in walk(d.get("body", []), "Match", "MatchExpr"):
+        for m in walk(fn_exprs(d), "Match", "MatchExpr"):
             scrut = m.get("scrutinee") or {}
             if scrut.get("kind") != "Ident":
                 continue
@@ -937,7 +962,7 @@ def check_unreachable_arms(ast: Dict[str, Any]) -> List[Diagnostic]:
         if d.get("kind") != "FunctionDecl":
             continue
         fn = d["name"]
-        for m in walk(d.get("body", []), "Match", "MatchExpr"):
+        for m in walk(fn_exprs(d), "Match", "MatchExpr"):
             arms = m.get("arms") or []
             mpos = m.get("pos") or d.get("pos") or {"line": 0, "column": 0}
             seen: Set[str] = set()
@@ -1355,15 +1380,15 @@ def _is_result_proof_expr(node: Any, r_proven: Set[str],
     return False
 
 
-def _ok_pattern_bindings(pattern: Any) -> List[str]:
-    """Names bound in payload position of an Ok(...)/Some(...) pattern —
+def _ok_pattern_nodes(pattern: Any) -> List[Dict[str, Any]]:
+    """BindPat nodes in payload position of an Ok(...)/Some(...) pattern —
     the only place a Result/Option-wrapped proof unwraps to a proof."""
     if not isinstance(pattern, dict) or pattern.get("kind") != "ConstructorPat":
         return []
     path = pattern.get("path") or []
     if not path or path[-1] not in ("Ok", "Some"):
         return []
-    return [a["name"] for a in pattern.get("args", [])
+    return [a for a in pattern.get("args", [])
             if isinstance(a, dict) and a.get("kind") == "BindPat"]
 
 
@@ -1374,57 +1399,53 @@ def _authorized_names(fn_decl: Dict[str, Any],
     """(authorized, result_proven): names proven to hold an Authorized<T>
     value, and names proven to hold a Result/Option-wrapped proof.
 
-    Authorized names are: Authorized-typed params; names whose EVERY
-    Let/Var/Assign binding is an authorized expression (fixpoint; one
-    unproven binding disqualifies the name — the same all-bindings rule
-    as _safe_path_names, inverted marker); and names bound in Ok(...)/
-    Some(...) payload position of a match whose scrutinee is proven to
-    carry a Result/Option-wrapped proof (and which are never rebound to
-    a non-proof)."""
-    authorized: Set[str] = {
-        p["name"] for p in fn_decl.get("params", [])
-        if _is_marker_type(p.get("type"), _AUTH_MARKER)
-    }
-    binds: Dict[str, List[Any]] = {}
-    grants: List[Tuple[Any, List[str]]] = []  # (scrutinee, Ok/Some-bound names)
-
-    # Let/Var carry "name"; Assign carries "target". All three are
-    # bindings — missing Assign here would let `tok = raw` keep a
-    # previously-proven name authorized (silent demotion miss).
-    body = fn_decl.get("body", [])
-    for tgt, value, _ in _walk_binds(body):
-        binds.setdefault(tgt, []).append(value)
-    for n in walk(body, "Match", "MatchExpr"):
+    A name is proven only if EVERY binder of it (`binders()`) is a proof
+    (fixpoint; one unproven binder disqualifies — the same all-bindings
+    rule as `_safe_names`, inverted marker):
+      * a parameter, when it is typed Authorized<...>;
+      * a let/var/assign whose value is an authorized expression;
+      * a name in Ok(...)/Some(...) payload position of a match arm whose
+        scrutinee is proven to carry a Result/Option-wrapped proof.
+    Any other binder — a plain parameter, a `for` loop variable, a
+    pattern name anywhere else — is not a proof, so `for tok in toks`
+    after a proven `tok` demotes it (audit 2026-09-24 A5), and so does a
+    raw parameter later assigned a proof. Missing Assign here once let
+    `tok = raw` keep a proven name authorized (silent demotion miss)."""
+    by_name: Dict[str, list] = {}
+    for b in binders(fn_decl):
+        by_name.setdefault(b.name, []).append(b)
+    # Ok/Some payload BindPat nodes -> the scrutinee they unwrap.
+    payload: Dict[int, Any] = {}
+    for n in walk(fn_exprs(fn_decl), "Match", "MatchExpr"):
         for arm in n.get("arms", []) or []:
-            names = _ok_pattern_bindings(arm.get("pattern"))
-            if names:
-                grants.append((n.get("scrutinee"), names))
+            pat = arm.get("pattern")
+            for a in _ok_pattern_nodes(pat):
+                payload[id(a)] = n.get("scrutinee")
+
+    authorized: Set[str] = set()
     r_proven: Set[str] = set()
+
+    def is_proof(b) -> bool:
+        if b.kind == "Param":
+            return _is_marker_type(b.node.get("type"), _AUTH_MARKER)
+        if b.value is not None:
+            return _expr_is_authorized(b.value, authorized, minters)
+        return id(b.node) in payload and _is_result_proof_expr(
+            payload[id(b.node)], r_proven, result_minters)
+
+    def is_result_proof(b) -> bool:
+        return b.value is not None and             _is_result_proof_expr(b.value, r_proven, result_minters)
+
     changed = True
     while changed:
         changed = False
-        for name, values in binds.items():
-            if name not in authorized and \
-                    all(_expr_is_authorized(v, authorized, minters)
-                        for v in values):
+        for name, bs in by_name.items():
+            if name not in authorized and all(is_proof(b) for b in bs):
                 authorized.add(name)
                 changed = True
-            if name not in r_proven and \
-                    all(_is_result_proof_expr(v, r_proven, result_minters)
-                        for v in values):
+            if name not in r_proven and all(is_result_proof(b) for b in bs):
                 r_proven.add(name)
                 changed = True
-        for scrut, names in grants:
-            if not _is_result_proof_expr(scrut, r_proven, result_minters):
-                continue
-            for n in names:
-                # the pattern binding is a proof unless a Let/Var/Assign
-                # elsewhere rebinds the name to a non-proof
-                if n not in authorized and \
-                        all(_expr_is_authorized(v, authorized, minters)
-                            for v in binds.get(n, [])):
-                    authorized.add(n)
-                    changed = True
     return authorized, r_proven
 
 
@@ -1508,17 +1529,16 @@ def check_authorization(ast: Dict[str, Any]) -> List[Diagnostic]:
                 f"initialize the const with {_AUTH_GUARD}(principal, action)",
                 {"name": d.get("name"), "reason": "annotation coercion"},
             ))
-    for d in ast.get("decls", []):
-        if d.get("kind") != "FunctionDecl":
-            continue
+    names = names_in(ast)
+    for d in contexts(ast):
         fn = d["name"]
         fpos = d.get("pos") or {"line": 0, "column": 0}
         authorized, r_proven = _authorized_names(d, minters, result_minters)
-        body = d.get("body", [])
+        body = fn_exprs(d)
         # Obligation 1 — call-site proof for Authorized<...> parameters.
         # This is what makes trusting those parameters (above) sound: a
         # raw value is rejected where it enters, so it can never arrive.
-        for call in walk(body, "Call"):
+        for call in fn_calls(d):
             callee = callee_name(call)
             idxs = gated.get(callee)
             if not idxs:
@@ -1545,8 +1565,9 @@ def check_authorization(ast: Dict[str, Any]) -> List[Diagnostic]:
                     f"proven Authorized) as argument {i} of {callee}",
                     {"callee": callee, "param": pname, "reason": reason},
                 ))
-        # Obligation 2 — annotation cannot mint the type.
-        for b in _walk_marker_binds(body):
+        # Obligation 2 — annotation cannot mint the type. (No
+        # `Authorized` anywhere: no annotation to check — audit F5.)
+        for b in (_walk_marker_binds(body) if _AUTH_MARKER in names else ()):
             if _expr_is_authorized(b.get("value"), authorized, minters):
                 continue
             pos = b.get("pos") or fpos
@@ -1562,7 +1583,7 @@ def check_authorization(ast: Dict[str, Any]) -> List[Diagnostic]:
                 {"name": b.get("name"), "reason": "annotation coercion"},
             ))
         # Obligation 3 — gated functions must not escape as values.
-        for gname in _escaped_gated_idents(body, set(gated)):
+        for gname in (_escaped_gated_idents(body, set(gated)) if gated else ()):
             diags.append(_e0716(
                 fn,
                 f"function {fn!r} uses the {_AUTH_MARKER}-gated function "
@@ -1612,7 +1633,7 @@ def check_authorization(ast: Dict[str, Any]) -> List[Diagnostic]:
                         {"reason": "return does not mint declared proof"},
                     ))
         sink_al = _fn_aliases(d, frozenset(_MUTATION_SINKS))
-        for call in walk(d.get("body", []), "Call"):
+        for call in fn_calls(d):
             hits = _sink_targets(callee_name(call), sink_al, _MUTATION_SINKS)
             if not hits:
                 continue
@@ -1673,21 +1694,20 @@ _RES_AUTH_GUARD = "authorizeResource"  # (principal, action, resourceId)
 
 
 def _stable_names(fn_decl: Dict[str, Any]) -> Set[str]:
-    """Names that denote ONE value for the whole body: params that are
-    never reassigned, plus names bound exactly once. Only these can
-    witness that the guard's id and the sink's id are the same value."""
-    counts: Dict[str, int] = {}
-
-    # Let, Var AND Assign each bind — a `var` declaration that was not
-    # counted let `var id = a; ...; id = b` pass as bound once (BUG-013).
-    for n in walk(fn_decl.get("body", []), *_BIND_KINDS):
-        tgt = _bind_target(n)
-        if tgt is not None:
-            counts[tgt] = counts.get(tgt, 0) + 1
-    params = {p["name"] for p in fn_decl.get("params", [])}
-    stable = {p for p in params if counts.get(p, 0) == 0}
-    stable |= {n for n, c in counts.items() if c == 1 and n not in params}
-    return stable
+    """Names that denote ONE value for the whole body: exactly one
+    binder, and that binder a parameter or a let/var/assignment. Only
+    these can witness that the guard's id and the sink's id are the same
+    value. Every binder counts (`binders()`): a `var` that was not
+    counted let `var id = a; ...; id = b` pass as bound once (BUG-013),
+    and a `for id in ids` / `case Some(id)` that was not counted let a
+    loop re-bind the id a proof was minted for (audit 2026-09-24 A5). A
+    loop variable or pattern name takes many values, so it is never
+    stable on its own either."""
+    kinds: Dict[str, List[str]] = {}
+    for b in binders(fn_decl):
+        kinds.setdefault(b.name, []).append(b.kind)
+    return {n for n, ks in kinds.items()
+            if len(ks) == 1 and ks[0] in ("Param", "Let", "Var", "Assign")}
 
 
 def _id_key(node: Any, stable: Set[str]) -> Optional[Tuple[str, Any]]:
@@ -1710,7 +1730,7 @@ def _resource_proof_ids(fn_decl: Dict[str, Any],
     names qualify — a rebindable proof name proves nothing."""
     out: Dict[str, Tuple[str, Any]] = {}
 
-    for name, val, _ in _walk_binds(fn_decl.get("body", [])):
+    for name, val, _ in _walk_binds(fn_decl):
         if name in stable and isinstance(val, dict) \
                 and val.get("kind") == "Call" \
                 and callee_name(val) == _RES_AUTH_GUARD:
@@ -1747,15 +1767,13 @@ def check_resource_authorization(ast: Dict[str, Any]) -> List[Diagnostic]:
     authorization proof is missing, unbound, or bound to a DIFFERENT
     resource id than the one the sink touches (IDOR, CWE-639)."""
     diags: List[Diagnostic] = []
-    for d in ast.get("decls", []):
-        if d.get("kind") != "FunctionDecl":
-            continue
+    for d in contexts(ast):
         fn = d["name"]
         fpos = d.get("pos") or {"line": 0, "column": 0}
         stable = _stable_names(d)
         proof_ids = _resource_proof_ids(d, stable)
         sink_al = _fn_aliases(d, frozenset({_RESOURCE_SINK}))
-        for call in walk(d.get("body", []), "Call"):
+        for call in fn_calls(d):
             if not _sink_targets(callee_name(call), sink_al, {_RESOURCE_SINK}):
                 continue
             args = call.get("args") or []
@@ -1822,6 +1840,7 @@ _CREDENTIAL_PATTERNS = [
     (re.compile(r"AIza[0-9A-Za-z_\-]{35}"),               "Google API key"),
     (re.compile(r"xox[baprs]-[0-9A-Za-z\-]{10,}"),        "Slack token"),
     (re.compile(r"sk_live_[0-9A-Za-z]{20,}"),             "Stripe live secret key"),
+    (re.compile(r"rk_live_[0-9A-Za-z]{20,}"),             "Stripe live restricted key"),
     # Provider prefixes with a length floor: each is a documented token
     # format, none matched anything in 4,946 framework files or the
     # in-tree corpus when added (slice-3 record). Specific `sk-` shapes
@@ -1849,7 +1868,16 @@ def check_hardcoded_secret(ast: Dict[str, Any]) -> List[Diagnostic]:
     """Return E0723 diagnostics for string literals that match a known
     provider-credential shape (a hardcoded secret, CWE-798)."""
     diags: List[Diagnostic] = []
-    for lit in walk(ast, "StringLit"):
+    # A Python finding speaks Python (audit 2026-09-24 C6): there is no
+    # `getEnv` there, and no capability clause the category could name.
+    py = ast.get("lang") == "python"
+    fix = ("read it at runtime from the environment (os.environ[\"NAME\"]) or "
+           "a secrets manager, never a string literal; rotate the committed "
+           "value" if py else
+           "load the secret at runtime from the environment or "
+           "a secret manager (e.g. getEnv(\"...\")), never a "
+           "string literal")
+    for lit in (n for n in all_nodes(ast) if n.get("kind") == "StringLit"):
         val = lit.get("value")
         if not isinstance(val, str):
             continue
@@ -1861,9 +1889,12 @@ def check_hardcoded_secret(ast: Dict[str, Any]) -> List[Diagnostic]:
         for pat, label in _CREDENTIAL_PATTERNS:
             if pat.search(val):
                 pos = lit.get("pos") or {"line": 0, "column": 0}
+                # Output-only (confidence.py): a credential shape in a
+                # docstring is prose — AWS's own example key, mostly.
+                doc = bool(lit.get("docstring"))
                 diags.append(Diagnostic(
                     code="E0723",
-                    category="capability",
+                    category="security" if py else "capability",
                     severity="error",
                     message=(
                         f"string literal contains a hardcoded {label}; a "
@@ -1871,13 +1902,10 @@ def check_hardcoded_secret(ast: Dict[str, Any]) -> List[Diagnostic]:
                         f"control and shipped in every build"
                     ),
                     position=Position(pos.get("line", 0), pos.get("column", 0)),
-                    suggestion=(
-                        "load the secret at runtime from the environment or "
-                        "a secret manager (e.g. getEnv(\"...\")), never a "
-                        "string literal"
-                    ),
-                    confidence=1.0,
-                    extra={"credential_kind": label},
+                    suggestion=fix,
+                    confidence=FLOOR if doc else 1.0,
+                    extra={"credential_kind": label}
+                    | ({"demoted": "docstring"} if doc else {}),
                 ))
                 break  # one diagnostic per literal
     return diags
@@ -1908,83 +1936,277 @@ def _format_effect_list(effs: List[EffectEntry]) -> str:
 
 
 # ----------------------------------------------------------------------
+# Call-target resolution (shared by E0801 and the E0701 capability pass)
+# ----------------------------------------------------------------------
+# Aether has no lambdas: every function VALUE at run time is a named
+# function — a user FunctionDecl, a constructor, or a stdlib function.
+# So a call whose callee the pass cannot name still has a closed-world
+# bound: it runs SOME function the program uses as a value somewhere (an
+# Ident outside callee position). The union of those functions' declared
+# effects is the unknown callee's effect set. Crediting such a call with
+# nothing was the laundering channel of audit 2026-09-24 A2 (`let ws =
+# [writeFile]; ws[0](p, s)` in a `pure` function under a module granting
+# only `log`). Over-flag is the contract: when no effectful function
+# escapes as a value the bound is empty and the call is proven pure;
+# otherwise the caller must declare the bound or call a named function.
+# This adds no effects syntax to function types (a closed design point)
+# — it over-approximates what it cannot name.
+#
+# Unchanged: a call through a FUNCTION-TYPED parameter (or an alias of
+# one) is the obligation of whoever passes the function, charged where
+# it is passed (BUGS.md BUG-022/025); a local that shadows a function
+# name is a value (BUG-024).
+
+# Stdlib higher-order functions: the argument positions they CALL
+# (runtime.py `_ae_map(xs, f)` etc.). A function value handed there runs
+# under the call exactly as a callee does.
+_STDLIB_HOF_ARGS: Dict[str, Tuple[int, ...]] = {
+    "map": (1,), "filter": (1,), "foldLeft": (2,), "sortBy": (1,),
+    "all": (1,), "any": (1,), "find": (1,), "flatMap": (1,),
+    "count": (1,), "mapValues": (1,),
+}
+
+_OPAQUE_SHAPES = {
+    "Index": "an indexed element", "Call": "the result of a call",
+    "IfExpr": "a conditional expression", "MatchExpr": "a match expression",
+    "Field": "a record field",
+}
+
+
+def _is_fn_type(ty: Any) -> bool:
+    return isinstance(ty, dict) and ty.get("kind") == "FunctionType"
+
+
+def _callee_ident_ids(node: Any) -> Set[int]:
+    """ids of the Ident nodes that sit in callee position."""
+    return {id(c["func"]) for c in walk(node, "Call")
+            if isinstance(c.get("func"), dict) and c["func"].get("kind") == "Ident"}
+
+
+def program_callables(ast: Dict[str, Any]) -> Dict[str, Any]:
+    """Per-program tables every call resolution reads: declared effects of
+    user functions and records, constructors, `const` bindings, the
+    function-typed parameter positions of each user function, and the
+    ESCAPING functions (used as a value somewhere) with their effects."""
+    user_effects: Dict[str, List[EffectEntry]] = {}
+    union_cases: Set[str] = {"Some", "None", "Ok", "Err"}
+    consts: Dict[str, Any] = {}
+    fn_params: Dict[str, Tuple[int, ...]] = {}
+    for d in ast.get("decls", []):
+        k = d.get("kind")
+        if k == "FunctionDecl":
+            user_effects[d["name"]] = _declared_effects(d)
+            pos = tuple(i for i, p in enumerate(d.get("params", []))
+                        if _is_fn_type(p.get("type")))
+            if pos:
+                fn_params[d["name"]] = pos
+        elif k == "UnionDecl":
+            union_cases |= {c["name"] for c in d.get("cases", [])}
+        elif k == "RecordDecl":
+            user_effects[d["name"]] = []
+        elif k == "ConstDecl":
+            consts[d["name"]] = d.get("value")
+    known = set(user_effects) | set(_STDLIB_EFFECTS)
+    escaping: Dict[str, List[EffectEntry]] = {}
+    for cx in contexts(ast):
+        local = {b.name for b in binders(cx)}
+        exprs = fn_exprs(cx)
+        callee_ids = _callee_ident_ids(exprs)
+        for n in walk(exprs, "Ident"):
+            nm = n.get("name")
+            if id(n) not in callee_ids and nm in known and nm not in local:
+                escaping[nm] = user_effects.get(nm) or _STDLIB_EFFECTS.get(nm, [])
+    return {"user_effects": user_effects, "union_cases": union_cases,
+            "consts": consts, "fn_params": fn_params, "escaping": escaping,
+            "alias_targets": frozenset(known)}
+
+
+def context_names(d: Dict[str, Any], prog: Dict[str, Any]) -> Dict[str, Any]:
+    """Per-context name facts: locals, alias map, function-typed params
+    (and their aliases), and OPAQUE locals — names some binder gives a
+    value the pass cannot name (a loop/pattern variable, a non-function
+    parameter, an index, a call result, an unresolved const, another
+    opaque local). Calling an opaque local is an unknown callee."""
+    bs = list(binders(d))
+    local = {b.name for b in bs}
+    al = _fn_aliases(d, prog["alias_targets"])
+    ftparams = {p["name"] for p in d.get("params", []) if _is_fn_type(p.get("type"))}
+    ft_al = _fn_aliases(d, frozenset(ftparams)) if ftparams else {}
+    opaque: Set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for b in bs:
+            if b.name in opaque:
+                continue
+            if b.kind == "Param":
+                bad = not _is_fn_type(b.node.get("type"))
+            elif isinstance(b.value, dict) and b.value.get("kind") == "Ident":
+                src = b.value.get("name")
+                bad = src in opaque or (src not in local and src in prog["consts"]
+                                        and _const_fn(src, prog) is None)
+            else:
+                bad = True
+            if bad:
+                opaque.add(b.name)
+                changed = True
+    return {"local": local, "al": al, "ftparams": ftparams, "ft_al": ft_al,
+            "opaque": opaque}
+
+
+def _const_fn(name: str, prog: Dict[str, Any], seen: Tuple[str, ...] = ()) -> Optional[str]:
+    """The function a `const` names when its initializer is a bare Ident
+    (followed through const chains), else None."""
+    v = prog["consts"].get(name)
+    if not (isinstance(v, dict) and v.get("kind") == "Ident") or name in seen:
+        return None
+    src = v.get("name")
+    if src in prog["consts"]:
+        return _const_fn(src, prog, seen + (name,))
+    return src
+
+
+def _value_unknown(node: Any, cx: Dict[str, Any], prog: Dict[str, Any]) -> Optional[str]:
+    """If `node`, used as a FUNCTION value, may be a function the pass
+    cannot name, a short description of it; else None."""
+    if not isinstance(node, dict):
+        return None
+    k = node.get("kind")
+    if k == "Ident":
+        nm = node.get("name")
+        if nm in cx["local"]:
+            return f"local {nm!r}" if nm in cx["opaque"] else None
+        if nm in prog["consts"] and _const_fn(nm, prog) is None:
+            return f"const {nm!r}"
+        return None
+    return _OPAQUE_SHAPES.get(k)
+
+
+def resolve_call(call: Dict[str, Any], cx: Dict[str, Any], prog: Dict[str, Any]
+                 ) -> Tuple[List[Tuple[str, Optional[str]]], Optional[str]]:
+    """(targets, unknown) for one call. `targets` are (function, as_value)
+    pairs: the callee (as_value None) and every function value handed to
+    it (as_value = the argument's spelling), resolved flag-more through
+    aliases and consts (BUGS.md BUG-015/022/024/025). `unknown` describes
+    a callee — or a function value at a position the callee CALLS — that
+    the pass cannot name; its effect bound is the program's escaping set."""
+    user_effects, union_cases = prog["user_effects"], prog["union_cases"]
+    func = call.get("func") if isinstance(call.get("func"), dict) else {}
+    name = callee_name(call)
+    targets: List[Tuple[str, Optional[str]]] = []
+    unknown: Optional[str] = None
+    hof: Tuple[int, ...] = ()
+    if name is not None and name in union_cases:
+        pass                                            # constructor: pure
+    elif func.get("kind") == "Ident" and name is not None:
+        if name in user_effects or name in _STDLIB_EFFECTS \
+                or name.endswith("?") or name.endswith("!"):
+            targets.append((name, None))
+            hof = prog["fn_params"].get(name) or _STDLIB_HOF_ARGS.get(name, ())
+        elif name in cx["local"]:
+            targets += [(t, None) for t in sorted(cx["al"].get(name, set()))]
+            # a function-typed parameter is not opaque (BUG-022); one
+            # re-bound to something unnamed is
+            unknown = _value_unknown(func, cx, prog)
+        elif name in prog["consts"]:
+            t = _const_fn(name, prog)
+            if t is None:
+                unknown = f"const {name!r}"
+            elif t in user_effects or t in _STDLIB_EFFECTS:
+                targets.append((t, None))
+        else:
+            # a pure stdlib function, or a name nothing defines (a
+            # NameError at run time, not an effect — audit A8)
+            hof = _STDLIB_HOF_ARGS.get(name, ())
+    else:
+        unknown = _OPAQUE_SHAPES.get(func.get("kind"), "an unresolved callee")
+    for i, a in enumerate(call.get("args") or []):
+        if isinstance(a, dict) and a.get("kind") == "Ident":
+            nm = a.get("name")
+            if nm in union_cases:
+                pass
+            elif nm in cx["local"]:
+                # Shadowed: only an alias binding (`let g = logIt`)
+                # still names a function (BUG-024).
+                targets += [(t, nm) for t in sorted(cx["al"].get(nm, set()))]
+            elif nm in user_effects or nm in _STDLIB_EFFECTS:
+                targets.append((nm, nm))
+            elif nm in prog["consts"]:
+                t = _const_fn(nm, prog)
+                if t in user_effects or t in _STDLIB_EFFECTS:
+                    targets.append((t, nm))
+        if i in hof and unknown is None:
+            unknown = _value_unknown(a, cx, prog)
+    return targets, unknown
+
+
+def unknown_bound(prog: Dict[str, Any]) -> List[Tuple[str, EffectEntry]]:
+    """(function, effect) for every effect an unknown callee may perform:
+    each escaping function's declared effects, sorted by function."""
+    return [(fn, e) for fn in sorted(prog["escaping"])
+            for e in prog["escaping"][fn]]
+
+
+# ----------------------------------------------------------------------
 # Public entry point
 # ----------------------------------------------------------------------
 
 def check_effects(ast: Dict[str, Any]) -> List[Diagnostic]:
     """Return a list of E0801 diagnostics, one per call-site violation."""
-    user_effects: Dict[str, List[EffectEntry]] = {}
-    union_cases: Set[str] = set()
-    for d in ast.get("decls", []):
-        if d.get("kind") == "FunctionDecl":
-            user_effects[d["name"]] = _declared_effects(d)
-        elif d.get("kind") == "UnionDecl":
-            for c in d.get("cases", []):
-                union_cases.add(c["name"])
-        elif d.get("kind") == "RecordDecl":
-            user_effects[d["name"]] = []
-
-    for name in ("Some", "None", "Ok", "Err"):
-        union_cases.add(name)
-
-    # A call through an alias (`let sh = shellExec; sh("ls")`) is a call
-    # to the target — resolved flag-more, so an alias can only ADD
-    # obligations (BUGS.md BUG-015).
-    alias_targets = frozenset(user_effects) | frozenset(_STDLIB_EFFECTS)
-
+    prog = program_callables(ast)
+    bound = unknown_bound(prog)
+    candidates = sorted(prog["escaping"])
     diags: List[Diagnostic] = []
-    for d in ast.get("decls", []):
-        if d.get("kind") != "FunctionDecl":
-            continue
+    for d in contexts(ast):
         caller_name = d["name"]
         caller_effects = _declared_effects(d)
         pos = d.get("pos") or {"line": 0, "column": 0}
-        al = _fn_aliases(d, alias_targets)
-        # A bare Ident argument names a FUNCTION only when nothing local
-        # shadows it. A `String` PARAMETER called `logIt`, or
-        # `let notify = "hello"`, is a value — resolving it by global
-        # name invented an effect for a string (BUGS.md BUG-024).
-        local = {p.get("name") for p in d.get("params", [])}             | {n for n, _, _ in _walk_binds(d.get("body", []))}
+        cx = context_names(d, prog)
 
-        for call in walk(d.get("body", []), "Call"):
+        def e0801(what: str, callee: str, eff: EffectEntry,
+                  via: Optional[str], extra: Dict[str, Any],
+                  at: Dict[str, Any]) -> Diagnostic:
+            missing_pretty = _format_effect(eff)
+            # Removal first: widening the clause silences E0801 without
+            # removing the effect (audit 2026-09-24, Wave 3 D1).
+            call = ("the call that can reach" if via == "unknown_callee"
+                    else "the call to")
+            hint = (f"remove or replace {call} {callee!r} (it performs "
+                    f"{missing_pretty}), or — only if {caller_name} is "
+                    f"meant to have that effect — add {missing_pretty} "
+                    f"to its effects clause")
+            if via == "unknown_callee":
+                hint += ("; to keep the effects narrow, call a named function, "
+                         "or take the function as a function-typed parameter "
+                         "so each caller answers for what it passes")
+            return Diagnostic(
+                code="E0801",
+                category="effect",
+                severity="error",
+                message=(f"function {caller_name!r} (effects "
+                         f"{_format_effect_list(caller_effects)}) " + what),
+                # At the offending call (audit D10); the decl if unpositioned.
+                position=Position(at.get("line", 0), at.get("column", 0)),
+                suggestion=hint,
+                confidence=1.0,
+                extra={"caller": caller_name, "callee": callee,
+                       "caller_effects": [[list(p), a] for p, a in caller_effects],
+                       "missing_effect": [list(eff[0]), eff[1]],
+                       **({"via": via} if via else {}), **extra},
+            )
+
+        for call in fn_calls(d):
             name = callee_name(call)
-            if name is None or name in union_cases:
-                continue
-            direct = name in user_effects or name in _STDLIB_EFFECTS \
-                or name.endswith("?") or name.endswith("!")
-            # A function passed as a VALUE runs under this call, so its
-            # effects are the caller's obligation just as a callee's are
-            # (BUGS.md BUG-022): `apply(logIt, s)` from a `pure` caller
-            # performs `log`. A pure function value adds nothing, so
-            # `map(double, xs)` stays clean.
-            passed: List[Tuple[str, str]] = []
-            for a in call.get("args") or []:
-                if not isinstance(a, dict) or a.get("kind") != "Ident":
-                    continue
-                nm = a.get("name")
-                if nm in union_cases:
-                    continue
-                if nm in local:
-                    # Shadowed: only an alias binding (`let g = logIt`)
-                    # still names a function, and `al` resolved it.
-                    passed += [(t, nm) for t in sorted(al.get(nm, set()))]
-                elif nm in user_effects or nm in _STDLIB_EFFECTS:
-                    passed.append((nm, nm))
-            targets: List[Tuple[str, Optional[str]]] = [
-                (c, None) for c in
-                ([name] if direct else sorted(al.get(name, set())))]
-            targets += passed
+            at = call.get("pos") or pos
+            targets, unknown = resolve_call(call, cx, prog)
             for callee, as_value in targets:
-                if callee in user_effects:
-                    callee_effects = user_effects[callee]
-                else:
+                callee_effects = prog["user_effects"].get(callee)
+                if callee_effects is None:
                     callee_effects = _STDLIB_EFFECTS.get(callee, [])
-
                 for callee_eff in callee_effects:
                     if _effect_covered(caller_effects, callee_eff):
                         continue
                     missing_pretty = _format_effect(callee_eff)
-                    caller_pretty = _format_effect_list(caller_effects)
                     if as_value is not None:
                         alias = ("" if as_value == callee
                                  else f" (alias of {callee!r})")
@@ -1995,29 +2217,20 @@ def check_effects(ast: Dict[str, Any]) -> List[Diagnostic]:
                         via = "" if callee == name else f" (through alias {name!r})"
                         what = (f"calls {callee!r}{via} which has effect "
                                 f"{missing_pretty} not covered by the caller")
-                    diags.append(Diagnostic(
-                        code="E0801",
-                        category="effect",
-                        severity="error",
-                        message=(
-                            f"function {caller_name!r} (effects {caller_pretty}) "
-                            + what
-                        ),
-                        position=Position(pos.get("line", 0), pos.get("column", 0)),
-                        suggestion=(
-                            f"add {missing_pretty} to {caller_name}'s effects "
-                            f"clause, or change the call site"
-                        ),
-                        confidence=1.0,
-                        extra={
-                            "caller": caller_name,
-                            "callee": callee,
-                            "caller_effects": [
-                                [list(p), a] for p, a in caller_effects
-                            ],
-                            "missing_effect": [list(callee_eff[0]), callee_eff[1]],
-                            **({"via": "function_value"}
-                               if as_value is not None else {}),
-                        },
-                    ))
+                    diags.append(e0801(what, callee, callee_eff,
+                                       "function_value" if as_value is not None
+                                       else None, {}, at))
+            if unknown is None:
+                continue
+            for fn, eff in bound:
+                if _effect_covered(caller_effects, eff):
+                    continue
+                what = (f"calls {unknown}, a function value the checker cannot "
+                        f"name; any function this program uses as a value may "
+                        f"arrive there ({', '.join(map(repr, candidates))}), and "
+                        f"{fn!r} has effect {_format_effect(eff)} not covered by "
+                        f"the caller")
+                diags.append(e0801(what, fn, eff, "unknown_callee",
+                                   {"candidates": candidates, "shape": unknown},
+                                   at))
     return diags

@@ -53,6 +53,9 @@ RISK = {
                            # dropped write, a real data-loss path
     "E0207": "medium",     # unsatisfiable refinement — the type is
                            # uninhabitable, so the call can never succeed
+    "E0208": "medium",     # undeclared name — a NameError on the path
+                           # that reaches it; a misspelt sink is one no
+                           # taint pass can see
 
     # --- contract / refinement (E03xx) ------------------------------
     "E0301": "low", "E0303": "low", "E0304": "low",

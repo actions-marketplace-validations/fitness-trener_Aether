@@ -2,7 +2,7 @@
   "id": "T02_pwd_hasher_logs",
   "axis": "B.1",
   "summary": "pure password hasher leaks plaintext via stray print",
-  "naive_aether": {"stage": "check", "expected_exit_code": 2,
+  "naive_aether": {"stage": "check", "expected_exit_code": 1,
                    "expected_diagnostic_code": "E0801",
                    "expected_stderr_pattern": "E0801.*hashPassword.*log"},
   "naive_python": {"stage": "run", "expected_exit_code": 0,

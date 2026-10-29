@@ -202,7 +202,52 @@ def test_aether_source_finding_is_one_point_zero():
     print("confidence: an Aether-source finding is 1.0 with no match kind")
 
 
+def test_sanitizer_name_set_matches_the_frontend():
+    """The argument-shape demotion recognises the wrapper names the
+    frontend emits; a new sanitizer row must not escape it silently."""
+    from aether.passes.detector_specs import PY_SANITIZER_NAMES
+    from aether.py_frontend import SANITIZER_BY_QUALIFIED
+    want = set(SANITIZER_BY_QUALIFIED.values()) | {"sqlBind"}
+    assert set(PY_SANITIZER_NAMES) == want, sorted(set(PY_SANITIZER_NAMES) ^ want)
+    print("confidence: the demotion's sanitizer names are the frontend's")
+
+
+def test_argument_shape_demotion_is_output_only():
+    """Audit 2026-09-24 C5: a finding whose judged argument holds a
+    sanitizer call or an own-origin URL builder rates at the floor — the
+    finding itself stands (same code, same line), only the rating moves,
+    and `extra.demoted` says why. A plain argument keeps its kind's rating."""
+    ds = {d.position.line: d for d in _py_findings(
+        "import os, shlex, subprocess\n"
+        "from starlette.responses import RedirectResponse\n"
+        "def f(c, request):\n"
+        "    os.system(shlex.quote(c))\n"
+        "    subprocess.run(shlex.quote(c) + ' -l', shell=True)\n"
+        "    os.system(c)\n"
+        "    return RedirectResponse(request.url_for('home'))\n")}
+    assert sorted((ln, d.code) for ln, d in ds.items()) == \
+        [(4, "E0714"), (5, "E0714"), (6, "E0714"), (7, "E0718")], sorted(ds)
+    for ln in (4, 5, 7):
+        assert ds[ln].confidence == FLOOR and ds[ln].extra["demoted"] == "argument_shape", \
+            (ln, ds[ln].confidence, ds[ln].extra)
+    assert ds[6].confidence == confidence_of("qualified") and "demoted" not in ds[6].extra
+    assert confidence_of("qualified", demoted=True) == FLOOR
+    print("confidence: a fix-shaped argument rates at the floor; the finding stands")
+
+
+def test_docstring_credential_rates_at_the_floor():
+    key = "AKIA" + "IOSFODNN7EXAMPLE"      # split: a fixture, not a credential
+    ds = sorted(((d.position.line, d.confidence, d.extra.get("demoted"))
+                 for d in _py_findings(f'def f():\n    """e.g. {key}"""\n'
+                                       f'    return "{key}"\n') if d.code == "E0723"))
+    assert ds == [(2, FLOOR, "docstring"), (3, 1.0, None)], ds
+    print("confidence: an E0723 shape in a docstring rates at the floor, in code 1.0")
+
+
 if __name__ == "__main__":
+    test_sanitizer_name_set_matches_the_frontend()
+    test_argument_shape_demotion_is_output_only()
+    test_docstring_credential_rates_at_the_floor()
     test_every_frontend_match_kind_is_rated()
     test_no_phantom_kinds_rated()
     test_ratings_are_in_range_and_floor_is_the_floor()
@@ -212,4 +257,4 @@ if __name__ == "__main__":
     test_compile_ranks_below_exec()
     test_match_kind_reaches_extra_and_argv_and_guard_are_rated()
     test_aether_source_finding_is_one_point_zero()
-    print("\nconfidence: 9/9 pass")
+    print("\nconfidence: 12/12 pass")

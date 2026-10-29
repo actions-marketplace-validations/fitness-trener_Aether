@@ -2,7 +2,7 @@
   "id": "T03_cache_lookup_writes_disk",
   "axis": "B.1",
   "summary": "log-only cache helper transitively performs fs.write",
-  "naive_aether": {"stage": "check", "expected_exit_code": 2,
+  "naive_aether": {"stage": "check", "expected_exit_code": 1,
                    "expected_diagnostic_code": "E0801",
                    "expected_stderr_pattern": "E0801.*cacheLookup.*fs.write"},
   "naive_python": {"stage": "run", "expected_exit_code": 0,

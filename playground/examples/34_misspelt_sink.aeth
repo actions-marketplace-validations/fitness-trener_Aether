@@ -1,0 +1,24 @@
+// expect: E0208
+// A misspelt sink (known-gaps round G3, BUGS.md BUG-086). BROKEN on purpose.
+//
+// `sqlQeury` is not `sqlQuery`. No taint pass can see a sink it cannot
+// name, so before name resolution this program passed `aether check`
+// with no E0713 and exit 0, then died with a Python NameError at `run`.
+// Now the misspelling is E0208 (a reference to an undeclared name), with
+// `sqlQuery` as the suggestion. Fix the spelling and E0713 fires on the
+// string-built query instead: bind the value with `sqlBind`.
+//
+// E0208 is name resolution, not type checking: it proves the name refers
+// to some binding, never that the binding has the right type.
+
+function findUser(name: String) returns Unit
+  effects db.query
+do
+  sqlQeury("SELECT * FROM users WHERE name = '" + name + "'")
+end
+
+function main() returns Unit
+  effects db.query
+do
+  findUser("alice")
+end

@@ -1,1 +1,1 @@
-{"diagnostics": [{"code": "E0801", "patch_target_kind": "FunctionDecl"}]}
+{"diagnostics": [{"code": "E0801", "patch_target_kind": "Call"}]}

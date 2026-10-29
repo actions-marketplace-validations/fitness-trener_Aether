@@ -30,40 +30,46 @@ from aether.pretty import pretty, asts_equal_ignoring_pos  # noqa: E402
 
 
 def _collect_corpus():
+    """EVERY `.aeth` in the repository that parses — not a sample. The old
+    sample (reference/, bench/tasks/, architectural-integrity/) missed
+    `playground/examples/32_function_typed_param.aeth`, on which `pretty`
+    crashed (`KeyError: 'ret'`, audit 2026-09-24 A9). Files that do not
+    parse are the malformed-input fixtures; they have no AST to print."""
     paths = []
-    refdir = os.path.join(ROOT, "reference")
-    if os.path.isdir(refdir):
-        for d in sorted(os.listdir(refdir)):
-            p = os.path.join(refdir, d, "program.aeth")
-            if os.path.isfile(p):
-                paths.append(p)
-    bench = os.path.join(ROOT, "bench", "tasks")
-    if os.path.isdir(bench):
-        for d in sorted(os.listdir(bench)):
-            p = os.path.join(bench, d, "reference.aeth")
-            if os.path.isfile(p):
-                paths.append(p)
-    demos = os.path.join(ROOT, "demos", "architectural-integrity")
-    if os.path.isdir(demos):
-        for d in sorted(os.listdir(demos)):
-            p = os.path.join(demos, d, "aether", "main.aeth")
-            if os.path.isfile(p):
-                paths.append(p)
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = sorted(d for d in dirnames
+                             if not d.startswith(".") and d != "_work")
+        for f in sorted(filenames):
+            if not f.endswith(".aeth"):
+                continue
+            p = os.path.join(dirpath, f)
+            try:
+                parse(open(p, encoding="utf-8-sig").read(), p)
+            except Exception:
+                continue
+            paths.append(p)
+    assert any(p.endswith("32_function_typed_param.aeth") for p in paths)
     return paths
 
 
 def test_roundtrip_full_corpus():
     corpus = _collect_corpus()
-    assert len(corpus) >= 20, f"expected >=20 files, found {len(corpus)}"
+    assert len(corpus) >= 400, f"expected >=400 files, found {len(corpus)}"
     failures = []
     for path in corpus:
         try:
-            src = open(path).read()
+            src = open(path, encoding="utf-8-sig").read()
             ast1 = parse(src, path)
             rendered = pretty(ast1)
             ast2 = parse(rendered, path)
             if not asts_equal_ignoring_pos(ast1, ast2):
                 failures.append((path, "AST mismatch after round-trip"))
+            # With comments kept (fmt, fix-loop): same AST, and a fixed point.
+            kept = pretty(ast1, src)
+            if not asts_equal_ignoring_pos(ast1, parse(kept, path)):
+                failures.append((path, "AST mismatch with comments kept"))
+            elif pretty(parse(kept, path), kept) != kept:
+                failures.append((path, "comment-keeping pretty not idempotent"))
         except Exception as e:
             failures.append((path, f"{type(e).__name__}: {e}"))
     assert not failures, failures
@@ -74,13 +80,22 @@ def test_pretty_is_idempotent():
     corpus = _collect_corpus()
     failures = []
     for path in corpus:
-        src = open(path).read()
+        src = open(path, encoding="utf-8-sig").read()
         once = pretty(parse(src, path))
         twice = pretty(parse(once, path))
         if once != twice:
             failures.append(path)
     assert not failures, f"pretty not idempotent on {len(failures)} files: {failures[:3]}"
     print(f"C.1 idempotence: pretty stable as a fixed point across {len(corpus)} files")
+
+
+def test_function_types_print_as_parsed():
+    """A9: FunctionType is `{params, returns}` in the parser and prints
+    as `function(<params>) returns <T>`."""
+    src = ("function apply(f: function(Int, String) returns Bool, x: Int) returns Bool\n"
+           "  effects pure\ndo\n  return f(x, \"a\")\nend\n")
+    assert pretty(parse(src, "<ft>")) == src, pretty(parse(src, "<ft>"))
+    print("C.1 function types: printed from params/returns")
 
 
 def test_asts_equal_ignoring_pos_strips_pos_metadata():
@@ -100,5 +115,6 @@ def test_asts_equal_ignoring_pos_strips_pos_metadata():
 if __name__ == "__main__":
     test_roundtrip_full_corpus()
     test_pretty_is_idempotent()
+    test_function_types_print_as_parsed()
     test_asts_equal_ignoring_pos_strips_pos_metadata()
     print("C.1 ALL PRETTY-ROUNDTRIP TESTS PASS")

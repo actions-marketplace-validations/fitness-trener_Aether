@@ -231,7 +231,7 @@ end
 
 def test_B4_refinement_helper_is_module_level():
     """B.4 polish: refinement predicates compile to one module-level
-    `_ae_refn_<TypeName>` helper, not a per-call-site lambda. This both
+    `_aert_refn_<TypeName>` helper (audit A4 moved helpers out of the user namespace), not a per-call-site lambda. This both
     avoids lambda allocation per invocation and makes the emitted code
     inspectable."""
     src = """
@@ -251,9 +251,9 @@ end
 """
     py = emit(parse(src, "<b4>"))
     # The helper must exist exactly once.
-    assert "def _ae_refn_PositiveInt(_ae_self):" in py, py
+    assert "def _aert_refn_PositiveInt(_ae_self):" in py, py
     # And the boundary check must reference it by name (no lambda).
-    assert "_ae_check_refinement(_ae_n, _ae_refn_PositiveInt" in py, py
+    assert "_aert_check_refinement(_ae_n, _aert_refn_PositiveInt" in py, py
     # No per-call-site lambda allocation.
     assert "lambda _ae_self" not in py, "boundary check still allocates lambda"
     print("B.4 refinement: hoisted module-level helper, no per-call lambda")

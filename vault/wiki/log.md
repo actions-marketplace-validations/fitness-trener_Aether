@@ -1,5 +1,61 @@
 # Operation Log (append-only — newest on top)
 
+## [2026-09-29] Q1 rows | iteration 65: one frontend walk per scope; argv option injection
+- **2 q1 row(s)** from `audits/gaps/C_record.md`; BUGS entries and the LOOP_LOG block folded from the same record.
+
+## [2026-09-29] Q1 rows | iteration 63: E0208 name resolution, one effects clause
+- **4 q1 row(s)** from `audits/gaps/A_record.md`; BUGS entries and the LOOP_LOG block folded from the same record.
+
+## [2026-09-29] Q1 rows | iteration 64: run --json is one document; stdlib signatures tested
+- **2 q1 row(s)** from `audits/gaps/B_record.md`; BUGS entries and the LOOP_LOG block folded from the same record.
+
+## [2026-09-25] Q1 rows | iteration 62: faster scans, findings at the call, validated effects clauses
+- **3 q1 row(s)** from Wave 7. A function with repeated `effects` clauses keeps the
+  last one, with no diagnostic. The frontend is now about 75% of `check-py` time.
+- **Coordinator check:** framework-corpus `--json` output is identical before and
+  after (683 findings), in 26 s at default jobs.
+
+## [2026-09-25] Q1 rows | iteration 61: one exit-code table, one JSON contract
+- **3 q1 row(s)** from Wave 5b. The next gap it records: `aether run --json` still
+  mixes the program's own stdout with the JSON document.
+
+## [2026-09-25] Q1 residuals + BUG-039 closed | iteration 60: stop flagging the fix
+- **5 q1 rows.** Two judgement calls followed the plan: `SandboxedEnvironment`
+  clears E0719 although Jinja has had sandbox escapes, and a same-file class's
+  own method clears every method-name rule. The sink inside that method is
+  still judged, so the flaw is reported at the wrapper (probed by the coordinator).
+- **Closed:** BUG-039 (Werkzeug `os.path.join(base, secure_filename(x))`).
+
+## [2026-09-25] Q1 residuals | iteration 59: the Python scanner stops missing
+- **5 q1 rows** from Wave 4. A raw `text()` built in a helper or stored on
+  `self` reports twice. Aliases are followed only through names assigned once.
+  Credentials split across concatenated literals are still missed.
+- **Framework corpus 676 → 707** (`bench/framework_scan/REPORT.md` §9). 26 of the
+  31 additions are true by rule, and the 5 over-flags are rated 0.6.
+
+## [2026-09-25] Q1 row closed + residuals | iteration 58: the compiler refuses again
+- **Closed:** the open A5 row (`for`/`match` binders laundering a proven name),
+  BUG-055. Parameters and `AsPat` names were the same class and closed with it.
+- **Narrowed, not closed:** effect-polymorphic function types. A call through a
+  value the checker cannot name is now bounded by every function the program
+  uses as a value (BUG-057). No effects syntax was added to function types, as
+  the closed design point requires.
+- **Five residual rows:** the A2 bound is program-wide; a `for`-bound id is never
+  stable for E0717; the runtime grant covers stdlib and declared effects only;
+  refinement sites not checked; the 200-level nesting bound.
+
+## [2026-09-25] Corrections + q1 residuals | iteration 57: the spec says what is checked
+- **Retracted in the vault:** the type-system cluster's v0.1 claim of a working
+  type checker (a correction row now follows it); the index and the keywords
+  source page now say 56 reserved words; q7's census citation names a script
+  that was never kept and now says so.
+- **Two q1 rows:** the new spec-vs-code test covers names, effects and
+  keyword sets but not signatures (BUG-050 is that class), and there is no
+  name resolution, so a misspelt sink passes `check` with no finding.
+- **Lesson carried:** the v0.1 claim had been quoted as a key claim for
+  months because nothing compared it with the code. A spec sentence needs
+  a test, or it expires silently.
+
 ## [2026-09-25] Q1 residuals added | iteration 55: the gate can see what matters
 - **Two q1 rows.** The first says what the new recall floor does not
   measure: it counts claimed corpus findings and table rows, and each row

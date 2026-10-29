@@ -186,6 +186,9 @@ The constructors `Some`, `None`, `Ok`, `Err` are also always in scope.
     function contains?<T>(s: Set<T>, x: T) returns Bool
       effects pure
 
+There is no `Set` literal; a `Set` value comes from `setUnion` /
+`setIntersection` / `setDifference` / `add`.
+
 ## String
 
     function length(s: String) returns Int
@@ -469,11 +472,10 @@ The constructors `Some`, `None`, `Ok`, `Err` are also always in scope.
     function now() returns Instant
       effects time.now
 
-    function plus(t: Instant, d: Duration) returns Instant
-      effects pure
-
-    function minus(a: Instant, b: Instant) returns Duration
-      effects pure
+`now()` is the only time function the runtime implements. Instant
+arithmetic (`plus(Instant, Duration)`, `minus(Instant, Instant)`) was
+specified here and never implemented: a call to either is refused by
+`check` as `E0208` (an undeclared name). Work on `epochMillis` directly.
 
 ## Hash
 
@@ -573,4 +575,12 @@ The constructors `Some`, `None`, `Ok`, `Err` are also always in scope.
 
 ## Naming and overloading
 
-There is *no* function overloading. `length` is defined separately for `List<T>` and `String`, and the parser dispatches by argument type at the call site. All other names are unique.
+There is *no* user-level function overloading. A few stdlib names are
+documented above for more than one type (`length`, `get`, `size`,
+`remove`, `contains?`): each is one runtime function that accepts every
+listed type; nothing dispatches on static types, because there are none.
+
+Every function documented in this file exists in
+`transpiler/aether/runtime.py` (as `_ae_<name>`, `?` → `_q`), and every
+public runtime function is documented here; `tests/test_spec_docs.py`
+checks both directions.

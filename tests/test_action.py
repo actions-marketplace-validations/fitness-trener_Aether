@@ -136,7 +136,87 @@ def test_sarif_upload_permission_is_documented():
     print("action: the required caller permission is documented")
 
 
+def _bash():
+    """A POSIX bash: on Windows Git's, never System32's WSL launcher."""
+    import shutil
+    found = shutil.which("bash")
+    if os.name != "nt":
+        return found
+    if found and "system32" not in found.lower():
+        return found
+    git = shutil.which("git")          # <Git>/cmd/git.exe or <Git>/mingw64/bin/git.exe
+    d = os.path.dirname(git) if git else ""
+    for _ in range(3):
+        d = os.path.dirname(d)
+        if os.path.isfile(os.path.join(d, "bin", "bash.exe")):
+            return os.path.join(d, "bin", "bash.exe")
+    return None
+
+
+def test_scan_step_obeys_the_exit_code_table():
+    """Run the action's scan step for real, against a stand-in `aether`
+    that exits with each code of the table and prints a SARIF built by
+    the real renderer. A crash (3) must fail the step whatever the finding
+    count (it used to be caught only as `rc == 2 && findings == 0`); an
+    incomplete scan must fail it unless `allow-incomplete`; findings are
+    left to the fail-on-findings step. Audit 2026-09-24 D5."""
+    import json
+    import tempfile
+    import textwrap
+    bash = _bash()
+    if bash is None:
+        print("action: SKIP scan-step run (no POSIX bash on this machine)")
+        return
+    sys.path.insert(0, os.path.join(ROOT, "transpiler"))
+    from aether.sarif import to_sarif
+    text = _text()
+    step = text.split("- name: Run Aether", 1)[1]
+    script = textwrap.dedent(_run_blocks("    - name: Run Aether" + step)[0])
+    finding = {"code": "E0713", "message": "m", "position": {"line": 2, "column": 5},
+               "suggestion": "s", "confidence": 0.6, "extra": {}, "stage": "security"}
+    cases = [  # (rc, findings, unparsed, allow_incomplete, step fails?)
+        (3, 2, 0, "false", True), (3, 0, 0, "false", True),
+        (0, 0, 0, "false", False), (1, 2, 0, "false", False),
+        (4, 0, 1, "false", True), (4, 0, 1, "true", False),
+        (1, 1, 1, "false", True), (1, 1, 1, "true", False),
+        (2, 0, 0, "false", True)]
+    with tempfile.TemporaryDirectory() as td:
+        td = td.replace(os.sep, "/")
+        os.makedirs(f"{td}/bin")
+        with open(f"{td}/bin/aether", "w", newline="\n") as f:
+            f.write('#!/usr/bin/env bash\ncat "$FAKE_SARIF"\nexit "$FAKE_RC"\n')
+        os.chmod(f"{td}/bin/aether", 0o755)
+        with open(f"{td}/step.sh", "w", newline="\n") as f:
+            f.write(script)
+        for rc, n_find, n_unp, allow, want_fail in cases:
+            sarif = to_sarif([{"path": "a.py", "findings": [finding] * n_find}],
+                             base=".", unreadable=[("b.py", "SyntaxError")] * n_unp)
+            with open(f"{td}/fake.sarif", "w") as f:
+                json.dump(sarif, f)
+            out_file = f"{td}/out.txt"
+            open(out_file, "w").close()
+            env = dict(os.environ, FAKE_RC=str(rc), FAKE_SARIF=f"{td}/fake.sarif",
+                       AETHER_PATH=td, AETHER_STRICT="false",
+                       AETHER_SARIF=f"{td}/aether.sarif",
+                       AETHER_ALLOW_INCOMPLETE=allow, GITHUB_OUTPUT=out_file,
+                       PATH=os.pathsep.join([f"{td}/bin",
+                                             os.path.dirname(sys.executable),
+                                             os.environ.get("PATH", "")]))
+            r = subprocess.run([bash, f"{td}/step.sh"], env=env,
+                               capture_output=True, text=True)
+            failed = r.returncode != 0
+            assert failed == want_fail, (rc, n_find, n_unp, allow, r.returncode,
+                                         r.stdout[-600:], r.stderr[-600:])
+            outs = dict(l.split("=", 1) for l in open(out_file).read().split("\n") if "=" in l)
+            assert outs.get("exit-code") == str(rc), outs
+            if rc in (0, 1, 4):
+                assert outs.get("findings") == str(n_find), (outs, r.stderr[-400:])
+                assert outs.get("unparsed") == str(n_unp), outs
+    print(f"action: scan step obeys the exit-code table ({len(cases)} cases)")
+
+
 if __name__ == "__main__":
+    test_scan_step_obeys_the_exit_code_table()
     test_action_file_exists_and_is_marketplace_shaped()
     test_no_caller_input_is_spliced_into_a_shell_script()
     test_every_input_is_declared_and_used()

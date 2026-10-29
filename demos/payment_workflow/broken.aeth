@@ -10,8 +10,11 @@
 //    helper `persistRow` performs `fs.write`. The capability pass
 //    fires [E0701]: needs `fs` capability.
 //
-// The fix-loop should mechanically resolve both using the structured
-// `extra` dicts on the diagnostics.
+// The only mechanical repair for either is to WIDEN a declaration
+// (drop `pure` for `log`; add `requires capability fs`), so the
+// deterministic fix-loop refuses both and ends `not_repaired`, naming
+// the calls to remove or replace. `--allow-widen` applies them, tags
+// each step `weakens_constraint`, and still exits non-zero.
 
 module PaymentService
   requires capability log

@@ -2380,6 +2380,379 @@ State carried forward: the full gate suite must stay green
 - **Suite:** exit 0: 41 PASS suites; `smt` reported SKIP (z3 not installed
   locally), no longer counted as PASS.
 
+## Iteration 56 — Wave 3 of the 2026-09-24 audit: the fix-loop never weakens a constraint; every surface sees the same program (no new detector)
+
+- **Target:** not a backlog row. Plan Wave 3 (D1, D2, D3, D4, D7, D8) plus
+  D9 and A9: the agent-facing toolchain could tell an agent "clean" when
+  it was not.
+- **Probe-confirmed first (on `52f04aa`):**
+  - The fix-loop granted `net` to `log_formatter` and said `clean`; 28 of
+    417 repo files ended "clean" only by widening. BUG-040.
+  - Cross-file E0801 / unresolved E0705 invisible to SDK, LSP, scan,
+    fix-loop. BUG-041.
+  - `tools/scan.py` exit 0 with every file unparsed; BOM = E0101. BUG-042.
+  - `--json check` hid E0713 behind E0801. BUG-043.
+  - `fmt --write` / fix-loop dropped `// expect:` headers. BUG-044.
+  - fix-loop overwrote an extension-less input. BUG-045.
+  - LSP showed a lex-error file as clean. BUG-046.
+  - `fmt` crashed on function types. BUG-047.
+- **Fixes (each once, where every caller routes through):**
+  - `fix_loop.widening()` judges every edit (deterministic and `--live`);
+    widening is refused by default, `--allow-widen` tags it and still
+    exits 1; E0801 patch target = the call.
+  - `passes.imports.load_program` is the one loader for CLI, SDK (→ LSP,
+    fix-loop) and scan.
+  - `--json check` = all stages, tagged; scan fails on parse errors.
+  - `pretty(ast, source)` keeps full-line comments; function types print.
+- **Measured non-breaking:** no detector, frontend table or stage changed;
+  check-py output is untouched by construction (no file on its path
+  changed). Corpus expect-headers unchanged (`test_corpus` 93/93,
+  `scan --expect` green).
+- **Residuals (pushed to q1):** see q1 rows below.
+- **TYPE gap surfaced for next iter:** the fix-loop now stops at
+  `not_repaired` with a call-site target but applies no non-widening
+  repair itself; a sound mechanical one (delete a debug `print` whose
+  value is unused) needs the call position in E0801's `extra` (D10,
+  Wave 5) and an owner decision on whether deleting code is "repair".
+- **Suite:** exit 0 (`smt` SKIP, z3 not installed locally).
+
+---
+
+## Iteration 57 — Wave 6 of the 2026-09-24 audit: the spec says what is checked (no new detector)
+
+- **Target:** not a backlog row. Plan Wave 6 docs half (E3–E7, E9–E11):
+  the spec and the top-level docs claimed things the code does not do,
+  and nothing tested the spec against the code.
+- **Probe-confirmed first (on `99f09cc`, again on `52f04aa`):**
+  - No type checker, no name resolution: `returns Int` / `return "x"`,
+    `let x: Int = "s"`, `f("str")` for `f(a: Int)` pass `check` and `run`;
+    `f(1, 2, 3)` and `frobnicate(1)` pass `check` and die at `run` with a
+    Python `TypeError` / `NameError`. `types.md` said "everything else is
+    checked statically".
+  - `stdlib.md` documented `plus(Instant, Duration)` / `minus(Instant,
+    Instant)`; `run` → `NameError: _ae_plus`. Every other documented name
+    exists (115), and every public runtime name is documented.
+  - `effects.md` listed `db.read`/`db.write` (the code uses `db.query`/
+    `db.exec`), omitted `exec.run`/`net.redirect` and the `exec`
+    capability, and said glob subsumption and static capability checks
+    were "parked for v0.2" (both are static today: E0801, E0701).
+  - `keywords.md`: "47 reserved words, locked"; the lexer has 56 (missing
+    `capability`, `band`, `bor`, `bxor`, `shl`, `shr`; listed `_`, which is
+    an identifier). `trait` was both "reserved" and "not reserved"
+    (`let trait = 1` is `E0201`). `empty?` returning `Int`, a `pure` `go!`
+    and a function named `Main` all pass `check`: the `?`/`!`/case rules
+    are conventions, not checks.
+  - `is` on a refinement type is always false (`5 is Pos` → false); `is`
+    narrows nothing. A List as a Map key raises `unhashable` at runtime
+    (types.md said List is hashable). `1 + 2.5` and `xs.length()` pass
+    `check` (types.md listed both as "disallowed").
+  - SECURITY_POSTURE said "14 classes", stopped at E0723, pointed at
+    `tools/py_frontend.py`, and counted 31 FP programs / 8 defenses (now
+    37 / 9). SCANNING.md said "nothing to install", ".aeth firewall", that
+    aether-scan.yml "fails if anything is found" (it is the `--expect` diff
+    gate), and gave 86.8% without "comparable categories" (raw 34.2%).
+  - The framework figures were undated and `run_scan.py` downloaded
+    unpinned latest; `_work/wheels` holds two versions of six dists, and
+    the old `extract()` would pick browser_use 0.13.10 on a fresh tree,
+    not the 0.13.8 that was scanned.
+- **Fixes:** types.md opens with a static / runtime-only / not-checked
+  split; effects.md's stdlib-effect table and capability list are the
+  code's; keywords.md is lexer.KEYWORDS; Instant arithmetic removed from
+  stdlib.md; `tests/test_spec_docs.py` fails on any difference in either
+  direction (names via `runtime.mangle`, so an injective mangling change
+  in Wave 2 does not break it) and on the return of any retracted phrase —
+  red on the old docs in 5 of 6 tests. SECURITY_POSTURE / SCANNING
+  rewritten against the README; one positioning paragraph in README,
+  CLAUDE.md, SCANNING.md; figures dated (676 and 628-of-676: 2026-09-11
+  re-scan at 0.4.0; 241 s → 69 s: 2026-09-03, iteration 52);
+  `bench/framework_scan/frameworks.lock.txt` pins version + sha256, pip
+  `--require-hashes`; 13 root reports moved to `docs/history/` with a
+  dated index; SPEC_ISSUES header, S-002/S-008 out of Open, S-020/S-021.
+- **Found on the way:** BUG-050 (`remove` on a Set raises `TypeError`).
+- **TYPE gap surfaced for next iter:** the spec test checks names, effects
+  and keyword sets, not signatures — a documented parameter list or return
+  type can still drift from the runtime (`_ae_remove` shows the class).
+  And A8 stands: with no name resolution, a misspelt stdlib call passes
+  `check`; the spec now says so, the language decision is open.
+- **Suite:** exit 0, 42 PASS suites (the new `spec_docs` is one); `smt`
+  SKIP (z3 not installed locally).
+
+---
+
+## Iteration 58 — Wave 2 of the 2026-09-24 audit: the compiler refuses again (no new detector)
+
+- **Target:** not a backlog row. Plan Wave 2 (A5, A1, A2, A4, A3) plus
+  A6, A7, A10 from Wave 6's language list: each is a place the compiler
+  accepted, or the runtime ran, what the language promises to refuse.
+- **Probe-confirmed first (on `52f04aa`, `check` exit 0 or wrong run):**
+  the four arch for/match-shadow probes (E0711, E0713, match E0711, E0717
+  IDOR); `lang/e01..e04` (effects in contracts, predicates, consts);
+  `lang/c01, p02..p05, p07, p08` (function values); `lang/n01, n02, n04`
+  (mangling); `lang/c04` and the capability-firewall demo under
+  `--no-static-effects --no-capability-check`; `lang/g01`; `lang/r01..r06`;
+  `lang/m01, m02, m07`.
+- **Fixes (one mechanism per root cause):**
+  - `binders(fn)` — one binding iterator (params, let/var/assign, for,
+    BindPat/AsPat in match statements and expressions) read by all six
+    fixpoints; value-less binders disqualify proofs.
+  - `fn_exprs()` + `contexts()` — contracts, refinement predicates and
+    const initializers are code, scanned by every pass.
+  - `resolve_call()` — an unnameable callee is bounded by the effects of
+    every function the program uses as a value (closed world: no
+    lambdas); shared by E0801 and E0701.
+  - Injective `mangle()`, helpers under `_aert_`.
+  - Runtime capability grant: performed and declared effects outside a
+    module's grant raise E0701 at run time.
+  - URL-part glob cover; `refine_check()` at every binding site;
+    iterative walk + parser depth bound + E9001 from emit.
+- **Measured non-breaking:** in-repo `.aeth` corpus 200 findings before
+  and after, identical; framework corpus 676 = 676 (default) and
+  10,808 = 10,808 (`--strict`); in-repo Python trees unchanged except the
+  new test file itself.
+- **TYPE gap surfaced:** effect names are still unchecked (A11) — the
+  spec lattice (`db.read`/`db.write`) and the stdlib (`db.query`/`db.exec`,
+  `exec.run`, `net.redirect`) disagree, so "only spec'd names" cannot be
+  enforced until the list is regenerated from code (Wave 6 E5).
+- **Residuals (pushed to q1):** see q1 rows below.
+
+---
+
+## Iteration 59 — Wave 4 of the 2026-09-24 audit: the Python scanner stops missing (no new detector)
+
+- **Target:** not a backlog row. Plan Wave 4 (B4, B5, B8, B9, B10; B1–B3
+  and B7 already fixed as BUG-032..035; B6 is Wave 5): silent false
+  accepts inside the modeled surface.
+- **Probe-confirmed first (on `47139a1`):** 43 of the audit's `pymiss`
+  repros in this scope were wrong — 41 silent, `getattr(builtins,
+  "exec")` reported as E0713, E0723 at `(0, 0)` in an f-string: raw
+  `text()`/`literal_column`/`db.text` outside an executor, str-shaped
+  `.where`/`.filter`, aliases and dynamic callees, `builtins.*`, table
+  spellings, bytes credentials. Of the 28 new table rows, 27 were silent
+  through their generated snippet (`duckdb.execute` fired at 0.6).
+- **Fixes (each once, where every caller routes through):** a raw SQL
+  string entry is the sink itself (`_raw_sql_entry`), deduplicated
+  against the executor that judges the same value; one alias resolver
+  (`_ModuleFacts` + `_FnScope.value_of`, `_alias_target`, `_attr_spelling`,
+  `_unwrap_indirect`) used by `_callee_spelling` and `_call_expr`;
+  `builtins.X` before the by-method rows; 28 pinned rows; receiver-side
+  guards; positioned f-string parts; bytes scanned for E0723 only.
+- **Measured:** framework corpus (4,946 files) 676 → 707, +31 / −0, 0
+  confidence changes on kept findings, 0 errors, 0 unparseable; in-repo
+  trees 110 → 111 (the new test's own fixture). Every addition read at
+  source: 26 true by rule, 5 over-flags of the any-receiver `.text` row.
+- **Residuals (pushed to q1):** see q1 rows below.
+- **TYPE gap surfaced for next iter:** a receiver's TYPE decides three of
+  this wave's rows and only a constructor call in the same scope can name
+  it (`code.InteractiveConsole().push`, `YAML(typ=)`, `db.text`); an
+  attribute receiver (`self.console.push(src)`, `self.db.text(q)`) is
+  still unresolved. A per-class attribute-binding summary
+  (`self.x = Ctor(...)` in `__init__`) is the next lever — measure its
+  reach on the corpus before building it (q3).
+- **Suite:** exit 0 (`smt` SKIP, z3 not installed locally).
+
+---
+
+## Iteration 60 — Wave 5a of the 2026-09-24 audit: stop flagging the fix; findings speak Python (no new detector)
+
+- **Target:** not a backlog row. Plan Wave 5 items 1–3 (C1–C7) + BUG-039:
+  the checker flagged the remediation its own hint names, so an agent
+  fix-loop could not converge, and a Python finding named Aether
+  functions a Python user cannot call.
+- **Probe-confirmed first (on `a60b16e`):** 108 precision-auditor probes
+  gave 37 findings (20 at ≥ 0.9) — `"ls -l " + shlex.quote(p)`,
+  `redirect(url_for(...))`, psycopg `sql`, module/class constants,
+  `self.table.delete()`, `SandboxedEnvironment().from_string`,
+  `compile(..., PyCF_ONLY_AST)`, the docstring example key; plus BUG-039.
+- **Fixes (each once, where every caller routes through):** a `+`
+  concatenation is judged by its operands (`_concat_reason`; shell pieces
+  by `_shell_pieces_ok`); joins spelled as the concatenation they build;
+  own-origin URL builders and Django's check (`_redirect_guards`);
+  module/class constants and psycopg composition; receiver exceptions on
+  the by-method rows; output-only `argument_shape` / `docstring` /
+  `stdlib_xml` ratings; a Python `CalleeText` per row + `category:
+  security`.
+- **Measured:** framework corpus (4,946 files) 707 → 683, −24 / +0, every
+  removal a documented safe idiom (21 E0713, 2 E0719, 1 E0731), 4
+  confidence changes (stdlib XML → 0.6), 0 errors / 0 unparseable;
+  `--min-confidence 0.9` 55 → 51; `--strict` 1,017 → 993 (E0711 310
+  unchanged). In-repo trees 115 → 107: 8 `code = compile(...); exec(code)`
+  pairs in tests now report once. Probes 37 → 11 findings, ≥ 0.9 20 → 6.
+- **Residuals (pushed to q1):** see q1 rows below.
+- **TYPE gap surfaced for next iter:** argument injection. The argv form
+  and the quoted-concat form now agree that a quoted word is safe unless
+  the program runs it, but "runs it" is a program list, not a model:
+  `git -c core.pager=...`, `ssh host <cmd>` spelled with an absolute path
+  under another name, `tar --to-command` are accepted in both forms. A
+  per-program argument-semantics row (which flags take code) is the
+  next lever — measure the corpus's argv programs first (q3).
+- **Suite:** exit 0 (`smt` SKIP, z3 not installed locally); two new suites
+  (`py_precision`, `python_hints`).
+
+---
+
+## Iteration 61 — Wave 5b of the 2026-09-24 audit: one exit-code table, one JSON contract (no new detector)
+
+- **Target:** not a backlog row. Plan items D5, D6, B6 and D10-partial:
+  an agent or CI job could not tell "found something" from "could not
+  run" from "crashed", and every surface spoke its own JSON.
+- **Probe-confirmed first (on `a60b16e`):** `check` exit 2 for findings,
+  parse errors, import errors and usage alike; a crash under `--json` a raw
+  traceback, exit 1; `tools/scan.py` exit 0 on a missing path; the Action
+  passed a crash that had findings elsewhere; `--json check` JSONL on
+  stderr; `check-py --json` `ok: true`, exit 0 on a PEP 701 file under
+  3.11. BUG-077..079.
+- **Fix (once, where every caller routes through):** the table and
+  `exit_code()` in `diagnostics.py`; `Diagnostic.to_dict(ast)` with
+  `stage` + `patch_target`; `cli.main` wraps every command; one stdout
+  document per `--json` run; SARIF rule descriptions; Action reads the
+  table and runs once.
+- **Measured non-breaking for findings:** framework corpus 707 findings
+  before and after (0 unreadable, 0 errors on 3.11), exit 2 → 1; worktree
+  `bench tests tools playground demos` 115 findings, identical rows, exit
+  2 → 1. Corpus expect-headers unchanged.
+- **Breaking for callers (0.5.0, CHANGELOG):** exit codes and JSON shapes;
+  15 grader files and 11 test files that pinned exit 2 / the old shapes
+  updated (listed in the record).
+- **Residuals (pushed to q1):** see q1 rows.
+- **TYPE gap surfaced for next iter:** `aether run --json` still interleaves
+  the program's own stdout with the JSON document (the program's output is
+  the product); a `run` JSON contract needs the program's stdout captured
+  into the document — decide whether `run` is an agent surface at all.
+- **Suite:** exit 0 (`smt` SKIP locally — z3 absent under 3.11; `test_smt`
+  run green separately under Python 3.13 + z3 4.16).
+
+---
+
+## Iteration 62 — Wave 7 of the 2026-09-24 audit: 4.3× faster scans, findings at the call, validated effects clauses (no new detector)
+
+- **Target:** not a backlog row. Plan F5 (perf) + the D10 and A11
+  leftovers.
+- **Probe-confirmed first (on `0653115`):** `check-py --jobs 1` over the
+  framework corpus 365.9 s (analysis 249 s of it); 97 AST walks per
+  function; marker rows ≈ 50% of analysis on Python, where they cannot
+  fire. Two E0801 in one body both at `1:1` and both patched to the same
+  call. `effects pure, log` and `effects bogus.effect` accepted.
+- **Fixes (each once, where every caller routes through):** one
+  per-analysis index in `passes/ast_walk.py` (`shared_index()`, entered
+  by `analyze()`); `marker_absent()` early return for the eight marker
+  rows; `_bindings_of` memo in the frontend's def phase; `Call`/`ExprStmt`
+  positions in the parser and E0801 at the call; `pure`-with-siblings is
+  E0201, an unknown effect capability is E0704.
+- **Measured (8 logical cores):** framework corpus `--jobs 1` 365.9 s →
+  85.0 s, default jobs 111.3 s → 25.5 s; single largest files 4.1 / 3.5 /
+  3.4 s → 1.1 / 1.0 / 1.0 s. Findings byte-identical: 683 (framework,
+  default), `--strict`, in-repo trees. `.aeth` corpus: 113 positions moved
+  in 98 files, codes/exit codes identical, 0 new findings.
+- **Residuals (pushed to q1):** see q1 rows below.
+- **TYPE gap surfaced for next iter:** the frontend is now ~75% of
+  `check-py` time (95 s of the pre-wave 344 s in-process total; analysis
+  is ~20 s). Its remaining cost is one Python-AST walk per function per
+  consumer family; a single visitor pass building the per-def tables is
+  the next lever, not another detector-side cache.
+- **Suite:** exit 0 (`smt` SKIP, z3 not installed locally); two new suites
+  (`perf_index`, `call_positions`).
+
+---
+
+## Iteration 64 — known-gaps round, Agent B: `run --json` is one document; stdlib signatures tested (no new detector)
+
+- **Target:** not a backlog row. Two TYPE gaps surfaced by earlier
+  iterations: iter-61 (`run --json` interleaves the program's stdout with
+  the document) and iter-57 (the spec test covers names, not signatures).
+- **Probe-confirmed first (on `a2f13db`):** `--json run` of a clean
+  program prints no document; with a contract violation, the program's
+  output and the document are two JSON-looking lines on stdout; with a
+  program exception, no document. Six stdlib helpers name their
+  parameters differently from `grammar/stdlib.md`. BUG-090, BUG-091.
+- **Fix:** `cmd_run` captures the program's stdout/stderr under `--json`
+  into `{ok, complete, diagnostics, stdout, stderr}` (a program exception
+  is `E9003`); `sdk.RunResult.to_dict()` has the same keys. The spec test
+  checks arity for all 120 documented signatures, name order for the 110
+  names documented once, and runs each of the 10 documented overloads.
+  Six runtime parameters renamed to the spec's names.
+- **Measured non-breaking:** framework corpus (4,946 files) `--json
+  check-py` at `a2f13db` and after: byte-identical, sha256 `87EA1A28...`,
+  683 findings, 0 unreadable, 0 errors.
+- **TYPE gap surfaced for next iter:** the spec test checks arity and
+  order, not TYPES: a documented parameter type the runtime rejects is
+  caught only where the doc documents an overload (probed). A
+  single-signature function documented for `List<T>` that crashes on a
+  `List<String>` (e.g. `sort` on mixed values) is not probed; and return
+  types are not compared at all.
+- **Suite:** exit 0, 49 PASS suites (`exit_codes` 14 cases, `spec_docs`
+  7 tests); `smt` SKIP (z3 absent locally).
+
+---
+
+## Iteration 63 — known-gaps round, language side: name resolution (E0208) and one effects clause
+
+- **Target:** not a backlog row. The two language gaps the audit and
+  Wave 6/7 left open: A8 (no name resolution; q1 iter-57 scope fact) and
+  the repeated-effects residual (q1 iter-62).
+- **Probe-confirmed first (on `a2f13db`):** `sqlQeury("SELECT " + u)` →
+  `check` exit 0, no E0713; `frobnicate(1)` → exit 0, `run` NameError;
+  `effects log` then `effects pure` → checks as `pure`.
+- **Fixes:** a second `effects` clause is E0201 (parser). New E0208 pass
+  `passes/names.py` in the `semantic` stage: block-scoped locals,
+  parameters, top-level decls, imports, runtime exports derived from
+  `runtime.unmangle`; const initializers see only earlier decls.
+- **Measured:** 418 tracked `.aeth` through `--json check --no-prove`,
+  before/after: 0 files change (407 load and are resolved: 5,602
+  identifiers, 2,878 calls, 0 E0208; 11 do not parse, by design). Python
+  `check-py` byte-identical: framework corpus 4,946 files / 683 findings,
+  and `bench tests tools playground demos`.
+- **Ratchet:** 55 → 56 codes, 31 → 32 detectors, corpus claims 117 → 118
+  (`playground/examples/34_misspelt_sink.aeth`, `// expect: E0208`).
+- **Residuals (pushed to q1):** see q1 rows below.
+- **TYPE gap surfaced for next iter:** E0208 proves a name reaches SOME
+  binding; calling a `const Int` (`N(1)`) or a function with the wrong
+  number of arguments still passes `check` and is a Python `TypeError` at
+  `run`. Arity of direct calls to top-level functions / records / union
+  cases needs no type information and reuses this resolver — see the q8
+  draft below (option B).
+- **Suite:** exit 0, 50 PASS (`smt` SKIP, z3 not installed locally); one
+  new suite (`name_resolution`).
+
+---
+
+## Iteration 65 — gaps round, Agent C: one walk per scope, argument injection is E0714 (no new detector)
+
+- **Target:** the two TYPE gaps surfaced by iterations 62 and 60 — the
+  frontend's repeated AST walks, and argument injection through an argv
+  list — plus iteration 59's receiver-type gap, measured and not built.
+- **Probe-confirmed first (on `a2f13db`):** 7.1 walked nodes per AST node on
+  the three slowest corpus files (1,068,633 for 151,204); five argv shapes
+  (`git -c x`, `git clone url`, `ssh host cmd`, `tar --to-command x`,
+  `create_subprocess_exec("git", *args)`) exit 0 with 0 findings.
+- **Fixes (each once, where every caller routes through):** `_DefIndex`, one
+  walk per scope, feeding every per-def consumer; one module-level walk; one
+  IR walk for the bound-flow fixes; a generator-free `_walk`. For G6 one
+  `_argv_option_payload` read by `_sink_match` and `_call_expr`, over a
+  six-program table.
+- **G5 measured, not built:** of 11,886 `self.X.m(...)` calls on the corpus,
+  2,398 have every binding of `X` in the file be `self.X = <one
+  constructor>(...)`. Of the 90 whose method is a by-method sink row, 25
+  resolve, and none of the 25 would change: no `Ctor.m` is a table row, none
+  is a same-file class's own method, and the 4 haystack `from_string` sites
+  are on `HaystackSandboxedEnvironment`, a `SandboxedEnvironment` subclass
+  not in `_SANDBOXED_ENVS`. 0 findings and 0 confidence ratings would move
+  (q3: prevalence × reuse gives nothing for the machinery).
+- **Measured (8 logical cores, shared machine):** frontend over the corpus
+  76.1 s → 46.2 s in-process; serial `check-py` CPU 98.6–135.7 s → 66.6–68.6 s;
+  default jobs 34.3–34.9 s → 20.3–23.8 s (one after-run at 35.5 s).
+  G7 output byte-identical. G6: framework 683 → 684, in-repo 107 → 113,
+  every addition true by rule.
+- **Residuals (pushed to q1):** see q1 rows below.
+- **TYPE gap surfaced for next iter:** the E0714 text is still the shell
+  text on an argv finding ("use shellArg", "pass an argv list"). The argv
+  finding's fix is a literal `--` before the input, or a check that the
+  word does not start with `-`. The text lives in
+  `passes/detector_specs.py`; a `CalleeText` for argv-option findings is
+  the next step (proposed wording under Coordinator decisions).
+- **Suite:** exit 0 (`smt` SKIP, z3 not installed locally).
+
+---
+
 ---
 
 ## Next-iteration checklist (for the loop)

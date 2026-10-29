@@ -23,7 +23,7 @@ what it transitively requires.
 ## How to reproduce
 
 ```sh
-# Aether: rejected at check time, exit 2 with structured diagnostic
+# Aether: rejected at check time, exit 1 with structured diagnostic
 python3 -B -m transpiler.aether.cli check \
     demos/architectural-integrity/demo_03_module_capability_leak/aether/main.aeth
 

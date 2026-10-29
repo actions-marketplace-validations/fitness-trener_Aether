@@ -58,9 +58,11 @@ clears something) stay positive-identification-only; totality rules
   walk; `_local_constants`, `_safe_xml_parser_names`,
   `_sql_expression_names` and `seed_bindings` all consume it.
 - **Measure with the census, not the probe.** A probe proves one shape;
-  the corpus census (`scratchpad/probes/pyfe/census.py`'s method:
-  match every `_sink_name`-recognised `ast.Call` against IR `Call`
-  positions) proves the class is closed.
+  the corpus census (method: match every `_sink_name`-recognised
+  `ast.Call` against IR `Call` positions) proves the class is closed.
+  The census script was a scratch file and was not kept (searched
+  2026-09-24, audit Wave 6); BUG-012's numbers in `BUGS.md` are the
+  record.
 - Residuals, all over-flag direction, recorded in
   [[q5-sink-matching-vs-purity-matching]]: keyword-only sink arguments
   take positional slots *in keyword order* (a guard keyword before the

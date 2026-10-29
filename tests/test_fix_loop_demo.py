@@ -1,22 +1,27 @@
 """F.2 regression test for the SDK-driven fix-loop demo.
 
-The contract under test: given the broken candidate at
-`demos/payment_workflow/broken.aeth` (which violates B.1 and B.3 at
-once), the fix-loop driver mechanically resolves both diagnostics
-using only structured `extra` info, in two iterations, and the
-result passes every default-on pass.
+`demos/payment_workflow/broken.aeth` violates B.1 (a `pure` function
+prints) and B.3 (the module does not grant `fs`). The only mechanical
+repair for either WIDENS a declaration, which is the thing Aether exists
+to refuse. So the contract under test (audit 2026-09-24 D1) is:
 
-Two tests:
-  1. The fix-loop transcript shows exactly the expected sequence of
-     (diagnostic-code, transformer) tuples and ends with "clean".
-  2. The resulting source passes `aether check` (exit 0, no
-     diagnostics).
+  1. By default the loop applies NOTHING, ends `not_repaired`, names both
+     would-be widenings with a call-site patch target, exits non-zero,
+     and writes the input back unchanged.
+  2. `--allow-widen` applies both, tags each step
+     `weakens_constraint: true`, ends `widened` (never `clean`), still
+     exits non-zero, and its output passes `aether check` while keeping
+     the file's leading comment block.
+
+This test used to assert the opposite — two applied fixes and `clean` —
+i.e. it pinned the widening as the correct outcome.
 """
 from __future__ import annotations
 import json
 import os
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "transpiler"))
@@ -28,34 +33,58 @@ BROKEN = os.path.join(DEMO_DIR, "broken.aeth")
 DRIVER = os.path.join(DEMO_DIR, "fix_loop.py")
 
 
-def test_fix_loop_resolves_broken_candidate():
+def _read(p):
+    with open(p, encoding="utf-8") as f:
+        return f.read()
+
+
+def test_fix_loop_refuses_to_widen_broken_candidate():
+    # Default output paths: this regenerates the demo's tracked
+    # broken.fixed.aeth / broken.transcript.json, deterministically.
     r = subprocess.run(
         [sys.executable, "-B", DRIVER, BROKEN, "--quiet"],
         cwd=ROOT, capture_output=True, text=True,
     )
-    assert r.returncode == 0, r
-    transcript_path = BROKEN.replace(".aeth", ".transcript.json")
-    with open(transcript_path) as f:
-        transcript = json.load(f)
-    # Expect: 2 fix entries + 1 clean entry
-    fixes = [t for t in transcript if "diagnostic" in t]
-    assert len(fixes) == 2, transcript
-    codes = [t["diagnostic"]["code"] for t in fixes]
-    assert "E0801" in codes, codes
-    assert "E0701" in codes, codes
-    # Last entry is the "clean" marker
-    assert transcript[-1].get("status") == "clean", transcript[-1]
-    print(f"F.2 fix-loop: {len(fixes)} mechanical fixes, final state clean")
+    assert r.returncode == 1, r
+    assert "not repaired: fixing this would widen" in r.stderr, r.stderr
+    transcript = json.loads(_read(BROKEN.replace(".aeth", ".transcript.json")))
+    assert not [t for t in transcript if "diagnostic" in t], transcript
+    final = transcript[-1]
+    assert final["status"] == "not_repaired", final
+    blocked = {b["code"] for b in final["blocked"]}
+    assert blocked == {"E0801", "E0701"}, final
+    e0801 = next(b for b in final["blocked"] if b["code"] == "E0801")
+    # The call to remove, not the declaration to widen.
+    assert e0801["patch_target"][0][0] == "decls", e0801
+    assert e0801["patch_target"][-1][0] != "effects", e0801
+    assert _read(BROKEN.replace(".aeth", ".fixed.aeth")) == _read(BROKEN)
+    print("F.2 fix-loop: refuses both widening repairs, not_repaired, exit 1")
 
 
-def test_fixed_source_passes_full_check():
-    fixed_path = BROKEN.replace(".aeth", ".fixed.aeth")
-    r = subprocess.run(
-        [sys.executable, "-B", "-m", "transpiler.aether.cli", "check", fixed_path],
-        cwd=ROOT, capture_output=True, text=True,
-    )
-    assert r.returncode == 0, r
-    print("F.2 fixed source: passes aether check with exit 0")
+def test_allow_widen_applies_flags_and_never_says_clean():
+    with tempfile.TemporaryDirectory() as d:
+        out_src = os.path.join(d, "fixed.aeth")
+        out_tr = os.path.join(d, "t.json")
+        r = subprocess.run(
+            [sys.executable, "-B", DRIVER, BROKEN, "--allow-widen", "--quiet",
+             "--out-source", out_src, "--out-transcript", out_tr],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        assert r.returncode == 1, r
+        assert "WARNING" in r.stderr and "WIDEN" in r.stderr, r.stderr
+        transcript = json.loads(_read(out_tr))
+        fixes = [t for t in transcript if "diagnostic" in t]
+        assert sorted(t["diagnostic"]["code"] for t in fixes) == ["E0701", "E0801"], fixes
+        assert all(t["weakens_constraint"] is True and t["widens"] for t in fixes), fixes
+        assert transcript[-1]["status"] == "widened", transcript[-1]
+        fixed = _read(out_src)
+        assert fixed.startswith("// expect: E0701x2, E0801\n"), fixed[:80]
+        chk = subprocess.run(
+            [sys.executable, "-B", "-m", "transpiler.aether.cli", "check", out_src],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        assert chk.returncode == 0, chk
+    print("F.2 --allow-widen: 2 steps tagged weakens_constraint, final 'widened', exit 1")
 
 
 def test_payment_workflow_aether_runs_cleanly():
@@ -88,6 +117,6 @@ def test_payment_workflow_python_runs_cleanly():
 if __name__ == "__main__":
     test_payment_workflow_aether_runs_cleanly()
     test_payment_workflow_python_runs_cleanly()
-    test_fix_loop_resolves_broken_candidate()
-    test_fixed_source_passes_full_check()
+    test_fix_loop_refuses_to_widen_broken_candidate()
+    test_allow_widen_applies_flags_and_never_says_clean()
     print("F ALL DEMO TESTS PASS")

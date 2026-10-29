@@ -4,7 +4,7 @@
   "summary": "pure validator secretly hits the network",
   "naive_aether": {
     "stage": "check",
-    "expected_exit_code": 2,
+    "expected_exit_code": 1,
     "expected_diagnostic_code": "E0801",
     "expected_stderr_pattern": "E0801.*validateJWT.*net.fetch"
   },

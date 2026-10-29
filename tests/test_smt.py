@@ -271,14 +271,17 @@ def _run_cli(src: str, *flags: str, as_json: bool = False):
             cwd=ROOT, capture_output=True, text=True)
 
 
-def test_cli_prove_refuted_exits_2():
+def test_cli_prove_refuted_exits_1():
     if not HAVE_Z3:
         return
     r = _run_cli(REFUTABLE, "--prove", as_json=True)
-    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
-    # _emit_error writes diagnostics to stderr (same as every other pass)
-    assert '"E0901"' in r.stderr
-    assert "counterexample" in r.stderr
+    # 1 = findings; --json is one document on stdout (Wave 5b D5/D6; the
+    # exit was 2 and the diagnostics JSONL on stderr).
+    assert r.returncode == 1, (r.returncode, r.stdout, r.stderr)
+    doc = json.loads(r.stdout)
+    assert doc["ok"] is False and doc["prove"]["refuted"] >= 1, doc
+    d = next(d for d in doc["diagnostics"] if d["code"] == "E0901")
+    assert d["stage"] == "smt" and "counterexample" in r.stdout, d
 
 
 def test_cli_prove_proved_exits_0_with_summary():
@@ -296,7 +299,7 @@ def test_cli_prove_is_default_on_when_z3_present():
     if not HAVE_Z3:
         return
     r = _run_cli(REFUTABLE)           # no flag: default-on since wave 1
-    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert r.returncode == 1, (r.returncode, r.stdout, r.stderr)
     assert "E0901" in (r.stdout + r.stderr)
 
 

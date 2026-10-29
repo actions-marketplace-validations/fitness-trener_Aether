@@ -43,6 +43,28 @@ probability:
     `LlamaGrammar`, bigquery, networkx), and 4 of the new `fetch_all`
     hits are langchain-community HTTP loaders, not databases.
 
+  * `stdlib_xml` — a stdlib XML parse (`xml.etree`, `minidom`,
+    `pulldom`, `xml.sax`, `expatbuilder`) handed no parser argument. The
+    callee is resolved, but by E0727's own text it never expands an
+    external entity; what remains is the Expat-version DoS clause, so it
+    rates below the lxml case (audit 2026-09-24 C7).
+
+Two OUTPUT-ONLY demotions sit on top of the match kind (audit C5, C7).
+Neither decides whether a finding exists — the same findings fire, only
+their rating moves:
+
+  * **argument shape** — the judged argument of a Python finding holds a
+    sanitizer call (`shlex.quote`, a SQLAlchemy expression, `url_for`,
+    `secure_filename`, ...) or an own-origin URL builder no import names
+    (`request.url_for` on an unannotated receiver). The rule still
+    refuses the composition (`os.system(shlex.quote(cmd))` lets the input
+    pick the program), but the code is shaped like the fix, so the
+    finding rates `FLOOR` whatever its match kind
+    (`detector_specs.literal_or_wrapper`, `extra.demoted`).
+  * **docstring** — an E0723 credential shape inside a bare string
+    statement (a docstring) rates `FLOOR`: it is prose, and AWS's own
+    documentation example key is the common case. In code it keeps 1.0.
+
 An ABSENT match means an Aether-source finding: the sink is spelled in
 the `.aeth` source, nothing was guessed, so it is 1.0. An UNKNOWN
 non-empty match is the least-confident value, never the most — a new
@@ -76,6 +98,8 @@ CONFIDENCE = {
     "builtin_compile": FLOOR,
     # Method name only, receiver type unresolved (q5's over-flag).
     "method": FLOOR,
+    # A stdlib XML parse with no parser argument: no XXE, the DoS clause.
+    "stdlib_xml": FLOOR,
 }
 
 # An Aether-source finding: no match kind, because nothing was matched
@@ -83,15 +107,18 @@ CONFIDENCE = {
 AETHER_SOURCE = 1.0
 
 
-def confidence_of(match) -> float:
+def confidence_of(match, demoted: bool = False) -> float:
     """Confidence in [0,1] for a frontend match kind.
 
     `None`/empty means an Aether-source finding (1.0). Any other
     unrecognised value degrades to `FLOOR`, not to 1.0: the table may
     briefly lag a new frontend match kind, and the lag must cost
     precision, never claim certainty. `tests/test_confidence.py` is what
-    makes the lag impossible to ship.
+    makes the lag impossible to ship. `demoted` is one of the output-only
+    demotions above: the rating is `FLOOR` whatever the kind.
     """
+    if demoted:
+        return FLOOR
     if not match:
         return AETHER_SOURCE
     return CONFIDENCE.get(match, FLOOR)

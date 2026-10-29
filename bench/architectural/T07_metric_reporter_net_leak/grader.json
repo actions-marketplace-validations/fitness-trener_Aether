@@ -2,7 +2,7 @@
   "id": "T07_metric_reporter_net_leak",
   "axis": "B.3",
   "summary": "log-only reporter silently uploads to a vendor URL",
-  "naive_aether": {"stage": "check", "expected_exit_code": 2,
+  "naive_aether": {"stage": "check", "expected_exit_code": 1,
                    "expected_diagnostic_code": "E0701",
                    "expected_stderr_pattern": "E0701.*net.fetch.*capability 'net'"},
   "naive_python": {"stage": "run", "expected_exit_code": 0,

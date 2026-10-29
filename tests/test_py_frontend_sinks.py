@@ -331,8 +331,14 @@ def test_xxe_python_text_names_the_callee_and_a_python_fix():
     ds = {d.extra["function"]: d
           for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES) if d.code == "E0727"}
     assert set(ds) == set("abcdefghijk"), sorted(ds)
-    assert all(d.confidence == confidence_of("qualified") for d in ds.values()), \
+    # Same codes. The stdlib parses with no parser argument rate below
+    # lxml's (`stdlib_xml`, audit 2026-09-24 C7): their own text says no
+    # XXE, only the Expat DoS clause. Until Wave 5a all rated `qualified`.
+    want = {k: confidence_of("qualified" if k in "ej" else "stdlib_xml") for k in ds}
+    assert {k: d.confidence for k, d in ds.items()} == want, \
         {k: d.confidence for k, d in ds.items()}
+    assert all(d.extra["match"] == ("qualified" if k in "ej" else "stdlib_xml")
+               for k, d in ds.items())
     for fn, callee, fix in [
         ("a", "xml.etree.ElementTree.fromstring", "defusedxml.ElementTree.fromstring"),
         ("b", "xml.dom.minidom.parseString", "defusedxml.minidom.parseString"),
@@ -489,7 +495,11 @@ def test_xxe_elementtree_text_is_scoped_to_calls_without_a_parser():
     ds = {d.extra["function"]: d
           for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES) if d.code == "E0727"}
     assert sorted(ds) == list("abcdefgh"), sorted(ds)
-    assert all(d.extra["match"] == "qualified" for d in ds.values()), \
+    # A caller's parser (a, b, c) and lxml (f) stay `qualified`; a stdlib
+    # parse with no parser argument rates `stdlib_xml` (audit C7 — until
+    # Wave 5a every one of these was `qualified`).
+    assert {k: d.extra["match"] for k, d in ds.items()} == \
+        {k: "qualified" if k in "abcf" else "stdlib_xml" for k in ds}, \
         {k: d.extra for k, d in ds.items()}
     for fn, callee in [("a", "xml.etree.ElementTree.fromstring"),
                        ("b", "xml.etree.ElementTree.parse"),
@@ -815,15 +825,15 @@ def test_e0711_is_held_back_by_default():
 def test_e0711_appears_under_strict():
     rc, out = _run_check_py(_OPEN_PARAM_SRC, "--strict")
     assert "[E0711]" in out, f"--strict must report E0711: {out}"
-    assert rc == 2, "a finding must exit 2"
+    assert rc == 1, "a finding must exit 1"     # was 2 before Wave 5b (D5)
     print("cli: --strict reports E0711")
 
 
-def test_check_py_cli_reports_and_exits_2():
+def test_check_py_cli_reports_and_exits_1():
     rc, out = _run_check_py("import subprocess\n"
                             "def r(host):\n"
                             "    subprocess.run('ping ' + host, shell=True)\n")
-    assert rc == 2, f"a finding must exit 2, got {rc}: {out}"
+    assert rc == 1, f"a finding must exit 1, got {rc}: {out}"   # was 2 (D5)
     assert "E0714" in out, out
     assert "not checked" in out.lower(), \
         "the reduced guarantee set must be stated on the output, not implied"
@@ -867,7 +877,7 @@ def test_directory_walk_scans_every_file():
         "app/sub/b.py": "def f(cur, n):\n    cur.execute('SELECT ' + n)\n",
         "app/clean.py": "def add(a, b):\n    return a + b\n",
     })
-    assert rc == 2, f"findings in a tree must exit 2: {out}"
+    assert rc == 1, f"findings in a tree must exit 1: {out}"
     assert "E0714" in out and "E0713" in out, \
         f"both files' findings must be reported: {out}"
     assert "a.py" in out and "b.py" in out, \
@@ -899,7 +909,8 @@ def test_unparseable_file_does_not_abort_the_walk():
         "app/a_py2.py": "print 'hello'\n",       # sorts before b.py
         "app/b.py": _CMDI_SRC,
     })
-    assert rc == 2, f"the finding after the bad file must still be found: {out}"
+    # 1, not 4: there are findings; the unparsed file is in the summary.
+    assert rc == 1, f"the finding after the bad file must still be found: {out}"
     assert "E0714" in out, out
     assert "1 unparseable" in out, f"the skip must be counted, not hidden: {out}"
     print("cli: an unparseable file does not abort the walk")
@@ -915,7 +926,7 @@ def test_utf8_bom_file_is_scanned_not_silently_skipped():
     })
     assert "0 unparseable" in out, \
         f"a BOM must not make a file unreadable: {out}"
-    assert "E0714" in out and rc == 2, \
+    assert "E0714" in out and rc == 1, \
         f"the finding in a BOM'd file must still be reported: {out}"
     print("cli: a UTF-8 BOM does not hide a file from the scanner")
 
@@ -1336,7 +1347,7 @@ def test_pep263_cookie_file_is_scanned():
         r = sp.run([sys.executable, "-B", "-m", "transpiler.aether.cli",
                     "--json", "check-py", p], cwd=ROOT, capture_output=True, text=True)
     out = _json.loads(r.stdout)
-    assert r.returncode == 2 and not out["unreadable"], (r.returncode, out["unreadable"])
+    assert r.returncode == 1 and not out["unreadable"], (r.returncode, out["unreadable"])
     assert [x["code"] for f in out["files"] for x in f["diagnostics"]] == ["E0713"]
     print("BUG-012: a PEP 263 coding cookie is honoured, not 'unreadable'")
 
@@ -1444,6 +1455,7 @@ def test_match_kind_reaches_extra_for_every_sink_match():
         "builtin": ("def f(s):\n    exec(s)\n", "E0731"),
         "builtin_compile": ("def f(s):\n    compile(s, '<s>', 'exec')\n", "E0731"),
         "method": ("def f(cur, x):\n    cur.execute('SELECT ' + x)\n", "E0713"),
+        "stdlib_xml": ("import xml.etree.ElementTree as ET\ndef f(s):\n    ET.fromstring(s)\n", "E0727"),
     }
     assert sorted(shapes) == sorted(SINK_MATCH_KINDS), (
         f"every match kind the frontend publishes needs a shape here: "
@@ -1499,7 +1511,8 @@ def test_unreadable_and_skipped_are_visible_in_every_mode():
              "build/gen.py": _CMDI_SRC}
     rc, out, err = run(files, "--json")
     js = _json.loads(out)
-    assert rc == 2 and js["unreadable"] and js["unreadable"][0]["detail"], js["unreadable"]
+    assert rc == 1 and js["unreadable"] and js["unreadable"][0]["detail"], js["unreadable"]
+    assert js["complete"] is False and js["ok"] is False, js
     assert js["skipped_dirs"] == ["build"], js["skipped_dirs"]
     assert "could not parse" in err and "skipped as vendored/build output" in err, err
     rc, out, err = run(files, sub=("--sarif",))
@@ -1511,11 +1524,13 @@ def test_unreadable_and_skipped_are_visible_in_every_mode():
     assert res["properties"]["suggestion"], res
     assert "could not parse" in err, err
     rc, out, err = run(files)
-    assert rc == 2 and "could not parse" in err and "1 unparseable" in out \
+    assert rc == 1 and "could not parse" in err and "1 unparseable" in out \
         and "1 dir(s) skipped" in out, (out, err)
-    # an unparseable file alone never fails the run, in any mode
-    rc, out, err = run({"only.py": "def f(:\n"}, target="only.py")
-    assert rc == 0 and "could not parse" in err, (rc, out, err)
+    # An unparseable file alone is exit 4 (incomplete), in every mode. It
+    # used to be exit 0 — "never fails the run" (audit B6, Wave 5b).
+    for flags, sub in (((), ()), (("--json",), ()), ((), ("--sarif",))):
+        rc, out, err = run({"only.py": "def f(:\n"}, *flags, target="only.py", sub=sub)
+        assert rc == 4 and "could not parse" in err, (flags, sub, rc, out, err)
     print("cli: unreadable files and skipped dirs reported in json/sarif/text; exit codes agree")
 
 
@@ -1538,7 +1553,7 @@ def test_file_too_deep_for_python_is_unparseable_not_a_crash():
            "def g(a):\n    return " + "+".join(["a"] * 20000) + "\n")
     rc, out = _run_check_py_tree({"deep.py": src}, target="deep.py")
     assert "ANALYZER ERROR" not in out, out[-600:]
-    assert rc == 0 or "E0714" in out, (rc, out[-600:])
+    assert rc == 4 or "E0714" in out, (rc, out[-600:])   # 4 = unparsed (D5)
     print("BUG-029: a file too deep for Python's own parser is unparseable, not an analyzer crash")
 
 
@@ -1623,17 +1638,277 @@ def test_detector_value_error_is_a_crash_not_unreadable():
         p = os.path.join(d, "v.py")
         with open(p, "w", encoding="utf-8") as fh:
             fh.write("import os\ndef f(c):\n    os.system(c)\n")
-        real = passes.analyze_flat
+        # `_scan_one` walks `analyze` (per stage) since Wave 5b.
+        real = passes.analyze
 
         def boom(*_a, **_k):
             raise ValueError("detector bug")
-        passes.analyze_flat = boom
+        passes.analyze = boom
         try:
             res = cli._scan_one((p, PY_SKIP_STAGES, False))
         finally:
-            passes.analyze_flat = real
+            passes.analyze = real
     assert res[0] == "crashed" and "ValueError" in res[2], res
     print("BUG-035: a detector ValueError is an analyzer crash, not an unreadable file")
+
+
+# --- Wave 4 (audit 2026-09-24 B4/B5/B8/B9/B10, BUG-065..069) -------------
+
+def _found(src: str):
+    """(line, code) of every default-on finding, E0701 inventory excluded."""
+    ast_dict, _unp, _meta = py_to_ir(src)
+    return sorted((d.position.line, d.code)
+                  for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES)
+                  if d.code not in ("E0701", "E0711"))
+
+
+def test_raw_sql_string_is_a_finding_wherever_it_enters():
+    """BUG-065: a non-literal `text()` / `literal_column()` / `db.text()` /
+    str-shaped `.where()` was judged only when it sat INSIDE an executor's
+    argument. Bound to a name and nested in a builder, passed to
+    `Query.filter`, `session.scalars`, `from_statement`, or built as a
+    string in `.where(...)`, it was silent."""
+    sa = "from sqlalchemy import select, text, literal_column, and_\n"
+    bad = [   # (body, line of the one finding; the def is line 2)
+        ("order = text(col)\n    return s.execute(select(t).order_by(order))", 3),
+        ("cond = text(\"n = '\" + col + \"'\")\n    return s.execute(select(1).where(cond))", 3),
+        ("return s.query(t).filter(text(f\"n = '{col}'\")).all()", 3),
+        ("return s.scalars(text(f\"SELECT id FROM u WHERE n='{col}'\")).all()", 3),
+        ("return s.scalar(text(f\"SELECT id FROM u WHERE n='{col}'\"))", 3),
+        ("return s.query(t).from_statement(text(f\"SELECT * FROM u WHERE n='{col}'\")).all()", 3),
+        ("c = literal_column(col)\n    return s.execute(select(c).select_from(t))", 3),
+        ("return s.execute(select(t).where(\"n = '\" + col + \"'\"))", 3),        # PM-7
+        ("return s.execute(t.select().where(\"n = '\" + col + \"'\"))", 3),
+        ("return s.execute(select(t).order_by(f\"{col} DESC\"))", 3),
+        ("return s.execute(select(t).select(\"n = '\" + col + \"'\"))", 3),
+        ("return s.query(t).filter(\"name = '%s'\" % col).all()", 3),
+        ("return db.session.execute(select(t).where(db.text(f\"n = '{col}'\"))).all()", 3),
+        ("return t.query.filter(db.text(\"n = '\" + col + \"'\")).first()", 3),   # PM-5
+        ("return tbl.search().where(f\"id = '{col}'\").to_list()", 3),
+    ]
+    for body, line in bad:
+        src = f"{sa}def f(s, t, col, db=None, tbl=None):\n    {body}\n"
+        assert _found(src) == [(line, "E0713")], (body, _found(src))
+    # One finding per flow, at the executor, exactly as before.
+    for body in ("return s.execute(text(f\"SELECT {col}\"))",
+                 "return s.execute(text(f\"SELECT {col}\")).fetchall()",
+                 "q = text(f\"SELECT {col}\")\n    return s.execute(q)",
+                 "return s.execute(select(t).where(and_(t.c.x == 1, text(col))))"):
+        src = f"{sa}def f(s, t, col):\n    {body}\n"
+        got = _found(src)
+        assert len(got) == 1 and got[0][1] == "E0713" and got[0][0] == src.count("\n"), (body, got)
+    # The sanctioned forms stay clean.
+    for body in ("return s.execute(text(\"SELECT * FROM u WHERE id = :id\"), {\"id\": col})",
+                 "q = text(\"SELECT * FROM u WHERE n = :n\").bindparams(n=col)\n    return s.execute(q)",
+                 "return s.execute(select(t).where(t.c.name.like(f\"%{col}%\")))",
+                 "return s.execute(select(t).where(t.c.n == col).order_by(t.c.id))",
+                 "draw.text((col, col), col)",
+                 "return canvas.text(1, 2, col)",
+                 "return qs.filter(name=f\"{col}\")"):
+        src = f"{sa}def f(s, t, col, draw=None, canvas=None, qs=None):\n    {body}\n"
+        assert _found(src) == [], (body, _found(src))
+    src = sa + "Q = 'SELECT 1'\ndef f(s):\n    return s.execute(text(Q))\n"
+    assert _found(src) == [], _found(src)
+    print("BUG-065: a raw SQL string is a finding wherever it enters; one per flow")
+
+
+def test_aliases_and_dynamic_callees_reach_the_sink():
+    """BUG-066: a sink reached through a literal dynamic import, a
+    module-level alias, a local builtin alias, functools.partial or a
+    dispatch table was silent (`_callee_spelling` saw only imports and
+    function-local single bindings)."""
+    cases = [
+        ("import importlib\ndef f(c):\n    importlib.import_module('os').system(c)\n", "E0714"),
+        ("import importlib\ndef f(c):\n    m = importlib.import_module('os')\n    m.system(c)\n", "E0714"),
+        ("def f(c):\n    __import__('os').system(c)\n", "E0714"),
+        ("import os\nsystem = os.system\ndef f(c):\n    system(c)\n", "E0714"),
+        ("import os\nsystem = os.system\nrun = system\ndef f(c):\n    run(c)\n", "E0714"),
+        ("evaluate = eval\ndef f(x):\n    return evaluate(x)\n", "E0731"),
+        ("def f(x):\n    e = eval\n    return e(x)\n", "E0731"),
+        ("import functools, os\ndef f(c):\n    run = functools.partial(os.system, c)\n    run()\n", "E0714"),
+        ("import functools, subprocess\nsh = functools.partial(subprocess.run, shell=True)\n"
+         "def f(c):\n    sh(c)\n", "E0714"),
+        ("from functools import partial\ndef f(src):\n    return partial(eval, src)()\n", "E0731"),
+        ("import os\nHANDLERS = {'sh': os.system}\ndef f(c):\n    HANDLERS['sh'](c)\n", "E0714"),
+        ("import os\ndef f(k, c):\n    return {'sh': os.system, 'p': print}[k](c)\n", "E0714"),
+        ("import os\ndef f(c):\n    return [os.system][0](c)\n", "E0714"),
+        ("import pickle\ndef f(b):\n    p = pickle\n    return p.loads(b)\n", "E0720"),
+    ]
+    for src, code in cases:
+        got = [c for _l, c in _found(src)]
+        assert got == [code], (src, got)
+    clean = [
+        "def f(eval, x):\n    e = eval\n    return e(x)\n",               # a parameter, not the builtin
+        "def f(self, p):\n    o = self.open\n    return o(p)\n",          # a method, not open()
+        "def f(k, c):\n    return {'p': print, 'l': len}[k](c)\n",      # no sink in the table
+        "import os\ndef f(c):\n    return {'sh': os.system, 'p': print}['p'](c)\n",   # literal key
+        "import subprocess\nfrom functools import partial\nsh = partial(subprocess.run, shell=False)\n"
+        "def f(c):\n    return sh(c)\n",
+        # a module-level alias of a SANCTIONED value is that value (precision)
+        "import yaml\nLOADER = yaml.SafeLoader\ndef f(x):\n    return yaml.load(x, Loader=LOADER)\n",
+    ]
+    for src in clean:
+        assert _found(src) == [], (src, _found(src))
+    # the finding lands on the call, not on the alias
+    assert _found("import os\nsystem = os.system\ndef f(c):\n    system(c)\n") == [(4, "E0714")]
+    print("BUG-066: aliases, literal dynamic imports, partial and dispatch tables reach the sink")
+
+
+def test_builtins_spelled_through_the_module_are_the_builtin():
+    """BUG-067: `builtins.eval(x)` / `from builtins import exec as run` /
+    `__builtins__["eval"]` were silent, and `getattr(builtins, "exec")(src)`
+    was reported as SQL injection (E0713) — the by-method `exec` row ran
+    before any builtin resolution."""
+    cases = [
+        "import builtins\ndef f(x):\n    return builtins.eval(x)\n",
+        "from builtins import exec as run\ndef f(src):\n    run(src)\n",
+        "def f(src):\n    __builtins__['eval'](src)\n",
+        "import builtins\ndef f(src):\n    getattr(builtins, 'exec')(src, {})\n",
+        "def f(src):\n    return getattr(__builtins__, 'exec')(src)\n",
+    ]
+    for src in cases:
+        assert [c for _l, c in _found(src)] == ["E0731"], (src, _found(src))
+    # the SQL method row still owns `session.exec(stmt)`
+    assert [c for _l, c in _found("def f(s, q):\n    return s.exec(q)\n")] == ["E0713"]
+    print("BUG-067: builtins reached through the builtins module are the builtin (E0731)")
+
+
+def test_wave4_sink_rows_fire_and_safe_forms_clear():
+    """BUG-068: spellings of already-modeled classes were silent (each
+    probe-confirmed first); every row is also pinned in test_sink_rows."""
+    bad = [
+        ("from werkzeug.utils import redirect\ndef f(u):\n    return redirect(u)\n", "E0718"),
+        ("from quart import redirect\nasync def f(u):\n    return redirect(u)\n", "E0718"),
+        ("from django.http import HttpResponsePermanentRedirect as R\ndef f(u):\n    return R(u)\n", "E0718"),
+        ("from aiohttp import web\nasync def f(u):\n    raise web.HTTPSeeOther(u)\n", "E0718"),
+        ("def f(qs, n):\n    return qs.extra(where=[\"name='%s'\" % n])\n", "E0713"),
+        ("def f(qs, c):\n    return qs.extra(select={'x': 'LOWER(' + c + ')'})\n", "E0713"),
+        ("def f(db, n):\n    return db.execute_sql(f\"SELECT * FROM u WHERE n='{n}'\")\n", "E0713"),
+        ("import duckdb\ndef f(t):\n    return duckdb.sql(f'SELECT * FROM {t}').fetchall()\n", "E0713"),
+        ("def f(con, q):\n    return con.sql(q)\n", "E0713"),
+        ("import _pickle\ndef f(b):\n    return _pickle.loads(b)\n", "E0720"),
+        ("from ruamel.yaml import YAML\ndef f(s):\n    return YAML(typ='unsafe').load(s)\n", "E0720"),
+        ("from ruamel.yaml import YAML\ny = YAML(typ='unsafe')\ndef f(s):\n    return y.load(s)\n", "E0720"),
+        ("from jinja2.nativetypes import NativeTemplate\ndef f(t):\n    return NativeTemplate(t).render()\n", "E0719"),
+        ("import tornado.template\ndef f(t):\n    return tornado.template.Template(t).generate()\n", "E0719"),
+        ("from langchain_core.prompts import PromptTemplate\ndef f(t):\n"
+         "    return PromptTemplate.from_template(t, template_format='jinja2').format()\n", "E0719"),
+        ("from langchain_core.prompts import PromptTemplate\ndef f(t):\n"
+         "    return PromptTemplate.from_template(template_format='jinja2', template=t)\n", "E0719"),
+        ("import runpy\ndef f(p):\n    runpy.run_path(p)\n", "E0731"),
+        ("import code\ndef f(s):\n    code.InteractiveInterpreter().runsource(s)\n", "E0731"),
+        ("import code\ndef f(s):\n    i = code.InteractiveConsole()\n    return i.push(s)\n", "E0731"),
+    ]
+    for src, code in bad:
+        assert [c for _l, c in _found(src)] == [code], (src, _found(src))
+    clean = [
+        "def f(qs, x):\n    return qs.extra(where=['a = %s'], params=[x])\n",
+        "from ruamel.yaml import YAML\ndef f(s):\n    YAML().load(s)\n    return YAML(typ='safe').load(s)\n",
+        "from langchain_core.prompts import PromptTemplate\ndef f(t):\n"
+        "    PromptTemplate.from_template(t)\n"
+        "    return PromptTemplate.from_template(t, template_format='f-string')\n",
+        # a guard keyword never takes the judged slot of a keyword-only call
+        "import subprocess\ndef f():\n    return subprocess.run(shell=True, args='ls -l')\n",
+        "def f(q):\n    return q.push(1)\n",                  # no method row for push/runsource
+    ]
+    for src in clean:
+        assert _found(src) == [], (src, _found(src))
+    assert [c for _l, c in _found("import subprocess\ndef f(c):\n"
+                                  "    return subprocess.run(shell=True, args=c)\n")] == ["E0714"]
+    print("BUG-068: wave-4 sink rows fire; their sanctioned forms stay clean")
+
+
+def test_credential_in_fstring_and_bytes_is_positioned():
+    """BUG-069: E0723 inside an f-string reported line 0, column 0 (the
+    parts carried no position); a credential in a bytes literal was never
+    scanned (bytes were an opaque leaf, and a module of only bytes
+    assignments was not a scope)."""
+    key = "AKIAIOSFODNN7EXAMPLE"      # AWS's documented example value
+    got = _found(f"def h(x):\n    return {{'a': f'Bearer {key}', 'x': x}}\n")
+    assert got == [(2, "E0723")], got
+    got = _found(f"def h(x):\n    return f'k={key} {{x}}'\n")
+    assert got == [(2, "E0723")], got
+    assert _found(f"AWS_KEY = b'{key}'\n") == [(1, "E0723")]
+    assert _found(f"def f(x):\n    k = b'{key}'\n    return x\n") == [(2, "E0723")]
+    # a bytes literal is still no literal to the argument rules
+    assert [c for _l, c in _found("def f(cur, n):\n    cur.execute(b'SELECT ' + n)\n")] == ["E0713"]
+    print("BUG-069: E0723 carries the f-string's line; bytes literals are scanned")
+
+
+def test_stripe_restricted_key_is_a_credential():
+    """Audit B9 (Wave 4 residual, coordinator): a Stripe live restricted key
+    (`rk_live_`) was silent while `sk_live_` fired. The fixture is built from
+    split literals so the SOURCE of this test is not credential-shaped
+    (GitHub push protection); the scanned string is one literal."""
+    src = "K = '" + "rk_" + "live_" + "4eC39HqLyjWDarjtT1zdp7dc" + "'\n"
+    ast_dict, _u, _m = py_to_ir(src)
+    got = [(d.position.line, d.code) for d in analyze_flat(ast_dict, skip=PY_SKIP_STAGES)
+           if d.code == "E0723"]
+    assert got == [(1, "E0723")], got
+    print("E0723: a Stripe live restricted key is a hardcoded credential")
+
+
+def test_argv_option_injection_is_a_command_injection():
+    """Gaps round G6 (iteration 65): a program with an option that runs
+    code (`git -c`/`--upload-pack`, `ssh` host and command, `tar
+    --to-command`, `find -exec`, `rsync -e`, `zip -TT`) handed a
+    non-literal argv word before a literal `--` is E0714 — the word can BE
+    that option, and quoting it does not change that. A `--` before the
+    input, literal words, and programs without such an option stay clean.
+    Every one of the flagged shapes was silent before (exit 0)."""
+    head = "import asyncio, shlex, subprocess\n\ndef f(x):\n    "
+    flagged = [
+        "subprocess.run(['git', '-c', x, 'log'])",
+        "subprocess.run(['git', 'clone', x, 'dest'])",
+        "subprocess.run(['/usr/bin/git', 'fetch', x], check=True)",
+        "subprocess.check_output(args=['git', 'ls-remote', x])",
+        "subprocess.run(('git', 'clone', f'--depth={x}', 'u'))",
+        "subprocess.run(['git'] + x)",
+        "subprocess.run(['git', *x])",
+        "subprocess.run(['git', 'clone', shlex.quote(x)])",
+        "cmd = ['git', 'clone', x]\n    subprocess.run(cmd)",
+        "subprocess.run(['ssh', x, 'uptime'])",
+        "subprocess.run(['ssh', 'host', '--', x])",
+        "subprocess.run(['tar', '--to-command', x, '-xf', 'a.tar'])",
+        "subprocess.run(['find', '.', '-exec', x, ';'])",
+        "subprocess.run(['rsync', '-e', x, 'a', 'b'])",
+        "subprocess.run(['zip', '-T', '-TT', x, 'a.zip', 'f'])",
+        "asyncio.create_subprocess_exec('git', *x)",
+    ]
+    clean = [
+        "subprocess.run(['git', 'clone', '--', x, 'dest'])",
+        "subprocess.run(['git', 'log', '-n', 5])",
+        "u = 'https://example.org/r.git'\n    subprocess.run(['git', 'clone', u])",
+        "subprocess.run(['git', 'status'])",
+        "subprocess.run(['ls', '-l', x])",
+        "asyncio.create_subprocess_exec('ls', x)",
+    ]
+    def codes(s):        # E0701 is the --strict capability inventory
+        return [c for c in _codes(head + s + "\n") if c != "E0701"]
+    bad = [f"flagged {s!r}: {got}" for s in flagged if (got := codes(s)) != ["E0714"]]
+    bad += [f"clean {s!r}: {got}" for s in clean if (got := codes(s))]
+    assert not bad, "\n  ".join(["argv option injection:"] + bad)
+    ir, _u, _m = py_to_ir(head + flagged[0] + "\n")
+    calls = [c for c in walk(ir, "Call") if c.get("func", {}).get("name") == "shellExec"]
+    assert calls and calls[0].get("match") == "argv" and confidence_of("argv") == 0.9
+    print(f"G6: {len(flagged)} argv option-injection shapes flag, {len(clean)} stay clean")
+
+
+def test_quoted_option_word_for_option_running_programs():
+    """Known-gaps round (iteration 65, coordinator): shlex.quote leaves a
+    word that starts with '-' unquoted, so `"git clone " + shlex.quote(url)`
+    lets `url = "--upload-pack=..."` run a command. git, tar, rsync and zip
+    join the code-taking programs; the argv form with a literal "--" and a
+    plain program such as ls stay clean."""
+    head = "import subprocess, shlex\n"
+    for prog in ("git clone", "tar -xf", "rsync -a", "zip -r out.zip"):
+        src = head + f"def f(u):\n    subprocess.run(\"{prog} \" + shlex.quote(u), shell=True)\n"
+        assert [c for c in _codes(src) if c != "E0701"] == ["E0714"], (prog, _codes(src))
+    for body in ('subprocess.run("ls -l " + shlex.quote(u), shell=True)',
+                 'subprocess.run(["git", "clone", "--", u, "dest"])'):
+        src = head + f"def f(u):\n    {body}\n"
+        assert [c for c in _codes(src) if c != "E0701"] == [], (body, _codes(src))
+    print("E0714: a quoted option word for git/tar/rsync/zip is not the shell exit")
 
 
 if __name__ == "__main__":
@@ -1678,7 +1953,7 @@ if __name__ == "__main__":
     test_pypi_scan_row_set_matches_cli()
     test_unmapped_call_cannot_collide_with_an_aether_sink_name()
     test_real_mapped_sinks_still_fire_after_prefixing()
-    test_check_py_cli_reports_and_exits_2()
+    test_check_py_cli_reports_and_exits_1()
     test_check_py_clean_exits_0()
     test_e0711_is_held_back_by_default()
     test_e0711_appears_under_strict()
@@ -1731,4 +2006,12 @@ if __name__ == "__main__":
     test_ambiguous_import_is_a_sink_if_any_candidate_is()
     test_whole_command_shlex_quote_is_not_the_exit()
     test_detector_value_error_is_a_crash_not_unreadable()
+    test_raw_sql_string_is_a_finding_wherever_it_enters()
+    test_aliases_and_dynamic_callees_reach_the_sink()
+    test_builtins_spelled_through_the_module_are_the_builtin()
+    test_wave4_sink_rows_fire_and_safe_forms_clear()
+    test_credential_in_fstring_and_bytes_is_positioned()
+    test_stripe_restricted_key_is_a_credential()
+    test_argv_option_injection_is_a_command_injection()
+    test_quoted_option_word_for_option_running_programs()
     print("PY FRONTEND: ALL TESTS PASS")

@@ -2,7 +2,7 @@
   "expected_stdout": "",
   "stdin": "",
   "timeout_ms": 5000,
-  "expected_exit_code": 2,
+  "expected_exit_code": 1,
   "expected_stderr_pattern": "E0302.*= 120.*Percentage",
   "tags": ["demo", "b4", "refinement"],
   "difficulty": "demo"

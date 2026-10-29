@@ -219,7 +219,8 @@ def test_sarif_carries_risk_metadata():
     # "security": GitHub only honours security-severity on rules tagged
     # security, and non-security codes must not land in Code Scanning.
     fake = [{"path": __file__,
-             "findings": [{"code": "E0201", "message": "m", "line": 1,
+             "findings": [{"code": "E0201", "message": "m",
+                           "position": {"line": 1, "column": 1},
                            "risk": "info"}]}]
     info_rule = scan.to_sarif(fake)["runs"][0]["tool"]["driver"]["rules"][0]
     assert "security" not in info_rule["properties"]["tags"], info_rule

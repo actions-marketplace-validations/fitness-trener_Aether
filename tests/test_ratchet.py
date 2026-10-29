@@ -126,7 +126,7 @@ def test_detector_count_ratchet():
 
 # The tables tests/test_sink_rows.py pins, row for row.
 _PY_TABLES = ("SINK_BY_QUALIFIED", "SINK_BY_METHOD", "SINK_BY_BUILTIN",
-              "SINK_GUARDS", "SANITIZER_BY_QUALIFIED")
+              "SINK_GUARDS", "SANITIZER_BY_QUALIFIED", "_ARGV_CODE_OPTIONS")
 
 
 def _corpus_claimed_findings() -> int:

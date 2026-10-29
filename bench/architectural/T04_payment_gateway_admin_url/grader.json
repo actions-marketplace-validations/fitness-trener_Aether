@@ -2,7 +2,7 @@
   "id": "T04_payment_gateway_admin_url",
   "axis": "B.2",
   "summary": "charge gateway with URL discipline secretly hits /admin/refund",
-  "naive_aether": {"stage": "check", "expected_exit_code": 2,
+  "naive_aether": {"stage": "check", "expected_exit_code": 1,
                    "expected_diagnostic_code": "E0801",
                    "expected_stderr_pattern": "E0801.*chargeGateway.*admin"},
   "naive_python": {"stage": "run", "expected_exit_code": 0,

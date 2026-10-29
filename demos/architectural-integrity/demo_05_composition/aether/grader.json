@@ -2,7 +2,7 @@
   "expected_stdout": "",
   "stdin": "",
   "timeout_ms": 5000,
-  "expected_exit_code": 2,
+  "expected_exit_code": 1,
   "expected_stderr_pattern": "E0801",
   "tags": ["demo", "composition", "b1", "b2"],
   "difficulty": "demo"

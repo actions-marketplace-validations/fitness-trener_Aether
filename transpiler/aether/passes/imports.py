@@ -32,10 +32,14 @@ This is a deliberate v1 scope choice. The verification primitives
 management is the *deployment* layer that ships in v2 once the language
 identity has converged.
 
-This module is reached from the CLI when the source has at least one
-`ImportDecl`. The SDK and LSP keep single-file semantics — they operate
-on in-memory text without a deterministic filesystem anchor, and
-multi-file resolution requires a real `source_path`.
+Every surface loads a program through `load_program` below — the CLI's
+`check`/`run`/`emit`/`pack`, `sdk.check` (and so the LSP and the
+fix-loop) and `tools/scan.py`. It used to be the CLI alone: the SDK, the
+LSP, the fix-loop and the scanner parsed a single file and never resolved
+imports, so a cross-file E0801 and an unresolved-import E0705 were
+"clean" everywhere except `check` (audit 2026-09-24 D2). Imports resolve
+against the directory of `filename`; for a pseudo-name such as `<sdk>`
+that is the working directory.
 """
 
 from __future__ import annotations
@@ -60,6 +64,41 @@ def _diag(code: str, msg: str, pos_dict: Optional[Dict[str, int]],
     )
 
 
+def load_program(source_or_ast, filename: str, *, collect: bool = True,
+                 resolve: bool = True):
+    """THE program loader: parse + resolve imports. Returns
+    `(ast, parse_diags, import_diags)` and never raises for a lex or
+    parse error — those come back in `parse_diags` (with `ast` None on a
+    lex error). `collect` picks the lenient multi-error parser (C.6);
+    `collect=False` is the strict one, which stops at the first error.
+    Accepts an already-parsed Program too (`sdk.check(ast)`).
+
+    Import resolution runs only when the program has an `ImportDecl` and
+    `resolve` is set (the CLI's `--no-import-resolution`). The two lists
+    are kept apart because the surfaces treat them differently: a parse
+    error still leaves a partial AST the SDK/LSP analyse, while an import
+    error means the program is not the one the user wrote, and every
+    surface stops before analysis — as `check` always has."""
+    from ..parser import parse as _parse_strict, parse_collect
+    if isinstance(source_or_ast, str):
+        try:
+            if collect:
+                ast, parse_diags = parse_collect(source_or_ast, filename)
+            else:
+                ast, parse_diags = _parse_strict(source_or_ast, filename), []
+        except AetherError as e:
+            return None, list(e.diagnostics), []
+    else:
+        ast, parse_diags = source_or_ast, []
+    parse_diags = list(parse_diags)
+    if (ast is None or not resolve
+            or not any(d.get("kind") == "ImportDecl"
+                       for d in ast.get("decls", []) or [])):
+        return ast, parse_diags, []
+    combined, import_diags = resolve_imports(ast, filename)
+    return combined, parse_diags, list(import_diags)
+
+
 def resolve_imports(
     ast: Dict[str, Any],
     source_path: str,
@@ -77,7 +116,13 @@ def resolve_imports(
     combined_decls: List[Dict[str, Any]] = []
     _walk(ast, abs_source, visiting, resolved, combined_decls, diags,
           is_entry=True)
-    return ({"kind": "Program", "decls": combined_decls}, diags)
+    # `imports_resolved` tells E0208 (passes/names.py) the imported
+    # names are in `decls`; `partial` rides along from the lenient parser.
+    combined = {"kind": "Program", "decls": combined_decls,
+                "imports_resolved": True}
+    if ast.get("partial"):
+        combined["partial"] = True
+    return combined, diags
 
 
 def _walk(
@@ -146,7 +191,9 @@ def _walk(
         # rather than a silent partial.
         from ..parser import parse as _parse_strict
         try:
-            with open(target_path, "r", encoding="utf-8") as fh:
+            # utf-8-sig, like the CLI's own reader: a BOM'd dependency is
+            # not a lex error.
+            with open(target_path, "r", encoding="utf-8-sig") as fh:
                 target_src = fh.read()
             target_ast = _parse_strict(target_src, target_path)
         except AetherError as e:

@@ -126,7 +126,7 @@ def test_cli_missing_import_emits_E0705():
              "check", prog_path],
             cwd=ROOT, capture_output=True, text=True,
         )
-        assert r.returncode == 2, (r.stdout, r.stderr)
+        assert r.returncode == 4, (r.stdout, r.stderr)  # 4 = not loaded (Wave 5b D5; was 2)
         assert "E0705" in r.stderr, r.stderr
         print("H.E.3 CLI: missing import surfaces E0705")
 
@@ -169,7 +169,7 @@ def test_cli_import_cycle_emits_E0706():
              "check", a_path],
             cwd=ROOT, capture_output=True, text=True,
         )
-        assert r.returncode == 2, (r.stdout, r.stderr)
+        assert r.returncode == 4, (r.stdout, r.stderr)  # 4 = not loaded (Wave 5b D5; was 2)
         assert "E0706" in r.stderr, r.stderr
         print("H.E.3 CLI: import cycle surfaces E0706")
 

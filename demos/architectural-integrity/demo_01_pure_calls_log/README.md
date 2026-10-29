@@ -19,7 +19,7 @@ poisons every architectural assumption downstream.
 ## How to reproduce
 
 ```sh
-# Aether: rejected at check time, exit 2 with structured diagnostic
+# Aether: rejected at check time, exit 1 with structured diagnostic
 python3 -B -m transpiler.aether.cli check \
     demos/architectural-integrity/demo_01_pure_calls_log/aether/main.aeth
 

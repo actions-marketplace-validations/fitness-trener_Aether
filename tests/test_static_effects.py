@@ -417,7 +417,7 @@ end
         [sys.executable, "-B", "-m", "transpiler.aether.cli", "check", p],
         cwd=ROOT, env=env, capture_output=True, text=True,
     )
-    assert r.returncode == 2, f"expected exit 2, got {r.returncode}; stderr={r.stderr}"
+    assert r.returncode == 1, f"expected exit 1 (findings; Wave 5b D5), got {r.returncode}; stderr={r.stderr}"
     assert "E0801" in r.stderr, f"expected E0801 in stderr; got {r.stderr}"
     # And opt-out should pass.
     r = subprocess.run(
@@ -749,6 +749,39 @@ def test_aliased_function_value_escape():
     print("B.1 E0801: an aliased function value is an effect escape")
 
 
+def test_repeated_effects_clause_is_a_parse_error():
+    # Gaps round G2 (BUG-085): a second `effects` clause silently replaced
+    # the first, so `effects log ... effects pure` checked as `pure`.
+    # The grammar has exactly one `effects_clause`; the second is E0201,
+    # positioned at the second `effects` keyword. Repeated `requires` /
+    # `ensures` stay legal (`{ contract_clause }` in grammar.ebnf).
+    from aether.diagnostics import AetherError
+    src = """function f(x: Int) returns Int
+  requires x > 0
+  requires x < 9
+  effects log
+  ensures result > 0
+  effects pure
+do
+  return x
+end
+"""
+    try:
+        parse(src)
+    except AetherError as e:
+        d = e.diag
+    else:
+        raise AssertionError("a repeated effects clause parsed")
+    assert d.code == "E0201", d.code
+    assert (d.position.line, d.position.column) == (6, 3), d.position
+    assert "more than one 'effects' clause" in d.message, d.message
+    ok = parse(src.replace("  effects pure\n", ""))
+    fn = ok["decls"][0]
+    assert len(fn["requires"]) == 2 and len(fn["ensures"]) == 1
+    assert [e["path"] for e in fn["effects"]] == [["log"]]
+    print("G2 E0201: a second effects clause is refused; repeated contracts parse")
+
+
 # Tack the B.2 tests onto the __main__ runner.
 if __name__ == "__main__":
     test_positive_glob()
@@ -758,4 +791,5 @@ if __name__ == "__main__":
     test_covered_function_value_clean()
     test_shadowed_name_is_not_a_function_value()
     test_aliased_function_value_escape()
+    test_repeated_effects_clause_is_a_parse_error()
     print("B.2 glob tests pass")

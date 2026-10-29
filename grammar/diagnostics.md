@@ -40,13 +40,14 @@ what's in `extra`, and what an agent fix-loop is supposed to do.
 
 | Code | Description | `extra` keys |
 |------|-------------|--------------|
-| **E0201** | parse error (unified code for every "expected X, got Y") | — |
+| **E0201** | parse error (unified code for every "expected X, got Y"). Also raised for input nested too deeply to analyze: a top-level declaration whose AST is deeper than 200 levels (`MAX_AST_DEPTH` in `parser.py`) or that exhausts the parser's recursion — the hint says to split the expression into named `let` bindings. Also raised for `pure` written alongside another effect (`effects pure, log`): `pure` is the empty set, and the static checker read that clause as `{log}` while `--effect-strict` read it as `pure` (audit A11). Also raised for a second `effects` clause on one function (the grammar has exactly one; the last one used to win silently, so `effects log` then `effects pure` checked as `pure`); repeated `requires` / `ensures` clauses stay legal | — |
 | **E0202** | a `match` on a union omits a case and has no wildcard catch-all — non-exhaustive match / unhandled variant (static, was runtime-only) | `function`, `union`, `missing` |
 | **E0203** | a `match` arm can never be reached — it follows a wildcard catch-all, or duplicates an earlier case (dead code, CWE-561) | `function`, `reason` |
 | **E0204** | a statement follows an unconditional `return`/`break`/`continue` in the same block — unreachable dead code (CWE-561) | `function`, `after` |
 | **E0205** | a `let` binding (not `_`-prefixed) is never read — a dead store, usually a mistaken variable (CWE-563) | `function`, `binding` |
 | **E0206** | a bare statement discards the `Result<...>` of a call — an unchecked error (e.g. a failed write silently ignored, CWE-252) | `function`, `callee` |
 | **E0207** | a refinement type's predicate is unsatisfiable (e.g. `Int where self >= 10 and self <= 5`) — an uninhabitable / impossible type | `type`, `lo`, `hi` |
+| **E0208** | a reference to an undeclared name: a call to, or a read of, an identifier that is not a parameter, a local bound earlier in the same or an enclosing block, a top-level function / `const` / record / union case (imports included), or a stdlib function — it would be a `NameError` at `run`. Name resolution only, not type checking | `function`, `name`, `kind` (`call` \| `value`), `suggestion` (closest known name, or null) |
 
 E0201 is emitted by `Parser.err`. The lenient `parse_collect` (C.6)
 accumulates all E0201 diagnostics it can recover past; strict `parse`
@@ -95,6 +96,24 @@ construction — unanalyzable clauses widen to unbounded, so it never
 false-positives, at the cost of missing non-interval contradictions. Same
 default-on step / opt-out.
 
+E0208 is name resolution (same default-on step / opt-out,
+`transpiler/aether/passes/names.py`). The emitter mangles every
+identifier and runs it against the runtime's exports plus the program's
+own definitions, so a name nothing binds was a `NameError` at `run`
+after `check` exited 0 — and a misspelt sink (`sqlQeury("SELECT " + u)`)
+was a call no taint pass could name, so it also produced no E0713. The
+stdlib set is derived from the runtime (`runtime.unmangle` over its
+exports), never listed by hand. Bindings are block-scoped: a `let` inside
+an `if` branch is not visible after the `if`. A `const` initializer runs
+at module load, so it sees only declarations above it. What is NOT resolved,
+because it is never evaluated: the right side of `is`, the qualifier of
+`Union.Case(...)`, patterns, type annotations and `effects` arguments.
+The pass is silent on a program it cannot see whole — a partial AST from
+the lenient parser, or an `import` that was not resolved
+(`--no-import-resolution`). It proves a name refers to SOME binding; it
+does not check that binding's type, arity or kind (`types.md`). It
+does not run on Python (`check-py` skips the semantic stage).
+
 ## Contract / refinement (E03xx)
 
 | Code | Description | `extra` keys |
@@ -134,10 +153,10 @@ Bench-harness only. The CLI does not currently enforce timeouts;
 
 | Code | Description | `extra` keys |
 |------|-------------|--------------|
-| **E0701** | function's transitive effect closure requires a capability not declared by any module | `function`, `effect`, `required_capability`, `declared_capabilities`, `via_transitive` |
+| **E0701** | function's transitive effect closure requires a capability not declared by any module. **Runtime variant** (`extra.runtime = true`): in a program that declares a module, `aether run` raises it when a stdlib function performs an effect outside the module's grant, or when a function whose declared effects exceed the grant is invoked (under `--release`, performed effects only). A runtime guarantee, not a static proof | `function`, `effect`, `required_capability`, `declared_capabilities`, `via_transitive`; runtime variant: `effect`, `required_capability`, `declared_capabilities`, `runtime` |
 | **E0702** | module exports a name that isn't declared in this file (D.3) | `module`, `exported`, `declared_names` |
 | **E0703** | more than one `module ... end` in a single file (v0.3 is single-file; D.3) | `first_module`, `duplicate_module` |
-| **E0704** | module requires a capability outside the known vocabulary (D.3) | `module`, `capability`, `known` |
+| **E0704** | module requires a capability outside the known vocabulary (D.3); also a function in Aether source declaring an effect whose capability — its first path segment — is outside that vocabulary (`effects bogus.effect`), which no module could grant (audit A11; positioned at the function; a known head with any tail, `fs.delete`, stays a declaration) | `module`, `capability`, `known`; on a declared effect `function`, `effect`, `capability`, `known` |
 | **E0705** | an `import` names a file that does not exist beside the importing file, or exists but cannot be read (H.E.3) | `resolved_to`, `path` (unreadable file: `resolved_to`, `os_error`) |
 | **E0706** | imports form a cycle — A imports B, B imports A (H.E.3). File-level: the cycle is detected during the DFS, past the `ImportDecl` position | `file`, `stack` |
 | **E0710** | a `net.fetch` effect leaves the host/authority unpinned (bare `*`, `scheme://*`, wildcard scheme, a leading `*` that is not a `*.subdomain` pin, or any other `*` in the authority — `*.*`, `api.*`, `a*`, `api.example.com*`, `[*]`, a userinfo-masked `user@*`, or a `*.tld` pin with no registrable domain), admitting SSRF to internal hosts like `169.254.169.254` | `function`, `effect_arg`, `reason` |
@@ -357,7 +376,11 @@ shipped in every build. The patterns are deliberately narrow so false
 positives are near zero (a demo password like `"hunter2"` does not match;
 a real `AKIA…` key does; a PEM header quoted in an error message without
 a base64 body does not). Fix: load the secret at runtime from the
-environment / a secret manager. Same `--no-scope-check` opt-out.
+environment / a secret manager. Same `--no-scope-check` opt-out. On
+Python the hint names `os.environ["NAME"]` and the category is
+`security`; a shape inside a bare string statement (a docstring) keeps
+its finding and rates confidence 0.6 (`extra.demoted: "docstring"`),
+one in code 1.0.
 
 E0724 introduces the taint-SOURCE marker `Untrusted<T>` — the sound,
 explicit dual of provenance inference. A value crossing a trust boundary
@@ -419,6 +442,31 @@ method name when the receiver is a plain variable — `execute` for
 an imported name). Only these rows carry `callee` on Python; `E0723`,
 `E0701` and the sink rows on Aether source do not.
 
+On Python these rows (and E0723) speak Python (audit 2026-09-24 C6): the
+message names the resolved `callee` instead of the Aether sink, the
+reason drops its Aether remedy (`- use sqlBind(...)`), the suggestion
+names a Python fix the frontend clears — E0711 `werkzeug.utils.safe_join`
+/ `os.path.join(base, secure_filename(name))`; E0713 a parameterized
+`cursor.execute(q, params)`, SQLAlchemy `text(...).bindparams(...)`,
+psycopg `sql.Identifier`; E0714 an argv list, or `shlex.quote` per
+argument after a literal program; E0718 `flask.url_for` /
+`django.urls.reverse` or a `url_has_allowed_host_and_scheme` check;
+E0719 a fixed template rendered with data, or `SandboxedEnvironment`;
+E0720 `json.loads` / `yaml.safe_load` / a schema-validated format; E0731
+`ast.literal_eval` — and `category` is `security`
+(`tests/test_python_hints.py` applies each named fix and checks it is
+clean). An Aether-source finding keeps the Aether wording and
+`capability`.
+
+`confidence` is per-match-kind and OUTPUT-ONLY (`confidence.py`); a
+stdlib XML parse with no parser argument rates `stdlib_xml` (0.6, no
+XXE by its own text), and two demotions rate a finding 0.6 without
+changing whether it exists: **argument shape** — the judged argument
+holds a sanitizer call or an own-origin URL builder
+(`os.system(shlex.quote(cmd))`, `RedirectResponse(request.url_for(...))`
+on an unannotated receiver), `extra.demoted: "argument_shape"` — and
+**docstring** (E0723, above).
+
 E0728 is the fourth `Untrusted<T>` sink (CWE-1236) and the first in a
 NON-HTTP context — proving the marker generalizes past web output. A CSV
 cell of exported data that begins with `=` `+` `-` `@` is interpreted as a
@@ -453,22 +501,22 @@ review by construction.
 
 | Code | Description | `extra` keys |
 |------|-------------|--------------|
-| **E0801** | callee's effects not covered by caller's declared set (B.1 + B.2). A function passed as a **value** counts as a callee: its effects run under the call it is handed to, so `apply(logIt, s)` from a `pure` caller is refused (`extra.via = "function_value"`). A pure function value adds nothing — `map(double, xs)` stays clean. The name is resolved as a function only when nothing local shadows it: a `String` parameter or a `let` named after a function is a VALUE (BUG-024). A local alias binding still counts — `let g = logIt  apply(g, s)` reports `logIt` with `g` named in the message | `caller`, `callee`, `caller_effects`, `missing_effect`, optional `via` |
+| **E0801** | callee's effects not covered by caller's declared set (B.1 + B.2). A function passed as a **value** counts as a callee: its effects run under the call it is handed to, so `apply(logIt, s)` from a `pure` caller is refused (`extra.via = "function_value"`). A pure function value adds nothing — `map(double, xs)` stays clean. The name is resolved as a function only when nothing local shadows it: a `String` parameter or a `let` named after a function is a VALUE (BUG-024). A local alias binding still counts — `let g = logIt  apply(g, s)` reports `logIt` with `g` named in the message. A callee the checker cannot name (an indexed element, a call result, an `if`/`match` expression, a record field, an opaque local) is bounded by the declared effects of every function the program uses as a value (`extra.via = "unknown_callee"`, with `candidates` — those functions — and `shape` — what the callee was, e.g. `"an indexed element"`). What an agent should do: remove or replace the call, and widen the caller's effects clause only if the caller is meant to have that effect. Positioned at the offending call (the start of its callee expression), one diagnostic per call; the function declaration only for a call the parser did not position (audit D10) | `caller`, `callee`, `caller_effects`, `missing_effect`, optional `via`; `candidates`, `shape` when `via = "unknown_callee"` |
 
 Default-on. Opt out per-file with `aether check --no-static-effects`.
 Glob-matching on effect args (B.2) is part of this code.
 
 ## Internal / harness (E9xxx)
 
-These are emitted by `bench/harness.py` only, when something below the
-Aether layer fails. They don't indicate user-code bugs; they indicate
+These are emitted by `bench/harness.py` when something below the
+Aether layer fails (E9001 also by the emitter itself, see its row). They don't indicate user-code bugs; they indicate
 toolchain/sandbox/etc. issues.
 
 | Code | Description |
 |------|-------------|
-| **E9001** | emit error (Python `compile()` rejected the emitted source) |
+| **E9001** | emit error (Python `compile()` rejected the emitted source). Also raised when the emitter cannot translate a construct (e.g. `old()` outside a function) |
 | **E9002** | internal error (parser/emitter raised something other than `AetherError`) |
-| **E9003** | Python runtime error inside the candidate (e.g. divide-by-zero with no precondition) |
+| **E9003** | Python runtime error inside the candidate (e.g. divide-by-zero with no precondition); also reported by `aether --json run` for an exception the program raised, with the traceback in the document's `stderr` |
 
 ## SMT contract proving — E09xx (default-on when z3 is installed)
 

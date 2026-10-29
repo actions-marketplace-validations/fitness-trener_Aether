@@ -24,7 +24,8 @@ LL(1) construct-anchoring rule.
 | Parked keywords | `async await yield spawn with defer trait impl` reserved, unused in v0.1 | [[../clusters/design-rationale\|design-rationale]] |
 
 ## Accepted / Rejected
-- **Accepted:** the 47-word count, the overload rule, the `?`/`!` convention, LL(1) claim.
+- **Superseded 2026-09-24 (audit Wave 6):** the count is 56, pinned to `lexer.KEYWORDS` by `tests/test_spec_docs.py`; the `?`/`!`/uppercase naming rules are documented but not enforced (`grammar/keywords.md`). The v0.1 text below is kept as ingested.
+- **Accepted (v0.1):** the 47-word count, the overload rule, the `?`/`!` convention, LL(1) claim.
 - **Rejected/deferred:** none — the file is definitional. Parked words tracked as `context_level: parked`.
 
 ## Fact-check

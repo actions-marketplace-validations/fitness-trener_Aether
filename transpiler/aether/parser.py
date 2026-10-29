@@ -44,7 +44,33 @@ def parse_collect(source: str, filename: str = "<input>"):
     tokens = tokenize(source, filename)
     p = Parser(tokens, collect_errors=True)
     ast = p.parse_program()
+    if p.diagnostics:
+        # Some declaration did not parse: a name it bound is missing, so
+        # E0208 (passes/names.py) must not call its uses undeclared.
+        ast["partial"] = True
     return ast, list(p.diagnostics)
+
+
+# Deepest AST (dict nesting) a declaration may have. Every pass below the
+# parser is recursive over expressions; 200 leaves them far from Python's
+# recursion limit and is 15x the deepest in-repo program (13).
+MAX_AST_DEPTH = 200
+
+
+def _ast_depth(node: Any) -> int:
+    """Dict-nesting depth of an AST node, computed iteratively."""
+    best = 0
+    stack = [(node, 0)]
+    while stack:
+        n, d = stack.pop()
+        if isinstance(n, dict):
+            d += 1
+            if d > best:
+                best = d
+            stack.extend((v, d) for v in n.values())
+        elif isinstance(n, list):
+            stack.extend((v, d) for v in n)
+    return best
 
 
 # Top-level keywords used as sync points for multi-error recovery.
@@ -120,7 +146,7 @@ class Parser:
             if self.collect_errors:
                 start_i = self.i
                 try:
-                    decls.append(self.parse_top_decl())
+                    decls.append(self._parse_top_decl_bounded())
                 except AetherError as e:
                     self.diagnostics.append(e.diag)
                     # Don't loop forever on the same token.
@@ -128,8 +154,30 @@ class Parser:
                         self.advance()
                     self._sync_to_top_level()
             else:
-                decls.append(self.parse_top_decl())
+                decls.append(self._parse_top_decl_bounded())
         return {"kind": "Program", "decls": decls}
+
+    def _parse_top_decl_bounded(self) -> Dict[str, Any]:
+        """`parse_top_decl` with a nesting bound, so every recursive pass
+        downstream (the detectors, the emitter) sees an AST it can walk.
+        A ~40-deep parenthesised expression overflowed this recursive-
+        descent parser, and a 500-term `1 + 1 + ...` chain (parsed
+        iteratively, but left-nested) overflowed the passes — both were
+        Python tracebacks (audit 2026-09-24 A10). Now both are E0201.
+        The deepest program in the in-repo corpus nests 13 levels."""
+        start = self.peek()
+        hint = ("split the expression into named `let` bindings so no "
+                "single expression nests this deeply")
+        try:
+            d = self.parse_top_decl()
+        except RecursionError:
+            raise self.err("expression nests deeper than the parser can "
+                           "follow", start.pos, suggestion=hint) from None
+        if _ast_depth(d) > MAX_AST_DEPTH:
+            raise self.err(f"declaration nests deeper than {MAX_AST_DEPTH} "
+                           f"levels; the analyzer cannot walk it",
+                           start.pos, suggestion=hint)
+        return d
 
     def _sync_to_top_level(self) -> None:
         """Advance the cursor until we either hit a top-level keyword
@@ -298,6 +346,14 @@ class Parser:
                 self.advance()
                 ensures_clauses.append(self.parse_expr())
             elif self.at_kw("effects"):
+                if effects:
+                    # The grammar has ONE effects_clause; a second one used
+                    # to replace the first silently (gaps round G2).
+                    raise self.err(
+                        f"function {name!r} has more than one 'effects' "
+                        f"clause", self.peek().pos,
+                        suggestion="merge them into one list: "
+                                   "'effects a, b'")
                 self.advance()
                 effects = self.parse_effect_list()
         if not effects:
@@ -328,10 +384,21 @@ class Parser:
         return {"name": n, "type": ty}
 
     def parse_effect_list(self) -> List[Dict[str, Any]]:
+        starts = [self.peek().pos]
         out = [self.parse_effect()]
         while self.at_sym(","):
             self.advance()
+            starts.append(self.peek().pos)
             out.append(self.parse_effect())
+        if len(out) > 1:
+            for at, e in zip(starts, out):
+                if e["path"] == ["pure"]:
+                    # `pure` is the empty set: `pure, log` read as {log}
+                    # statically and as pure at runtime (audit A11).
+                    raise self.err(
+                        "'pure' declares no effects and cannot be combined "
+                        "with other effects", at,
+                        suggestion="drop 'pure', or drop the other effects")
         return out
 
     def parse_effect(self) -> Dict[str, Any]:
@@ -424,7 +491,8 @@ class Parser:
             return {"kind": "Assign", "target": name, "value": value, "pos": t.pos.to_dict()}
         # otherwise, expression statement
         e = self.parse_expr()
-        return {"kind": "ExprStmt", "expr": e}
+        # Positioned (audit D10): E0204 anchors on a dead statement.
+        return {"kind": "ExprStmt", "expr": e, "pos": t.pos.to_dict()}
 
     def _let_or_var(self, which: str) -> Dict[str, Any]:
         kw = self.advance()
@@ -628,6 +696,7 @@ class Parser:
         return self._parse_postfix()
 
     def _parse_postfix(self) -> Dict[str, Any]:
+        start = self.peek().pos
         e = self._parse_primary()
         while True:
             if self.at_sym("("):
@@ -639,7 +708,10 @@ class Parser:
                         self.advance()
                         args.append(self.parse_expr())
                 self.expect_sym(")")
-                e = {"kind": "Call", "func": e, "args": args}
+                # Positioned at the start of the callee expression (audit
+                # D10): a finding about a call is reported at the call.
+                e = {"kind": "Call", "func": e, "args": args,
+                     "pos": start.to_dict()}
             elif self.at_sym("."):
                 self.advance()
                 fname = self.expect_ident().value

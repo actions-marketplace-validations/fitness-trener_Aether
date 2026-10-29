@@ -10,6 +10,11 @@ Nothing is imported or executed. Wheels are downloaded with
 `pip download --only-binary` (so no sdist build step runs), unzipped as
 data, and read as text by the CLI, which parses with `ast`.
 
+The corpus is pinned: `frameworks.lock.txt` names each version and its
+wheel sha256, and pip refuses a wheel whose hash differs. Unpinned, a
+re-run months later scanned whatever was newest and could not reproduce
+REPORT.md's numbers.
+
 Run: python -B bench/framework_scan/run_scan.py            (summary)
      python -B bench/framework_scan/run_scan.py --json     (every finding)
      python -B bench/framework_scan/run_scan.py --skip-download
@@ -28,38 +33,51 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 WORK = os.path.join(HERE, "_work")
 WHEELS = os.path.join(WORK, "wheels")
 SRC = os.path.join(WORK, "src")
+LOCK = os.path.join(HERE, "frameworks.lock.txt")
 
-# The corpus, chosen for relevance rather than convenience: agent
-# frameworks and the AI coding tools whose output Aether is aimed at.
-PACKAGES = [
-    "langchain-core", "langchain", "langchain-community", "langgraph",
-    "llama-index-core", "crewai", "autogen-agentchat", "openhands-ai",
-    "aider-chat", "smolagents", "browser-use", "haystack-ai",
-    "semantic-kernel", "agno", "mcp",
-]
+
+def pins() -> dict:
+    """{wheel dist name: version} from the lock file. The corpus, chosen
+    for relevance rather than convenience: agent frameworks and the AI
+    coding tools whose output Aether is aimed at."""
+    out = {}
+    with open(LOCK, encoding="utf-8") as f:
+        for line in f:
+            spec = line.split("#", 1)[0].split()
+            if spec:
+                name, ver = spec[0].split("==")
+                out[name.replace("-", "_")] = ver
+    return out
 
 
 def download() -> None:
     os.makedirs(WHEELS, exist_ok=True)
-    for p in PACKAGES:
-        r = subprocess.run(
-            [sys.executable, "-m", "pip", "download", "--no-deps",
-             "--only-binary", ":all:", "-q", "-d", WHEELS, p],
-            capture_output=True, text=True)
-        print(f"  {'ok  ' if r.returncode == 0 else 'MISS'} {p}")
+    r = subprocess.run(
+        [sys.executable, "-m", "pip", "download", "--no-deps",
+         "--only-binary", ":all:", "--require-hashes", "-q",
+         "-d", WHEELS, "-r", LOCK],
+        capture_output=True, text=True)
+    print(f"  download {'ok' if r.returncode == 0 else 'FAILED'}")
+    if r.returncode != 0:
+        raise SystemExit(r.stderr)
 
 
 def extract() -> dict:
+    """Unzip exactly the pinned wheel of each dist. A `_work/src/<dist>`
+    left by an earlier run of another version is refused, not scanned."""
     os.makedirs(SRC, exist_ok=True)
     dists = {}
-    for fn in sorted(os.listdir(WHEELS)):
-        if not fn.endswith(".whl"):
-            continue
-        d = fn.split("-")[0]
+    for d, ver in sorted(pins().items()):
         dest = os.path.join(SRC, d)
         if not os.path.isdir(dest):
-            with zipfile.ZipFile(os.path.join(WHEELS, fn)) as z:
+            whl = [fn for fn in os.listdir(WHEELS)
+                   if fn.startswith(f"{d}-{ver}-") and fn.endswith(".whl")]
+            if not whl:
+                raise SystemExit(f"no wheel for {d}=={ver} in {WHEELS}")
+            with zipfile.ZipFile(os.path.join(WHEELS, whl[0])) as z:
                 z.extractall(dest)
+        if not os.path.isdir(os.path.join(dest, f"{d}-{ver}.dist-info")):
+            raise SystemExit(f"{dest} is not {d}=={ver}; delete it and re-run")
         dists[d] = dest
     return dists
 

@@ -1,0 +1,20 @@
+# The framework corpus bench/framework_scan/REPORT.md measures, pinned.
+# Versions and wheel sha256 read from the _work/ tree the 676-finding
+# re-scan of 2026-09-11 (0.4.0) ran on; run_scan.py downloads exactly
+# these with `pip download --no-deps --only-binary :all: --require-hashes`.
+# Bump a pin only together with a re-measurement recorded in REPORT.md.
+agno==3.0.5 --hash=sha256:14daedb4548d7c189eaf9922a722c790c506ff26bd6fd39d842111567a522f1d
+aider-chat==0.86.2 --hash=sha256:64f6a0c66c9f4633ad9f479bca3e64ebcba02b9da03c6b604b74a44736b2416e
+autogen-agentchat==0.7.5 --hash=sha256:d19ca8ec26cb15e071a56c4269140aea2bf3c718bdc7e06f6677af9a905815ba
+browser-use==0.13.8 --hash=sha256:9ea4db1b79504f028b01eec49d15cd4674929395010023f09baca45b5dacb2df
+crewai==1.15.18 --hash=sha256:9223d2827f5d372ace9764ecdc8ccaa48f7e05bc52c88f851bca3ce78b21a580
+haystack-ai==3.1.1 --hash=sha256:b52802f01d431a2c1c945a8c564fcc84ff9a364e697e6be5b9079db729e4b076
+langchain==1.3.18 --hash=sha256:f29cbef985848e5cfff5398f3c8c1568994a3a6f2a8f4fa720df30b6e0668b9c
+langchain-community==0.4.2 --hash=sha256:84dd8c5122532394d5b6849a5fc9995ef28e4f77227daeb09f24b3d942e9e466
+langchain-core==1.6.1 --hash=sha256:954a84132a5cb0435d27b910e336347b6744ecc18fbeef1e2de7029a0959841a
+langgraph==1.2.11 --hash=sha256:8bab70de7b2d00b5300fb289bcf38d8b241400f3184c1e95e8ce706fb0e8686b
+llama-index-core==0.14.24 --hash=sha256:a12f39b8a777cc526bf400d929016cd244372af61c5e98f6f4186f51a0b9288c
+mcp==2.1.1 --hash=sha256:1c6c31c5d6471c58db76af3af8af67f46d11d01f0a59077d0a308cbdb3d3e915
+openhands-ai==0.9.8 --hash=sha256:f37dfd057a312d7fea5f3dd356ee0288db9b20054aa122ce87e58ff92aa2b4e8
+semantic-kernel==1.44.1 --hash=sha256:95bd49c3055710473a46472dfceaeafe11d97a546dc715ee6d5359c2f47ec754
+smolagents==1.26.0 --hash=sha256:70e1cfb1576f782da93190ee31d9bb2659e5ca4bd84fda0c412e1f20498f28b6

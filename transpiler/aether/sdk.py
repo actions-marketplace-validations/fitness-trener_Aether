@@ -13,7 +13,7 @@ Public API (everything below is the supported surface):
         deterministic=False)                     -> RunResult
     grade(source, expected_stdout, stdin="",
           timeout_ms=5000, deterministic=False)  -> GradeResult
-    pretty(ast)                                  -> str
+    pretty(ast, source=None)                     -> str
     edit(source, transform)                      -> str
 
 `source` is always a `str` containing Aether source. The SDK is
@@ -24,7 +24,8 @@ filename together.
 Diagnostics returned by the SDK are the same `aether.diagnostics.Diagnostic`
 dataclass used internally — `.code`, `.message`, `.position`, `.suggestion`,
 `.extra` — so anything the compiler knows about a problem is reachable
-without parsing strings.
+without parsing strings. `CheckResult.to_dict()` is the document
+`aether --json check` prints, every diagnostic as `Diagnostic.to_dict()`.
 
 `TIMEOUT_ENFORCED` is part of this surface: False means this platform has
 no POSIX SIGALRM, so `timeout_ms` is not enforced and a runaway program
@@ -44,7 +45,8 @@ from .emitter import emit as _emit
 from .pretty import pretty as _pretty
 from .runtime import build_namespace, set_deterministic
 from .runner import compile_and_run as _compile_and_run, TIMEOUT_ENFORCED
-from .passes import analyze_flat
+from .passes import analyze
+from .passes.imports import load_program
 from .diagnostics import Diagnostic, Position, AetherError
 
 
@@ -66,13 +68,22 @@ class ParseResult:
 
 @dataclass
 class CheckResult:
-    """Outcome of all static passes (parse + effects + capability)."""
+    """Outcome of all static passes (parse + effects + capability).
+    `complete` is False when some of the source did not parse or an
+    import did not resolve — what was not loaded was not analysed."""
     ast: Optional[Dict[str, Any]]
     diagnostics: List[Diagnostic] = field(default_factory=list)
+    complete: bool = True
 
     @property
     def ok(self) -> bool:
         return not self.diagnostics
+
+    def to_dict(self) -> Dict[str, Any]:
+        """The same document `aether --json check` prints: {ok, complete,
+        diagnostics: [Diagnostic.to_dict(ast)]} (audit 2026-09-24 D6)."""
+        return {"ok": self.ok, "complete": self.complete,
+                "diagnostics": [d.to_dict(self.ast) for d in self.diagnostics]}
 
 
 @dataclass
@@ -89,6 +100,16 @@ class RunResult:
     #: caller instead of returning exit_code=124 — so "no timeout fired"
     #: and "no timer exists here" are distinguishable.
     timeout_enforced: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """The keys `aether --json run` prints: {ok, complete, diagnostics,
+        stdout, stderr}. `exit_code` stays an attribute: it is the
+        runner's table (2 = AetherError), not the CLI's."""
+        diag = [self.diagnostic] if self.diagnostic else []
+        return {"ok": self.ok,
+                "complete": not any(d.category in ("lex", "parse") for d in diag),
+                "diagnostics": [d.to_dict() for d in diag],
+                "stdout": self.stdout, "stderr": self.stderr}
 
 
 @dataclass
@@ -122,7 +143,7 @@ class Source:
 
     @classmethod
     def from_path(cls, path: str) -> "Source":
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             return cls(text=f.read(), filename=path)
 
     def parse(self) -> ParseResult:
@@ -148,24 +169,33 @@ def parse(source: str, filename: str = "<sdk>") -> ParseResult:
 
 
 def check(source_or_ast, filename: str = "<sdk>") -> CheckResult:
-    """Parse + run every default-on static pass.
+    """Parse + resolve imports + run every default-on static pass.
 
-    Accepts either a source string or an already-parsed AST dict.
-    Returns every diagnostic gathered across parse (C.6 recovery) and
-    every stage of the analysis registry — effects, security, semantic,
-    capability, modules — all in one shot, ordered by stage. Same
-    membership the CLI runs, which is what makes the LSP's claim to show
-    "the same diagnostics a CLI run would produce" true.
+    Accepts either a source string or an already-parsed AST dict. Loading
+    is `passes.imports.load_program`, the same loader `aether check`
+    uses, so an `import` resolves here exactly as it does on the CLI
+    (against the directory of `filename`; the working directory for a
+    pseudo-name like `<sdk>`). Never raises for bad source: a lex error
+    comes back as its diagnostic with `ast=None`.
+
+    Returns the diagnostics of parse (C.6 recovery — a partial AST is
+    still analysed) and of EVERY stage of the analysis registry, in stage
+    order. That is what `aether --json check` prints; plain-text `check`
+    prints only the first stage that has diagnostics (and says how many
+    it held back). An import error (E0705/E0706, or a parse error in an
+    imported file) stops before analysis, as it does on the CLI.
     """
-    if isinstance(source_or_ast, str):
-        ast, diags = parse_collect(source_or_ast, filename)
-        all_diags: List[Diagnostic] = list(diags)
-    else:
-        ast = source_or_ast
-        all_diags = []
+    ast, all_diags, import_diags = load_program(source_or_ast, filename)
+    complete = not (all_diags or import_diags)
+    if import_diags:
+        return CheckResult(ast=ast, diagnostics=all_diags + import_diags,
+                           complete=False)
     if ast is not None and ast.get("decls"):
-        all_diags.extend(analyze_flat(ast))
-    return CheckResult(ast=ast, diagnostics=all_diags)
+        for stage, diags in analyze(ast):
+            for d in diags:
+                d.stage = stage     # rides along in to_dict() (D6)
+            all_diags.extend(diags)
+    return CheckResult(ast=ast, diagnostics=all_diags, complete=complete)
 
 
 def _rehydrate(d: Dict[str, Any]) -> Diagnostic:
@@ -267,9 +297,10 @@ def grade(source: str, expected_stdout: str, stdin: str = "",
     )
 
 
-def pretty(ast: Dict[str, Any]) -> str:
-    """Re-export of the C.1 canonical pretty-printer."""
-    return _pretty(ast)
+def pretty(ast: Dict[str, Any], source: Optional[str] = None) -> str:
+    """Re-export of the C.1 canonical pretty-printer. Pass `source` to
+    keep its full-line comments."""
+    return _pretty(ast, source)
 
 
 def edit(source: str, transform: Callable[[Dict[str, Any]], Dict[str, Any]],
@@ -286,7 +317,9 @@ def edit(source: str, transform: Callable[[Dict[str, Any]], Dict[str, Any]],
     new_ast = transform(ast)
     if new_ast is None:
         new_ast = ast       # transforms that mutate in place may return None
-    return _pretty(new_ast)
+    # `source` keeps its full-line comments (a `// expect:` header among
+    # them) — see `pretty`.
+    return _pretty(new_ast, source)
 
 
 __all__ = [

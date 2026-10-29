@@ -38,24 +38,41 @@ def rel_uri(path: str, base: str) -> str:
     return r if not r.startswith("../") else path.replace(os.sep, "/")
 
 
-def to_sarif(results: list, base: str, unreadable=()) -> dict:
+# Where every code is described (the D.2 catalog test keeps it complete).
+DIAGNOSTICS_DOC = ("https://github.com/fitness-trener/Aether/blob/main/"
+                   "grammar/diagnostics.md")
+
+
+def to_sarif(results: list, base: str, unreadable=(), crashed=()) -> dict:
     """Render findings as SARIF v2.1.0 — the format GitHub Code Scanning,
     VS Code, and most CI security dashboards ingest.
 
-    `results` is `[{"path": str, "findings": [{"code", "message", "line",
-    "risk", "column"?, "confidence"?, "suggestion"?, "extra"?}]}]`; `base` is the
+    `results` is `[{"path": str, "findings": [Diagnostic.to_dict()]}]` —
+    the same rows `--json` prints (audit 2026-09-24 D6); `base` is the
     directory every path is reported relative to (the checkout root under
     CI). `unreadable` is `[(path, why)]` for files the scanner could not
     parse: each becomes a `toolExecutionNotification` on the run, so a
     tree the scanner could not read does not look green in Code Scanning.
+    `crashed` is `[(path, error)]` for files the analyzer crashed on: an
+    error notification each, and `executionSuccessful: false`.
     """
     rule_ids = sorted({f["code"] for r in results for f in r["findings"]})
+    # A rule's description: the first finding of that code, in output
+    # order (worst-first, deterministic). Its message names the class and
+    # its suggestion the repair; there is no separate per-code title table
+    # in the package to drift from grammar/diagnostics.md, which `helpUri`
+    # links to (TC-08).
+    first = {}
+    for r in results:
+        for f in r["findings"]:
+            first.setdefault(f["code"], f)
     sarif_results = []
     for r in results:
         for f in r["findings"]:
-            region = {"startLine": max(1, f["line"])}
-            if f.get("column"):
-                region["startColumn"] = max(1, f["column"])
+            pos = f["position"]
+            region = {"startLine": max(1, pos["line"])}
+            if pos.get("column"):
+                region["startColumn"] = max(1, pos["column"])
             res = {
                 "ruleId": f["code"],
                 "level": sarif_level(risk_of(f["code"])),
@@ -79,6 +96,8 @@ def to_sarif(results: list, base: str, unreadable=()) -> dict:
                 props["suggestion"] = f["suggestion"]
             if f.get("extra"):
                 props["aether"] = f["extra"]
+            if f.get("stage"):
+                props["stage"] = f["stage"]
             if props:
                 res["properties"] = props
             sarif_results.append(res)
@@ -87,20 +106,30 @@ def to_sarif(results: list, base: str, unreadable=()) -> dict:
         "message": {"text": f"could not parse: {why}"},
         "locations": [{"physicalLocation": {
             "artifactLocation": {"uri": rel_uri(p, base)}}}],
-    } for p, why in unreadable]
+    } for p, why in unreadable] + [{
+        "level": "error",
+        "message": {"text": f"analyzer error (a bug in Aether): {err}"},
+        "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": rel_uri(p, base)}}}],
+    } for p, err in crashed]
     rules = []
     for rid in rule_ids:
         risk = risk_of(rid)
-        rules.append({
+        rule = {
             "id": rid,
             "shortDescription": {"text": rid},
+            "fullDescription": {"text": first[rid]["message"]},
+            "helpUri": DIAGNOSTICS_DOC,
             "properties": {
                 # Code Scanning parses this as a string, and ranks
                 # >=9.0 critical, >=7.0 high, >=4.0 medium.
                 "security-severity": str(SECURITY_SEVERITY[risk]),
                 "tags": (["security"] if risk != "info" else []) + ["aether", risk],
             },
-        })
+        }
+        if first[rid].get("suggestion"):
+            rule["help"] = {"text": first[rid]["suggestion"]}
+        rules.append(rule)
     return {
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
@@ -112,7 +141,7 @@ def to_sarif(results: list, base: str, unreadable=()) -> dict:
             }},
             "results": sarif_results,
             "invocations": [{
-                "executionSuccessful": True,
+                "executionSuccessful": not crashed,
                 "toolExecutionNotifications": notifications,
             }],
         }],
